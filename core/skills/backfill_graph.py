@@ -346,6 +346,31 @@ def extract_graph_elements(text: str, memory_id: str, known_entities: set = None
                 f"    Relationship LLM failed for memory {memory_id}: {llm_e}"
             )
 
+    # ── Hardening: the LLM can echo ' {label} ({type})' strings back as edge
+    #    endpoints (e.g. 'Pup (animal)'). Strip the echo artifact and require
+    #    every edge endpoint to be a DETECTED entity. Endpoints that are not
+    #    detected are dropped (with an audit event) — never guessed as nodes.
+    #    This was one of the root causes of the Aug 6 mislabel batch.
+    if edges:
+        from core.lib.graph_rules import resolve_edge_label
+        detected = {n["label"]: n.get("type", "concept") for n in nodes}
+        cleaned_edges = []
+        for edge in edges:
+            src = resolve_edge_label(edge.get("source", ""), detected)
+            tgt = resolve_edge_label(edge.get("target", ""), detected)
+            if src is None or tgt is None:
+                audit_log_sync(
+                    "backfill_graph", "WARNING",
+                    f"edge_dropped_unresolved: endpoint not a detected entity "
+                    f"({edge.get('source', '')!r} -> {edge.get('target', '')!r}) "
+                    f"memory {memory_id}"
+                )
+                continue
+            edge["source"] = src
+            edge["target"] = tgt
+            cleaned_edges.append(edge)
+        edges = cleaned_edges
+
     print(f"    Extracted {len(nodes)} nodes (deterministic), {len(edges)} edges (LLM) from memory {memory_id}")
     return {"nodes": nodes, "edges": edges}
 
@@ -736,13 +761,32 @@ def run_backfill():
                 continue
             unique_nodes[label] = node.get("type", "concept")
             
+        # ── Hardening: NEVER fabricate a type for an unknown edge endpoint.
+        #    Before the fix, edge endpoints that were not detected entities were
+        #    auto-vivified as 'concept' nodes (the root cause of the Aug 6
+        #    mislabel batch). Endpoints are now sanitized + membership-checked
+        #    in extract_graph_elements; anything still unknown here is dropped
+        #    with an audit event (defense in depth for other edge producers).
+        dropped = 0
+        kept_edges = []
         for edge in all_edges:
             src = edge.get("source", "")
             tgt = edge.get("target", "")
-            if src and src not in unique_nodes:
-                unique_nodes[src] = "concept"
-            if tgt and tgt not in unique_nodes:
-                unique_nodes[tgt] = "concept"
+            if (src and src not in unique_nodes) or (tgt and tgt not in unique_nodes):
+                audit_log_sync(
+                    "backfill_graph", "WARNING",
+                    f"edge_dropped_unresolved: endpoint not a detected entity "
+                    f"({src!r} -> {tgt!r})"
+                )
+                dropped += 1
+                continue
+            kept_edges.append(edge)
+        all_edges = kept_edges
+        if dropped:
+            audit_log_sync(
+                "backfill_graph", "WARNING",
+                f"Dropped {dropped} edge(s) with unresolved endpoints (never guessed a type)"
+            )
             
         if root_label and root_label not in unique_nodes:
             unique_nodes[root_label] = "person"

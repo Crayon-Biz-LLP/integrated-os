@@ -81,6 +81,42 @@ _ORG_CONTEXT_WORDS = {
     'corp', 'inc', 'llc', 'ltd', 'limited',
 }
 
+# Common English words that must NEVER become organization entities, even when
+# they follow an org-context word. Pattern D over-triggered on ordinary words
+# like "Crayon discussed company evolution" → "Evolution" (organization) in
+# the Aug 6 backfill batch (Great, Now, Praying, Structure, Evolution, Business
+# were all proposed as orgs). Real orgs (Qhord, Marutham, Solvstrat) are proper
+# nouns and are NOT in this set — the guard is deliberately a small curated
+# list of ordinary vocabulary, mirroring _EMOTIONAL_STATES and
+# _RESERVED_ENTITY_WORDS.
+_COMMON_ORG_WORDS = {
+    'business', 'company', 'group', 'team', 'teams', 'startup', 'agency',
+    'firm', 'vendor', 'partner', 'client', 'project', 'mission', 'plan',
+    'plans', 'goal', 'goals', 'work', 'works', 'job', 'role', 'career',
+    'meeting', 'meetings', 'call', 'calls', 'event', 'events', 'board',
+    'committee', 'council', 'church', 'school', 'college', 'university',
+    'ministry', 'family', 'community', 'home', 'office', 'market',
+    'marketing', 'sales', 'finance', 'accounting', 'operations', 'system',
+    'systems', 'platform', 'platforms', 'product', 'products', 'service',
+    'services', 'solution', 'solutions', 'technology', 'software', 'data',
+    'network', 'networks', 'industry', 'industries', 'department', 'division',
+    'unit', 'section', 'branch', 'store', 'shop', 'studio', 'agency', 'firm',
+    'foundation', 'institute', 'academy', 'center', 'centre', 'program',
+    'programs', 'project', 'initiative', 'initiatives', 'task', 'tasks',
+    'report', 'reports', 'document', 'documents', 'review', 'reviews',
+    'game', 'games', 'app', 'apps', 'website', 'site', 'portal', 'portal',
+    'dashboard', 'workspace', 'organization', 'organisation', 'enterprise',
+    'corporation', 'outfit', 'operation', 'structure', 'evolution', 'now',
+    'great', 'praying', 'happy', 'sad', 'angry', 'excited', 'inspired',
+    'exhausted', 'tired', 'depressed', 'frustrated', 'betrayed', 'broken',
+    'lost', 'grateful', 'stress', 'anxiety', 'anxious', 'overwhelmed',
+    'burnt out', 'burned out', 'desperate', 'lonely', 'hopeless', 'helpless',
+    'ashamed', 'guilty', 'crushed', 'grief', 'fear', 'worried', 'nervous',
+    'confused', 'motivated', 'confident', 'hopeful', 'weekend', 'morning',
+    'afternoon', 'evening', 'night', 'today', 'tomorrow', 'yesterday',
+    'week', 'month', 'year', 'spring', 'summer', 'fall', 'winter',
+}
+
 # Known emotional state words
 _EMOTIONAL_STATES = {
     'stressed', 'excited', 'overwhelmed', 'anxious', 'worried',
@@ -192,6 +228,15 @@ def detect_entities(text: str) -> List[DetectedEntity]:
     entities: List[DetectedEntity] = []
     seen_labels: set = set()
 
+    # Hardening (Aug 6 root cause): if Phase 1 DB lookup fails, detection is
+    # UNGROUNDED — patterns would otherwise run at full confidence against an
+    # empty known-entity set, producing the mislabel batch (Blessy→concept,
+    # 'company evolution'→Evolution org). When the DB is down we degrade:
+    #   - org proposals (Pattern D) are disabled entirely
+    #   - person proposals (Pattern B) are capped at low confidence
+    #   - one audit event marks the degraded run
+    db_grounded = True
+
     def _add(e: DetectedEntity):
         key = e.label.lower().strip()
         if key and key not in seen_labels:
@@ -256,6 +301,7 @@ def detect_entities(text: str) -> List[DetectedEntity]:
         graph_nodes = []
         orgs = []
         people = []
+        db_grounded = False
 
     # Build n-gram index from text
     norm_text = _normalize(text)
@@ -325,15 +371,25 @@ def detect_entities(text: str) -> List[DetectedEntity]:
         if ctx_words and any(
             w in _PERSON_CONTEXT_WORDS for w in ctx_words[-_SIGNAL_WINDOW:]
         ):
+            # Degraded mode (Phase 1 DB failed): an ungrounded person proposal
+            # is not reliable enough for a normal-confidence candidate — it
+            # will still be routed to pending (never direct), but flagged low.
+            conf = 0.8 if db_grounded else 0.4
             _add(DetectedEntity(
                 label=phrase,
                 type='person',
                 source='pattern_match',
                 is_new=True,
-                confidence=0.8,
+                confidence=conf,
             ))
             audit_log_sync("entity_detector", "INFO",
                 f"Pattern B: Proposed person '{phrase}' via context")
+
+    # Degraded mode marker: Phase 1 DB fetch failed — this run is ungrounded.
+    if not db_grounded:
+        audit_log_sync("entity_detector", "WARNING",
+            "DEGRADED MODE: Phase 1 DB fetch failed — ungrounded detection "
+            "(Pattern D disabled, Pattern B capped at low confidence)")
 
     # ── Pattern C: Emotional state detection (handles multi-word like 'burned out') ──
     for emotion in _match_emotional_states(text):
@@ -352,27 +408,38 @@ def detect_entities(text: str) -> List[DetectedEntity]:
     # and won't be re-caught as orgs.
     # Catches unregistered organizations introduced by context words like:
     #   "A new client Marutham..."        → "client" → organization
-    #   "The company is headed by..."     → "company" → organization (verb intervening OK)
     #   "They signed with vendor Acme..." → "vendor" → organization
-    caps_phrases = _find_capitalized_phrases(text)
-    for phrase, start, end in caps_phrases:
-        if phrase.lower() in seen_labels:
-            continue
-        # Check if preceded by an organization context word within a small window.
-        before = text[max(0, start - 25):start].strip().lower()
-        ctx_words = before.split()
-        if ctx_words and any(
-            w in _ORG_CONTEXT_WORDS for w in ctx_words[-_SIGNAL_WINDOW:]
-        ):
-            _add(DetectedEntity(
-                label=phrase,
-                type='organization',
-                source='pattern_match',
-                is_new=True,
-                confidence=0.8,
-            ))
-            audit_log_sync("entity_detector", "INFO",
-                f"Pattern D: Proposed organization '{phrase}' via context")
+    #
+    # Hardening (Aug 6 root cause):
+    #   - Disabled entirely when Phase 1 DB lookup failed (ungrounded org
+    #     proposals were the mislabel source).
+    #   - _COMMON_ORG_WORDS guard: ordinary vocabulary ("company evolution" →
+    #     "Evolution") can never become an organization.
+    #   - Window tightened to the last 2 words (was 3) to cut cross-clause hits
+    #     — the org-context word must be nearly adjacent to the candidate.
+    if db_grounded:
+        caps_phrases = _find_capitalized_phrases(text)
+        for phrase, start, end in caps_phrases:
+            if phrase.lower() in seen_labels:
+                continue
+            # Never propose ordinary English vocabulary as organizations.
+            if phrase.lower() in _COMMON_ORG_WORDS:
+                continue
+            # Check if preceded by an organization context word within a small window.
+            before = text[max(0, start - 25):start].strip().lower()
+            ctx_words = before.split()
+            if ctx_words and any(
+                w in _ORG_CONTEXT_WORDS for w in ctx_words[-2:]
+            ):
+                _add(DetectedEntity(
+                    label=phrase,
+                    type='organization',
+                    source='pattern_match',
+                    is_new=True,
+                    confidence=0.8,
+                ))
+                audit_log_sync("entity_detector", "INFO",
+                    f"Pattern D: Proposed organization '{phrase}' via context")
 
     return entities
 

@@ -496,6 +496,56 @@ def normalize_label_display(label: str) -> str:
     label = re.sub(r'\s+', ' ', label)
     return label
 
+def sanitize_edge_label(label: str) -> str:
+    """Strip LLM echo artifacts from an edge endpoint label.
+
+    The relationship prompt feeds detected entities as '- {label} ({type})'
+    lines; the model sometimes echoes the whole formatted string back as an
+    edge endpoint ("Pup (animal)" instead of "Pup"). This strips the trailing
+    ' (type)' suffix, surrounding quotes, and collapses whitespace so the label
+    can be matched against the detected-entity set.
+
+    Hardening: the label echo was one of two root causes of the Aug 6
+    mislabel batch (backfill_graph memory_id=batch) — "Rahul Male Pup Rescuer
+    (person)", "Puppy (animal)" etc. were stored verbatim as concept nodes.
+    """
+    if not label or not isinstance(label, str):
+        return ""
+    lbl = label.strip()
+    # Remove wrapping quotes if present ("Pup", 'Pup')
+    if len(lbl) >= 2 and lbl[0] == lbl[-1] and lbl[0] in ('"', "'", '`'):
+        lbl = lbl[1:-1].strip()
+    # Strip a trailing ' (type)' suffix — the LLM echo artifact. Restricted to
+    # known entity-type keywords so legit parentheticals ("Qhord (India)")
+    # are never mangled.
+    m = re.match(r'^(.+?)\s+\((person|animal|organization|organisation|org|project|concept|emotional_state|place|event)\)$', lbl, re.IGNORECASE)
+    if m:
+        lbl = m.group(1).strip()
+    # Collapse internal whitespace
+    lbl = re.sub(r'\s+', ' ', lbl).strip()
+    return lbl
+
+def resolve_edge_label(raw_label: str, detected_nodes: dict) -> str | None:
+    """Resolve an edge endpoint label to a detected node's canonical label.
+
+    Sanitizes the raw label (strips '(type)' echoes, quotes, whitespace) and
+    matches it case-insensitively against detected_nodes ({label: type}).
+    Returns the canonical detected label when found, None when the endpoint
+    is NOT a detected entity — callers must drop the edge, never fabricate a
+    type for an unknown endpoint (the pre-hardening 'concept' default).
+    """
+    cleaned = sanitize_edge_label(raw_label)
+    if not cleaned:
+        return None
+    if cleaned in detected_nodes:
+        return cleaned
+    lower = cleaned.lower()
+    for lbl in detected_nodes:
+        if lbl.lower() == lower:
+            return lbl
+    return None
+
+
 def resolve_canonical_label(raw_label: str, node_type: str = None) -> dict:
     """Returns the closest canonical match for a raw label.
     
@@ -952,10 +1002,22 @@ def persist_label(route: str, resolution: dict, source_info: dict) -> str:
     """Executes the DB write for the candidate node based on the route."""
     if route == "discard":
         return None
-        
+
     label = resolution.get("label")
-    typ = resolution.get("node_type") or "concept"
-    
+    typ = resolution.get("node_type")
+
+    # Hardening (Aug 6 root cause): never silently persist a 'concept' node
+    # for a label that has no detected type. Before this guard, any caller
+    # that reached the write without a type (e.g. an unknown edge endpoint)
+    # auto-vivified a concept node. Fail safe: skip the write + audit.
+    if not typ:
+        audit_log_sync(
+            "graph_pipeline", "WARNING",
+            f"persist_skipped_no_type: {label!r} has no detected node_type — "
+            f"not persisted (route={route})"
+        )
+        return None
+
     if route == "direct":
         if resolution.get("node_id"):
             return resolution["node_id"]

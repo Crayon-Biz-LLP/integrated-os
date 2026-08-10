@@ -1463,16 +1463,42 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
         lbl = n.get("label", "")
         if isinstance(lbl, str):
             lbl = lbl.strip()
-            typ = n.get("type", "concept")
+            typ = n.get("type") or ""
+            if not typ:
+                # Hardening: a detected node with no type is not persisted —
+                # never guess 'concept' for an untyped label.
+                if lbl:
+                    audit_log_sync(
+                        "graph_pipeline", "WARNING",
+                        f"label_skipped_no_type: {lbl!r} produced without a type — not persisted"
+                    )
+                continue
             if lbl:
                 # Apply type override if exists
                 if lbl.lower() in overrides_map:
                     typ = overrides_map[lbl.lower()]
                 extracted_nodes[lbl] = typ
 
-    # 2. Process all edges to find edge-only entities
-    
-    
+    # 2. Sanitize LLM edge endpoints. The relationship LLM can echo
+    #    ' {label} ({type})' strings back as endpoints (e.g. 'Pup (animal)').
+    #    Strip the echo artifact and canonicalize endpoints that match a
+    #    detected entity (case-insensitive). Endpoints that do NOT match a
+    #    detected entity are KEPT with their sanitized label so the unified
+    #    pipeline below can still resolve them against the DB (known entities
+    #    with name variants must not lose their edges) — but if neither the
+    #    detector nor the DB provides a type, the label is skipped instead of
+    #    being auto-vivified as 'concept' (the Aug 6 root cause).
+    from core.lib.graph_rules import resolve_edge_label, sanitize_edge_label
+    for e in edges:
+        s_raw = e.get("source", "")
+        t_raw = e.get("target", "")
+        # Always strip echo artifacts ('Pup (animal)' -> 'Pup'); canonicalize
+        # to the detected label when one matches (case-insensitive).
+        s_clean = sanitize_edge_label(s_raw)
+        t_clean = sanitize_edge_label(t_raw)
+        e["source"] = resolve_edge_label(s_raw, extracted_nodes) or s_clean
+        e["target"] = resolve_edge_label(t_raw, extracted_nodes) or t_clean
+
     all_labels = set(extracted_nodes.keys())
     for e in edges:
         s_lbl = e.get("source", "")
@@ -1498,7 +1524,20 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
         # 2. Resolution
         res = resolve_candidate(raw_lbl)
         if not res.get("node_type"):
-            res["node_type"] = extracted_nodes.get(raw_lbl, "concept")
+            # Hardening: never fabricate a type. A label only gets a type here
+            # if the detector actually produced it (extracted_nodes). Any label
+            # without a detected type is a non-entity — skip it rather than
+            # persist a guessed 'concept' node.
+            detected_type = extracted_nodes.get(raw_lbl)
+            if detected_type:
+                res["node_type"] = detected_type
+            else:
+                audit_log_sync(
+                    "graph_pipeline", "WARNING",
+                    f"label_skipped_no_type: {raw_lbl!r} has no detected type — "
+                    f"not persisted ({source_type}:{source_id})"
+                )
+                continue
             
         # 3. Route
         route = route_label(res, val)
