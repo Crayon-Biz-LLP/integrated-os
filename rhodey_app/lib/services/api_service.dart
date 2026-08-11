@@ -83,7 +83,18 @@ class InboxBundle {
   final List<PendingDecision> decisions;
   final int autoDecisionCount;
 
-  const InboxBundle({required this.decisions, required this.autoDecisionCount});
+  /// Pending email reply drafts (email_drafts status='pending').
+  final List<Map<String, dynamic>> drafts;
+
+  /// Undecided FYI items — informational, dismissed with ack.
+  final List<Map<String, dynamic>> fyi;
+
+  const InboxBundle({
+    required this.decisions,
+    required this.autoDecisionCount,
+    this.drafts = const [],
+    this.fyi = const [],
+  });
 }
 
 /// Lifecycle-aware API client.
@@ -613,6 +624,37 @@ class ApiService {
     );
   }
 
+  /// Approve/reject Teams pending item via /api/teams-action.
+  Future<ApiResult<dynamic>> approveTeams(int pendingId) async {
+    return post(
+      '/api/teams-action',
+      body: {'id': pendingId, 'action': 'approve'},
+    );
+  }
+
+  Future<ApiResult<dynamic>> rejectTeams(int pendingId) async {
+    return post(
+      '/api/teams-action',
+      body: {'id': pendingId, 'action': 'reject'},
+    );
+  }
+
+  /// Send or drop a pending email reply draft.
+  Future<ApiResult<dynamic>> draftAction(int draftId, {required String action}) async {
+    return post(
+      '/api/draft-action',
+      body: {'draft_id': draftId, 'action': action},
+    );
+  }
+
+  /// Acknowledge (dismiss) an FYI item.
+  Future<ApiResult<dynamic>> acknowledgeFyi(int itemId) async {
+    return post(
+      '/api/fyi-action',
+      body: {'id': itemId},
+    );
+  }
+
   /// Submit a clarification answer via /api/clarification.
   Future<ApiResult<dynamic>> submitClarification(
     String shortcode,
@@ -701,12 +743,25 @@ class ApiService {
           data['pending_messages'] as List? ?? [],
         ),
       ),
+      // Actionable channel items (email/whatsapp/call/teams) — the real
+      // Quick-Confirmation feed. Served alongside raw_dumps rows so the
+      // Inbox shows everything awaiting a decision.
+      ..._parseMessages(
+        (data['pending_channel_messages'] as List?)
+                ?.cast<Map<String, dynamic>>() ??
+            [],
+      ),
     ];
     _sortDecisions(decisions);
     return ApiResult.ok(
       InboxBundle(
         decisions: decisions,
         autoDecisionCount: (data['auto_decision_count'] as num?)?.toInt() ?? 0,
+        drafts: (data['pending_drafts'] as List?)
+                ?.cast<Map<String, dynamic>>() ??
+            const [],
+        fyi: (data['pending_fyi'] as List?)?.cast<Map<String, dynamic>>() ??
+            const [],
       ),
     );
   }
@@ -739,7 +794,19 @@ class ApiService {
 
       String title = label;
       String? description;
-      if (nodeType == 'concept' && ctx != null) {
+      // Awaiting-details / awaiting-clarification nodes are surfaced so the
+      // user can approve (accept with context) or reject — the Inbox shows
+      // them with the CLARIFICATION badge.
+      String source = 'graph_node';
+      final awaiting = status == 'awaiting_details' ||
+          status == 'awaiting_clarification';
+      if (awaiting) {
+        source = 'clarification';
+        title = label;
+        description = status == 'awaiting_clarification'
+            ? 'Awaiting your input — approve to accept, or reject'
+            : 'Needs context — approve to accept, or reject';
+      } else if (nodeType == 'concept' && ctx != null) {
         final linked = ctx['linked_entity'] as String?;
         if (linked != null) {
           title = '$label (→ $linked)';
@@ -755,7 +822,7 @@ class ApiService {
 
       return PendingDecision(
         id: node['id'].toString(),
-        source: 'graph_node',
+        source: source,
         title: title,
         description: description,
         confidence: conf,
@@ -818,6 +885,8 @@ class ApiService {
         decisionSource = 'whatsapp';
       } else if (source == 'call') {
         decisionSource = 'call';
+      } else if (source == 'teams') {
+        decisionSource = 'teams';
       } else {
         continue;
       }
@@ -899,6 +968,11 @@ class ApiService {
       ..._parseGraphEdges((data['pending_edges'] as List?) ?? []),
       ..._parseMessages(
         (data['pending_messages'] as List?)?.cast<Map<String, dynamic>>() ?? [],
+      ),
+      ..._parseMessages(
+        (data['pending_channel_messages'] as List?)
+                ?.cast<Map<String, dynamic>>() ??
+            [],
       ),
     ];
     _sortDecisions(decisions);

@@ -7,6 +7,7 @@ enum DecisionType {
   email,
   whatsapp,
   call,
+  teams,
   merge,
 }
 
@@ -63,6 +64,8 @@ class DecisionItem {
         return '💬';
       case DecisionType.call:
         return '📞';
+      case DecisionType.teams:
+        return '🟣';
       case DecisionType.merge:
         return '🔀';
     }

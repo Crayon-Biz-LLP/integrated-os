@@ -52,6 +52,9 @@ from core.services.db import (
     get_tenant, set_tenant, resolve_telegram_chat_id, resolve_user_by_api_key,
     tenant_aware_client, tenant_scope,
 )
+from core.services.inbox_feed import (
+    fetch_pending_channel_messages, fetch_pending_drafts, fetch_fyi_messages,
+)
 
 
 @asynccontextmanager
@@ -562,6 +565,16 @@ async def home_feed_route(request: Request):
             except Exception:
                 return []
 
+        # Actionable, undecided channel items — the same feed the Inbox tab
+        # serves, so the home focal board and Inbox agree on pending counts.
+        async def _channel_messages():
+            try:
+                return await asyncio.to_thread(
+                    fetch_pending_channel_messages, supabase, 50
+                )
+            except Exception:
+                return []
+
         # ── Active tasks (mirror /api/tasks default: status=todo, limit 200) ──
         async def _tasks():
             try:
@@ -605,12 +618,14 @@ async def home_feed_route(request: Request):
         edges_fut = asyncio.ensure_future(_edges())
         merges_fut = asyncio.ensure_future(_merges())
         msgs_fut = asyncio.ensure_future(_messages())
+        channel_fut = asyncio.ensure_future(_channel_messages())
         tasks_fut = asyncio.ensure_future(_tasks())
         persona_fut = asyncio.ensure_future(_persona())
 
-        briefing, nodes, edges, merges, messages, tasks, persona = await asyncio.gather(
-            briefing_fut, nodes_fut, edges_fut, merges_fut, msgs_fut, tasks_fut,
-            persona_fut)
+        briefing, nodes, edges, merges, messages, channel_msgs, tasks, persona = \
+            await asyncio.gather(
+                briefing_fut, nodes_fut, edges_fut, merges_fut, msgs_fut,
+                channel_fut, tasks_fut, persona_fut)
 
         return {
             "briefing": briefing,
@@ -618,6 +633,7 @@ async def home_feed_route(request: Request):
             "pending_edges": edges,
             "pending_merges": merges,
             "pending_messages": messages,
+            "pending_channel_messages": channel_msgs,
             "tasks": tasks,
             "persona": persona,
         }
@@ -2773,6 +2789,132 @@ async def whatsapp_action_batch_route(request: Request):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+# --- TEAMS PENDING DECISIONS (approve/reject from frontend) ---
+@app.post("/api/teams-action")
+async def teams_action_route(request: Request):
+    """Approve or reject Teams pending message via API (called from app)."""
+    require_api_auth(request)
+    try:
+        body = await request.json()
+        pending_id = body.get('id') or body.get('shortcode')
+        action = body.get('action', '')
+
+        if not pending_id or not action:
+            raise HTTPException(status_code=400, detail="id and action required")
+
+        if action == 'yes':
+            action = 'approve'
+        elif action == 'no':
+            action = 'reject'
+
+        result = await process_channel_pending_decision('teams', int(pending_id), action)
+
+        if result['success']:
+            return {"success": True, "message": result['message'], "action": result['action']}
+        else:
+            return {"success": False, "message": result['message'], "action": result['action']}
+
+    except Exception as e:
+        print(f"Teams action error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.post("/api/teams-action/batch")
+async def teams_action_batch_route(request: Request):
+    """Batch approve/reject Teams items. One call, server processes all."""
+    require_api_auth(request)
+    try:
+        body = await request.json()
+        ids = body.get('ids', [])
+        action = body.get('action', '')
+        if not ids or action not in ('approve', 'reject'):
+            raise HTTPException(status_code=400, detail="ids and action required")
+        processed, failed = 0, 0
+        for i in range(0, len(ids), 100):
+            for pending_id in ids[i:i+100]:
+                try:
+                    await process_channel_pending_decision('teams', int(pending_id), action)
+                    processed += 1
+                except Exception:
+                    failed += 1
+        return {"success": True, "processed": processed, "failed": failed}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Teams batch action error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# --- EMAIL DRAFT ACTIONS (send or drop a generated reply draft) ---
+@app.post("/api/draft-action")
+async def draft_action_route(request: Request):
+    """Send or drop a pending email reply draft from the app.
+
+    action='send' → deliver via Gmail/Outlook (send_draft_reply), status='sent'.
+    action='drop' → mark draft rejected (status='rejected') so it leaves the
+    Inbox's Email Drafts section. Never deletes the row (audit-able).
+    """
+    require_api_auth(request)
+    try:
+        body = await request.json()
+        draft_id = body.get('draft_id')
+        action = (body.get('action') or '').lower()
+        if not draft_id or action not in ('send', 'drop'):
+            raise HTTPException(status_code=400, detail="draft_id and action (send|drop) required")
+
+        if action == 'send':
+            success, error = await send_draft_reply(int(draft_id))
+            if not success:
+                return {"success": False, "message": error or "Failed to send draft"}
+            return {"success": True, "message": "Draft sent"}
+
+        # drop
+        supabase = tenant_aware_client()
+        supabase.table('email_drafts')\
+            .update({'status': 'rejected'})\
+            .eq('id', int(draft_id))\
+            .eq('status', 'pending')\
+            .execute()
+        audit_log_sync("draft_action", "INFO", f"Draft {draft_id} dropped from app Inbox")
+        return {"success": True, "message": "Draft dropped"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Draft action error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# --- FYI ACKNOWLEDGE (dismiss an FYI item from the Inbox) ---
+@app.post("/api/fyi-action")
+async def fyi_action_route(request: Request):
+    """Acknowledge (dismiss) an FYI item so it leaves the Inbox's FYI section.
+
+    FYI items carry no approve/reject decision — they are informational.
+    Acknowledging marks danny_decision='acknowledged' (distinct from
+    'approved'/'rejected') and keeps the row for telemetry/history.
+    """
+    require_api_auth(request)
+    try:
+        body = await request.json()
+        item_id = body.get('id')
+        if not item_id:
+            raise HTTPException(status_code=400, detail="id required")
+        supabase = tenant_aware_client()
+        supabase.table('messages')\
+            .update({'danny_decision': 'acknowledged'})\
+            .eq('id', int(item_id))\
+            .is_('danny_decision', 'null')\
+            .eq('classification', 'fyi')\
+            .execute()
+        audit_log_sync("fyi_action", "INFO", f"FYI item {item_id} acknowledged from app Inbox")
+        return {"success": True, "message": "Acknowledged"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"FYI action error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 # --- WHATSAPP INGEST (Receives MacroDroid webhook) ---
 
 # --- GRAPH EDGE DECISIONS (approve/reject/edit from frontend) ---
@@ -4071,7 +4213,7 @@ async def inbox_route(request: Request):
             try:
                 q = supabase.table('pending_nodes') \
                     .select('id, label, type:node_type, status, source_text, created_at, eval_context') \
-                    .in_('status', ['pending', 'flagged'])
+                    .in_('status', ['pending', 'flagged', 'awaiting_details', 'awaiting_clarification'])
                 if _snooze_ok(supabase, 'pending_nodes'):
                     q = q.or_('snoozed_until.is.null,snoozed_until.lt.now')
                 res = await exec_query(q.order('created_at', desc=True).limit(100))
@@ -4115,6 +4257,30 @@ async def inbox_route(request: Request):
             except Exception:
                 return []
 
+        # Actionable, undecided channel items (email/whatsapp/call/teams) —
+        # the Quick Confirmations feed the app parses into decision cards.
+        async def _channel_messages():
+            try:
+                return await asyncio.to_thread(
+                    fetch_pending_channel_messages, supabase, 50
+                )
+            except Exception:
+                return []
+
+        # Pending email reply drafts — the Inbox's "Email Drafts" section.
+        async def _drafts():
+            try:
+                return await asyncio.to_thread(fetch_pending_drafts, supabase, 20)
+            except Exception:
+                return []
+
+        # Undecided FYI items — the Inbox's "For your info" section.
+        async def _fyi():
+            try:
+                return await asyncio.to_thread(fetch_fyi_messages, supabase, 20)
+            except Exception:
+                return []
+
         async def _auto_count():
             try:
                 now = datetime.now(timezone.utc)
@@ -4139,19 +4305,23 @@ async def inbox_route(request: Request):
             finally:
                 _sub_ms[label] = round((time.perf_counter() - _s) * 1000, 1)
 
-        (nodes, edges, merges, messages, auto_count) = await asyncio.gather(
-            _timed('pending_nodes', _nodes()),
-            _timed('pending_edges', _edges()),
-            _timed('pending_merges', _merges()),
-            _timed('messages', _messages()),
-            _timed('auto_count', _auto_count()),
-        )
+        (nodes, edges, merges, messages, channel_msgs, drafts, fyi, auto_count) = \
+            await asyncio.gather(
+                _timed('pending_nodes', _nodes()),
+                _timed('pending_edges', _edges()),
+                _timed('pending_merges', _merges()),
+                _timed('messages', _messages()),
+                _timed('channel_messages', _channel_messages()),
+                _timed('drafts', _drafts()),
+                _timed('fyi', _fyi()),
+                _timed('auto_count', _auto_count()),
+            )
 
         total_ms = round((time.perf_counter() - _t0) * 1000, 1)
         print(
             f"[TIMING] /api/inbox total={total_ms}ms "
             f"sub={_sub_ms} "
-            f"rows={{nodes:{len(nodes)},edges:{len(edges)},merges:{len(merges)},messages:{len(messages)},auto_count:{auto_count}}}"
+            f"rows={{nodes:{len(nodes)},edges:{len(edges)},merges:{len(merges)},messages:{len(messages)},channels:{len(channel_msgs)},drafts:{len(drafts)},fyi:{len(fyi)},auto:{auto_count}}}"
         )
 
         return {
@@ -4159,6 +4329,9 @@ async def inbox_route(request: Request):
             "pending_edges": edges,
             "pending_merges": merges,
             "pending_messages": messages,
+            "pending_channel_messages": channel_msgs,
+            "pending_drafts": drafts,
+            "pending_fyi": fyi,
             "auto_decision_count": auto_count,
         }
     except Exception:

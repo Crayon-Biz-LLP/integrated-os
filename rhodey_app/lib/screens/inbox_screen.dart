@@ -26,6 +26,13 @@ class _InboxScreenState extends State<InboxScreen>
   final _api = ApiService();
   final _inboxCache = InboxCache();
   List<DecisionItem> _items = [];
+
+  /// Pending email reply drafts (from the inbox bundle) — rendered in the
+  /// "Email Drafts" section above the decision cards.
+  List<Map<String, dynamic>> _drafts = [];
+
+  /// Undecided FYI items (from the inbox bundle) — "For your info" section.
+  List<Map<String, dynamic>> _fyi = [];
   bool _loading = true;
   String _error = '';
 
@@ -114,7 +121,11 @@ class _InboxScreenState extends State<InboxScreen>
         ? ApiResult.ok(bundle.data!.decisions)
         : await _api.getPendingDecisions();
     if (bundle.success) {
-      setState(() => _autoDecisionCount = bundle.data!.autoDecisionCount);
+      setState(() {
+        _autoDecisionCount = bundle.data!.autoDecisionCount;
+        _drafts = bundle.data!.drafts;
+        _fyi = bundle.data!.fyi;
+      });
     }
     if (!mounted) return;
 
@@ -202,6 +213,8 @@ class _InboxScreenState extends State<InboxScreen>
         return DecisionType.whatsapp;
       case 'call':
         return DecisionType.call;
+      case 'teams':
+        return DecisionType.teams;
       case 'graph_node':
         return DecisionType.person;
       case 'graph_edge':
@@ -444,7 +457,11 @@ class _InboxScreenState extends State<InboxScreen>
           case 'call':
             result = await _api.approveCall(id);
             break;
+          case 'teams':
+            result = await _api.approveTeams(id);
+            break;
           case 'graph_node':
+          case 'clarification':
             result = await _api.approveGraphNode(id);
             break;
           case 'graph_edge':
@@ -498,7 +515,11 @@ class _InboxScreenState extends State<InboxScreen>
         case 'call':
           result = await _api.rejectCall(id);
           break;
+        case 'teams':
+          result = await _api.rejectTeams(id);
+          break;
         case 'graph_node':
+        case 'clarification':
           result = await _api.rejectGraphNode(id);
           break;
         case 'graph_edge':
@@ -660,6 +681,48 @@ class _InboxScreenState extends State<InboxScreen>
   }
 
   // ── Auto-Decision Confirm/Undo (S1#3) ────────────────────────
+
+  // ── Email Drafts ──────────────────────────────────────────
+
+  Future<void> _sendDraft(Map<String, dynamic> draft) async {
+    final draftId = draft['id'] as int?;
+    if (draftId == null) return;
+    final result = await _api.draftAction(draftId, action: 'send');
+    if (!mounted) return;
+    if (result.success) {
+      setState(() => _drafts.removeWhere((d) => d['id'] == draftId));
+      _showSnack('📤 Draft sent', isError: false);
+    } else {
+      _showSnack(result.error ?? 'Failed to send draft');
+    }
+  }
+
+  Future<void> _dropDraft(Map<String, dynamic> draft) async {
+    final draftId = draft['id'] as int?;
+    if (draftId == null) return;
+    final result = await _api.draftAction(draftId, action: 'drop');
+    if (!mounted) return;
+    if (result.success) {
+      setState(() => _drafts.removeWhere((d) => d['id'] == draftId));
+      _showSnack('Draft dropped', isError: false);
+    } else {
+      _showSnack(result.error ?? 'Failed to drop draft');
+    }
+  }
+
+  // ── FYI ───────────────────────────────────────────────────
+
+  Future<void> _acknowledgeFyi(Map<String, dynamic> item) async {
+    final itemId = item['id'] as int?;
+    if (itemId == null) return;
+    final result = await _api.acknowledgeFyi(itemId);
+    if (!mounted) return;
+    if (result.success) {
+      setState(() => _fyi.removeWhere((f) => f['id'] == itemId));
+    } else {
+      _showSnack(result.error ?? 'Failed to acknowledge');
+    }
+  }
 
   Future<void> _confirmAllAutoDecisions() async {
     final result = await _api.post('/api/auto-decisions/confirm');
@@ -877,6 +940,28 @@ class _InboxScreenState extends State<InboxScreen>
                 onApproveEdges: () => _batchApprove('edges'),
                 onApproveNodes: () => _batchApprove('nodes'),
               ),
+
+            // ── Email Drafts (generated reply drafts awaiting approval) ──
+            if (_drafts.isNotEmpty) ...[
+              _SectionLabel('Email Drafts'),
+              ..._drafts.map(
+                (d) => _DraftCard(
+                  draft: d,
+                  onSend: () => _sendDraft(d),
+                  onDrop: () => _dropDraft(d),
+                ),
+              ),
+              const SizedBox(height: 16),
+            ],
+
+            // ── FYI (informational, no decision needed) ──
+            if (_fyi.isNotEmpty) ...[
+              _SectionLabel('For your info'),
+              ..._fyi.map(
+                (f) => _FyiCard(item: f, onAck: () => _acknowledgeFyi(f)),
+              ),
+              const SizedBox(height: 16),
+            ],
 
             // ── Merge Proposals ──
             if (merges.isNotEmpty) ...[
@@ -1109,6 +1194,55 @@ class _ChipButton extends StatelessWidget {
   }
 }
 
+// ── Action Button (local copy — decision_card's is file-private) ──
+
+class _ActionButton extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final Color color;
+  final VoidCallback? onTap;
+
+  const _ActionButton({
+    required this.label,
+    required this.icon,
+    required this.color,
+    this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.1),
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 14, color: color),
+              const SizedBox(width: 4),
+              Text(
+                label,
+                style: TextStyle(
+                  color: color,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 // ── Section Label ───────────────────────────────────────────────
 
 class _SectionLabel extends StatelessWidget {
@@ -1126,6 +1260,187 @@ class _SectionLabel extends StatelessWidget {
           fontSize: 11,
           letterSpacing: 0.8,
         ),
+      ),
+    );
+  }
+}
+
+// ── Email Draft Card (generated reply draft awaiting approval) ────
+
+class _DraftCard extends StatelessWidget {
+  final Map<String, dynamic> draft;
+  final VoidCallback onSend;
+  final VoidCallback onDrop;
+
+  const _DraftCard({
+    required this.draft,
+    required this.onSend,
+    required this.onDrop,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final sender = draft['sender_name'] as String?;
+    final subject = draft['subject'] as String? ?? 'Email draft';
+    final body = (draft['draft_body'] as String? ?? '').trim();
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      decoration: BoxDecoration(
+        color: AppTheme.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppTheme.border, width: 1),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 6),
+            child: Row(
+              children: [
+                const Text('📧', style: TextStyle(fontSize: 14)),
+                const SizedBox(width: 6),
+                Text('DRAFT REPLY', style: AppTheme.monoLabel),
+                const Spacer(),
+                if (sender != null)
+                  Flexible(
+                    child: Text(
+                      sender,
+                      style: AppTheme.caption
+                          .copyWith(color: AppTheme.textTertiary),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            child: Text(
+              subject,
+              style: AppTheme.title.copyWith(fontSize: 14),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          if (body.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 4, 14, 0),
+              child: Text(
+                body,
+                style: AppTheme.bodySmall.copyWith(fontSize: 12),
+                maxLines: 4,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
+            child: Row(
+              children: [
+                _ActionButton(
+                  label: 'Send',
+                  icon: Icons.send,
+                  color: AppTheme.green,
+                  onTap: onSend,
+                ),
+                const Spacer(),
+                _ActionButton(
+                  label: 'Drop',
+                  icon: Icons.delete_outline,
+                  color: AppTheme.textTertiary,
+                  onTap: onDrop,
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── FYI Card (informational — acknowledge to dismiss) ─────────────
+
+class _FyiCard extends StatelessWidget {
+  final Map<String, dynamic> item;
+  final VoidCallback onAck;
+
+  const _FyiCard({required this.item, required this.onAck});
+
+  @override
+  Widget build(BuildContext context) {
+    final channel = item['channel'] as String? ?? 'email';
+    final title = item['title'] as String? ?? 'Untitled';
+    final summary = (item['summary'] as String? ?? '').trim();
+    final sender = item['sender_name'] as String?;
+    final channelIcon = switch (channel) {
+      'whatsapp' => '💬',
+      'call' => '📞',
+      'teams' => '🟣',
+      _ => '📧',
+    };
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      decoration: BoxDecoration(
+        color: AppTheme.surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppTheme.border, width: 1),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 6),
+            child: Row(
+              children: [
+                Text(channelIcon, style: const TextStyle(fontSize: 14)),
+                const SizedBox(width: 6),
+                Text('FYI · ${channel.toUpperCase()}',
+                    style: AppTheme.monoLabel),
+                const Spacer(),
+                if (sender != null)
+                  Flexible(
+                    child: Text(
+                      sender,
+                      style: AppTheme.caption
+                          .copyWith(color: AppTheme.textTertiary),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            child: Text(
+              title,
+              style: AppTheme.title.copyWith(fontSize: 14),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          if (summary.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 4, 14, 0),
+              child: Text(
+                summary,
+                style: AppTheme.bodySmall.copyWith(fontSize: 12),
+                maxLines: 3,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: _ActionButton(
+                label: 'Got it',
+                icon: Icons.done,
+                color: AppTheme.accent,
+                onTap: onAck,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

@@ -79,6 +79,22 @@ async def _process_decision_pulse_impl(auth_secret: str = None, trigger: str = "
         except Exception as e:
             audit_log_sync("decision_pulse", "WARNING", f"Failed to expire old pending decisions: {e}")
 
+        # Expire old FYI items (kept visible ~2 weeks, then dropped so the
+        # Inbox FYI section never rots). Actionable uses a 7-day window;
+        # FYI is informational so it gets a longer, gentler shelf life.
+        try:
+            from core.services.inbox_feed import FYI_MAX_AGE_DAYS, PENDING_CHANNELS
+            fyi_cutoff = (datetime.now(timezone.utc) - timedelta(days=FYI_MAX_AGE_DAYS)).isoformat()
+            supabase.table('messages')\
+                .update({'danny_decision': 'expired'})\
+                .is_('danny_decision', 'null')\
+                .eq('classification', 'fyi')\
+                .in_('channel', PENDING_CHANNELS)\
+                .lt('created_at', fyi_cutoff)\
+                .execute()
+        except Exception as e:
+            audit_log_sync("decision_pulse", "WARNING", f"Failed to expire old FYI items: {e}")
+
         # Revert stale awaiting_details graph items back to pending
         try:
             supabase.table('pending_nodes')\
