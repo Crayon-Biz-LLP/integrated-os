@@ -413,7 +413,7 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list, rejec
             from core.lib.ingest import ingest
             await ingest(
                 text=classification_data.get('summary', '') or subject,
-                source='gmail',
+                source='email',
                 classification='fyi',
                 summary=classification_data.get('summary', '')[:1000],
                 is_human_sender=classification_data.get('is_human_sender', False),
@@ -478,7 +478,7 @@ async def process_email(msg_data: dict, gmail_service, active_tasks: list, rejec
             classification_for_ingest = 'ignored' if dedup_decision == 'skipped' else 'actionable'
             await ingest(
                 text=classification_data.get('summary', '') or suggested_task or subject,
-                source='gmail',
+                source='email',
                 classification=classification_for_ingest,
                 summary=classification_data.get('summary', '')[:1000],
                 suggested_title=suggested_task,                    suggested_project=None,
