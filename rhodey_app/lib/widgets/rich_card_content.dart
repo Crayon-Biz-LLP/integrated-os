@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
+import '../utils/markdown_spans.dart';
 
 // ── Card data types ───────────────────────────────────────────-
 
@@ -502,18 +503,26 @@ class _BriefingInlineCardState extends State<_BriefingInlineCard> {
   static const _sectionLabels = {'work', 'home', 'ideas', 'schedule', 'vault'};
 
   /// Parse the briefing body into (header, bulletLines) section groups.
-  /// Section headers look like "🚀 Work", "🏠 Home", "💡 Ideas".
+  /// Section headers look like "🚀 Work", "🏠 Home", "💡 Ideas" — or, since
+  /// the Aug-10 pulse change, bold markdown like "**Work**". A line that is
+  /// exactly a known label (optionally **bold**-wrapped, optionally emoji
+  /// prefixed) is a section header; anything else under one is a bullet.
   List<_BriefingSection> _sections() {
     final sections = <_BriefingSection>[];
     _BriefingSection? current;
     for (final line in widget.fullText.split('\n')) {
       final t = line.trim();
       if (t.isEmpty) continue;
-      // Header: emoji (non-ASCII char) + one of the known section labels.
+      // Header: emoji (non-ASCII char) + one of the known section labels,
+      // or a bare/`**`-wrapped label line. Strip `*` markers for matching
+      // only — the raw line is kept so the renderer paints the label bold.
+      var candidate =
+          t.replaceAll(RegExp(r'^\*+'), '').replaceAll(RegExp(r'\*+$'), '').trim();
       final headerMatch =
-          RegExp(r'^([^\x00-\x7F]{1,4})\s+([A-Za-z][A-Za-z ]{0,20})$').firstMatch(t);
-      if (headerMatch != null &&
-          _sectionLabels.contains(headerMatch.group(2)!.trim().toLowerCase())) {
+          RegExp(r'^([^\x00-\x7F]{1,4})\s+([A-Za-z][A-Za-z ]{0,20})$')
+              .firstMatch(candidate);
+      final label = headerMatch?.group(2) ?? candidate;
+      if (_sectionLabels.contains(label.trim().toLowerCase())) {
         current = _BriefingSection(t, []);
         sections.add(current);
         continue;
@@ -575,9 +584,14 @@ class _BriefingInlineCardState extends State<_BriefingInlineCard> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        widget.title,
-                        style: AppTheme.body.copyWith(fontSize: 13, fontWeight: FontWeight.w600),
+                      Text.rich(
+                        TextSpan(
+                          style: AppTheme.body.copyWith(
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
+                          children: markdownBoldSpans(widget.title),
+                        ),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -598,31 +612,63 @@ class _BriefingInlineCardState extends State<_BriefingInlineCard> {
           ),
           if (_expanded) ...[
             const SizedBox(height: 6),
-            if (intro.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 4),
-                child: Text(intro, style: AppTheme.body.copyWith(
-                  color: AppTheme.textPrimary,
-                )),
-              ),
-            for (final section in sections) ...[
-              Text(section.header, style: AppTheme.body.copyWith(
-                fontWeight: FontWeight.w700, color: AppTheme.champagne,
-              )),
-              const SizedBox(height: 2),
-              for (final item in section.items)
+            // Sections found → intro + structured sections, each rendered
+            // once. NO sections (plain-text briefing, or headers the parser
+            // can't recognise) → render the full text ONCE. Never both: the
+            // intro collects the whole body when there are no headers, so
+            // showing it next to the fullText would duplicate the briefing
+            // (the Aug-10 double-render regression). All body text goes
+            // through the bold parser so `**Work**` paints as bold Work,
+            // never literal asterisks.
+            if (sections.isNotEmpty) ...[
+              if (intro.isNotEmpty)
                 Padding(
-                  padding: const EdgeInsets.only(bottom: 2),
-                  child: Text(item, style: AppTheme.body.copyWith(
-                    color: AppTheme.textPrimary,
-                  ), maxLines: 2, overflow: TextOverflow.ellipsis),
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Text.rich(
+                    TextSpan(
+                      style: AppTheme.body.copyWith(
+                        color: AppTheme.textPrimary,
+                      ),
+                      children: markdownBoldSpans(intro),
+                    ),
+                  ),
                 ),
-              const SizedBox(height: 4),
-            ],
-            if (sections.isEmpty)
-              Text(widget.fullText, style: AppTheme.body.copyWith(
-                color: AppTheme.textSecondary,
-              )),
+              for (final section in sections) ...[
+                Text.rich(
+                  TextSpan(
+                    style: AppTheme.body.copyWith(
+                      fontWeight: FontWeight.w700,
+                      color: AppTheme.champagne,
+                    ),
+                    children: markdownBoldSpans(section.header),
+                  ),
+                ),
+                const SizedBox(height: 2),
+                for (final item in section.items)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 2),
+                    child: Text.rich(
+                      TextSpan(
+                        style: AppTheme.body.copyWith(
+                          color: AppTheme.textPrimary,
+                        ),
+                        children: markdownBoldSpans(item),
+                      ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                const SizedBox(height: 4),
+              ],
+            ] else
+              Text.rich(
+                TextSpan(
+                  style: AppTheme.body.copyWith(
+                    color: AppTheme.textPrimary,
+                  ),
+                  children: markdownBoldSpans(widget.fullText),
+                ),
+              ),
           ],
         ],
       ),
@@ -670,7 +716,12 @@ class _ClarificationInlineCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 6),
-          Text(fullText ?? title, style: AppTheme.body.copyWith(fontSize: 12)),
+          Text.rich(
+            TextSpan(
+              style: AppTheme.body.copyWith(fontSize: 12),
+              children: markdownBoldSpans(fullText ?? title),
+            ),
+          ),
           if (chips != null && chips.isNotEmpty) ...[
             const SizedBox(height: 8),
             Wrap(

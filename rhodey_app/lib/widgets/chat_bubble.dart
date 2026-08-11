@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/message.dart';
 import '../theme/app_theme.dart';
+import '../utils/markdown_spans.dart';
 
 class ChatBubble extends StatelessWidget {
   final ChatMessage message;
@@ -143,7 +144,17 @@ class ChatBubble extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(message.text, style: AppTheme.body.copyWith(height: 1.5)),
+          // Rhodey's text may carry the server's `**bold**` markdown (e.g.
+          // pulse briefings, inline replies) — render it bold, not literal.
+          // User bubbles keep plain text — their words, unprocessed.
+          isUser
+              ? Text(message.text, style: AppTheme.body.copyWith(height: 1.5))
+              : Text.rich(
+                  TextSpan(
+                    style: AppTheme.body.copyWith(height: 1.5),
+                    children: markdownBoldSpans(message.text),
+                  ),
+                ),
           const SizedBox(height: 4),
           Row(
             mainAxisSize: MainAxisSize.min,
