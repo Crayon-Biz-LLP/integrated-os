@@ -992,6 +992,11 @@ async def build_briefing(supabase=None) -> BriefingResponse:
             src = (e.get("source_label") or "?").strip()
             tgt = (e.get("target_label") or "?").strip()
             rel = (e.get("relationship") or "relates_to").strip()
+            # Sentinel maintenance edges are internal plumbing (memory linkage
+            # artifacts), never user content — they must not leak into the
+            # briefing's Changes section.
+            if "__SENTINEL__" in src or "__SENTINEL__" in tgt or src == "SENTINEL" or tgt == "SENTINEL":
+                continue
             created_raw = e.get("created_at", "")
             created_dt = _parse_dt(created_raw)
             if created_dt is None:
@@ -1007,6 +1012,10 @@ async def build_briefing(supabase=None) -> BriefingResponse:
         for n in new_nodes_res.data or []:
             label = (n.get("label") or "").strip()
             ntype = (n.get("node_type") or "entity").strip()
+            # Same sentinel filter as edges — internal nodes never reach the
+            # user-facing Changes section.
+            if "__SENTINEL__" in label or label == "SENTINEL":
+                continue
             if not label:
                 continue
             created_raw = n.get("created_at", "")
@@ -1233,8 +1242,15 @@ async def build_briefing(supabase=None) -> BriefingResponse:
     # and can name tasks completed since — rebuilding it from the current
     # todo list makes a finished task vanish from the headline immediately.
     # Fail-open: on any error/timeout the stored line above is kept.
+    # When anything was completed since the last pulse, the stored pulse
+    # context is stale — handing it to the live line as flavor lets the model
+    # echo a task that no longer exists (the "gas booking still in the
+    # briefing" ghost). Drop the flavor so the live line can only reference
+    # the live board.
+    has_completions = any((d.get("icon") == "✅") for d in delta_items)
+    live_insight = None if has_completions else (insight_text or None)
     live_line = await _live_voice_line(
-        tasks, events, insight_text=insight_text or None
+        tasks, events, insight_text=live_insight
     )
     if live_line:
         voice_line = live_line

@@ -24,6 +24,11 @@ from core.webhook import (
     send_draft_reply,
     process_email_pending_decision,
 )
+from core.services.briefing_refresh import (
+    briefing_cache_key,
+    fire_briefing_refresh,
+    trigger_briefing_refresh,
+)
 from core.pulse.graph import process_pending_edge_decision
 from api.briefing import _snooze_ok, _notes_ok
 from core.skills.whatsapp_ingest import process_whatsapp_message
@@ -641,20 +646,6 @@ async def get_persona_route(request: Request):
         return None
 
 
-_HOME_FEED_BRIEFING_CACHE_KEY = "rhodey:briefing:home_feed:v1"
-
-
-def _briefing_cache_key() -> str:
-    """Tenant-scoped briefing cache key (M5).
-
-    The briefing payload is tenant-specific — a global key would serve
-    tenant B tenant A's cached briefing (silent cross-tenant leak). Key on
-    the tenant id; unscoped legacy runs keep the bare key.
-    """
-    uid = get_tenant()
-    return f"{_HOME_FEED_BRIEFING_CACHE_KEY}:{uid}" if uid else _HOME_FEED_BRIEFING_CACHE_KEY
-
-
 async def _home_feed_briefing():
     """Build the briefing payload for /api/home-feed (defensive wrapper).
 
@@ -668,7 +659,7 @@ async def _home_feed_briefing():
     from api.briefing import build_briefing
     from core.lib.redis_cache import cache_get, cache_set
 
-    cache_key = _briefing_cache_key()
+    cache_key = briefing_cache_key()
     try:
         cached = cache_get(cache_key)
         if cached is not None and isinstance(cached, dict):
@@ -807,44 +798,11 @@ async def _run_web_message_pipeline(fake_update: dict, session_id: str | None) -
         resulting_session_id = get_captured_session_id() or session_id
 
         # ── Briefing rebuild + silent push (off the ack path) ──
-        try:
-            supabase = tenant_aware_client()
-            from api.briefing import build_briefing
-            briefing = await build_briefing(supabase)
-            briefing_update = json.loads(json.dumps(briefing, default=str))
-
-            from core.services.push_notification import send_silent_push
-            push_payload = {"type": "briefing_refresh"}
-
-            headline = briefing_update.get('voice_line')
-            if not headline:
-                headline = briefing_update.get('context_bar')
-            if not headline:
-                headline = briefing_update.get('greeting', '')
-
-            mode = briefing_update.get('home_mode', 'proceed')
-            insights_list = []
-
-            if mode == 'sprint':
-                nxt = briefing_update.get('next_event')
-                if nxt:
-                    insights_list.append({"text": f"🎯 Sprinting: {nxt}", "link": "rhodey://today"})
-                v_urg = briefing_update.get('vaulted_urgent_count', 0)
-                if v_urg > 0:
-                    insights_list.append({"text": f"🔴 {v_urg} urgent", "link": "rhodey://surface"})
-            elif mode == 'decide':
-                pend = briefing_update.get('pending_count', 0)
-                if pend > 0:
-                    insights_list.append({"text": f"⚖️ {pend} pending decisions", "link": "rhodey://inbox"})
-            else:
-                for ins in briefing_update.get('insights', []):
-                    insights_list.append({"text": ins, "link": "rhodey://surface"})
-
-            push_payload['headline'] = headline
-            push_payload['insights_json'] = json.dumps(insights_list)
-            await send_silent_push(push_payload)
-        except Exception as brief_err:
-            print(f"Send-message briefing/push error (non-critical): {brief_err}")
+        # Shared trigger (core.services.briefing_refresh): invalidates the
+        # cache first, rebuilds, repopulates the cache, pushes a silent
+        # briefing_refresh — audited and retried once on failure (the old
+        # block swallowed errors with a bare print and had no retry).
+        await trigger_briefing_refresh(source="send_message")
 
         return response_text, resulting_session_id
     finally:
@@ -1481,6 +1439,10 @@ async def _complete_task(task_id: int, new_status: str = "done") -> dict:
         else:
             skip_msg = "No linked calendar event."
         await write_outcome_memory(task.get('title', 'Untitled Task'))
+        # A completed instance is still a state change — refresh the live
+        # briefing so the focal card/voice line catch up (same guarantee as
+        # the regular completion path below).
+        fire_briefing_refresh(source="task_status_change")
         return {"success": True, "task": task, "message": f"Marked this week's instance done. {skip_msg} Series continues."}
 
     g_id = task.get('google_task_id')
@@ -1531,14 +1493,27 @@ async def _complete_task(task_id: int, new_status: str = "done") -> dict:
     # cached briefing (2-min TTL) keeps serving the completed task as its
     # top_focal_item / voice-line subject — the server-side half of the
     # "completed task still showing on the focal card" ghost.
+    #
+    # Keep this even though fire_briefing_refresh() also invalidates: when a
+    # refresh is DEBOUNCED (a rebuild happened <2min ago), fire only nudges
+    # and skips invalidation — this synchronous delete is what still
+    # guarantees the next fetch rebuilds fresh for this completion.
     try:
         from core.lib.redis_cache import cache_delete
-        cache_delete(_briefing_cache_key())
+        cache_delete(briefing_cache_key())
     except Exception:
         pass
 
     new_task_res = supabase.table('tasks').select('*').eq('supersedes_id', task_id).eq('is_current', True).single().execute()
     new_task = new_task_res.data if new_task_res.data else task
+
+    # Fire the shared live-briefing refresh (background, off the ack path):
+    # rebuild + cache invalidation + briefing_refresh push so the app catches
+    # up immediately. Aug-11 fix — app-side completions (PATCH status /
+    # focal-action) never triggered the rebuild before; only send-message
+    # did. The cache invalidation above guarantees the next fetch is fresh
+    # even if the background task dies with the container.
+    fire_briefing_refresh(source="task_status_change")
 
     return {"success": True, "task": new_task}
 
@@ -1873,6 +1848,7 @@ async def _reject_merge_proposal(supabase, merge_proposal_id: int) -> dict:
         )
     except Exception:
         pass
+    fire_briefing_refresh(source="merge_reject")
     return {"success": True, "message": f"Keep both — approved '{pending_label}' as separate node."}
 
 
@@ -1926,6 +1902,7 @@ async def _accept_merge_proposal(supabase, merge_proposal_id: int, swap: bool = 
                                    outcome='corrected', source='web_ui')
         except Exception:
             pass
+        fire_briefing_refresh(source="merge_accept")
         return {"success": True, "message": f"Pending label '{pending_label}' is now aliased to the target node."}
 
     loser_id = target_canonical if swap else source_node_id
@@ -1953,6 +1930,7 @@ async def _accept_merge_proposal(supabase, merge_proposal_id: int, swap: bool = 
     except Exception:
         pass
 
+    fire_briefing_refresh(source="merge_accept")
     return {"success": True, "message": f"Merged '{pending_label}' into canonical node."}
 
 
@@ -2258,6 +2236,10 @@ async def focal_action_route(request: Request):
             if not result.get("persisted"):
                 return {"success": False, "message": "Couldn't defer this item — please try again."}
 
+            # The board changed (item hidden behind a deferral) — refresh the
+            # live briefing so the focal card/voice line catch up immediately.
+            fire_briefing_refresh(source="focal_snooze")
+
             # 3rd-tap feedback is a learning signal: store it AND feed it to
             # the observation + decision loop so the "why" actually trains
             # the OS (the "snooze without learning" anti-pattern).
@@ -2309,6 +2291,8 @@ async def focal_action_route(request: Request):
             # AND emit a correction signal for the learning loop. If the
             # deferral fails, still record the correction but be honest about it.
             persisted = await _persist_deferral()
+            if persisted:
+                fire_briefing_refresh(source="focal_correct")
             # Correction: emit observation for learning loop
             try:
                 await emit_observation(

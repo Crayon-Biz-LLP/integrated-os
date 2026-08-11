@@ -7,6 +7,7 @@ import asyncio
 import uuid
 from core.lib.audit_logger import audit_log_sync
 from core.lib.telemetry import emit_observation
+from core.services.briefing_refresh import fire_briefing_refresh
 from core.lib.graph_rules import find_similar_node, resolve_alias, canonicalize_relationship, normalize_label_display, get_canonical_id, normalize_label, NOISE_LABELS, insert_pending_edge, make_memory_preview
 from core.clarifier import evaluate_node, evaluate_edge, store_and_send_clarification
 from core.decisions import record_decision
@@ -635,6 +636,7 @@ async def process_graph_pending_decision(pending_id: int, decision: str, context
                 outcome='rejected',
                 source='decision_pulse'
             )
+            fire_briefing_refresh(source="graph_node_decision")
             return {"success": True, "action": "rejected", "message": f"Rejected node and related edges for {label}"}
 
         # ── Merge Proposed: Approve = accept merge, Reject = create standalone ──
@@ -652,6 +654,7 @@ async def process_graph_pending_decision(pending_id: int, decision: str, context
                         execute_graph_node_merge(source_node_id, winner_id, 'merge_accept')
                     supabase.table('pending_nodes').update({'status': 'approved'}).eq('id', pending_id).execute()
                     resolve_merge_proposal(mp['id'], 'accepted')
+                fire_briefing_refresh(source="graph_node_decision")
                 return {"success": True, "action": "merged", "message": f"Merged '{pending_item['label']}' into target node."}
             elif decision == 'reject':
                 label = pending_item['label']
@@ -662,6 +665,7 @@ async def process_graph_pending_decision(pending_id: int, decision: str, context
                     supabase.table('pending_nodes').update({'status': 'approved'}).eq('id', pending_id).execute()
                     if mp:
                         resolve_merge_proposal(mp['id'], 'rejected')
+                    fire_briefing_refresh(source="graph_node_decision")
                 return result
 
         # ── Approve ──
@@ -746,6 +750,8 @@ async def process_graph_pending_decision(pending_id: int, decision: str, context
                 outcome='confirmed',
                 source='decision_pulse'
             )
+            if result.get("success"):
+                fire_briefing_refresh(source="graph_node_decision")
             return result
 
     except Exception as e:
@@ -790,6 +796,7 @@ async def process_pending_edge_decision(pending_id: int, decision: str, new_sour
                 outcome='rejected',
                 source='decision_pulse'
             )
+            fire_briefing_refresh(source="graph_edge_decision")
             return {"success": True, "action": "rejected", "message": "Rejected edge."}
             
         if decision == 'approve':
@@ -922,6 +929,7 @@ async def process_pending_edge_decision(pending_id: int, decision: str, new_sour
             except Exception as backfill_err:
                 audit_log_sync("pulse", "WARNING", f"Edge approval backfill failed for {rel} '{s_label}': {backfill_err}")
 
+            fire_briefing_refresh(source="graph_edge_decision")
             return {"success": True, "action": "approved", "message": f"Approved edge: {s_label} → {rel} → {t_label}"}
             
     except Exception as e:

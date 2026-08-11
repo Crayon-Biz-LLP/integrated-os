@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from core.lib.duplicate_guard import check_duplicate
 from core.lib.audit_logger import audit_log_sync
 from core.lib.telemetry import emit_observation
+from core.services.briefing_refresh import fire_briefing_refresh
 from core.lib.graph_rules import resolve_alias
 
 # M3 sweep: the module-wide binding is now the tenant-aware facade. Every
@@ -151,6 +152,10 @@ async def _process_channel_pending_decision(channel: str, pending_id: int, decis
         )
     except Exception as dec_err:
         audit_log_sync("webhook", "WARNING", f"Failed to record channel decision: {dec_err}")
+
+    # The board changed (an item was approved/rejected) — refresh the live
+    # briefing so the app catches up immediately.
+    fire_briefing_refresh(source=f"{channel}_decision")
 
     return {"success": True, "message": f"Task from {channel} {action_msg}.", "action": decision_val}
 
