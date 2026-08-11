@@ -471,11 +471,19 @@ ALTER TABLE public.pending_graph_edges_archive
 -- ── batch_whatsapp_message ────────────────────────────────────────────────
 DROP FUNCTION IF EXISTS public.batch_whatsapp_message(text, text, text, timestamp with time zone, text, text, text, text, boolean, text, timestamp with time zone);
 DROP FUNCTION IF EXISTS public.batch_whatsapp_message(text, text, text, timestamp with time zone, text, text, text, text, boolean, text, timestamp with time zone, uuid);
+DROP FUNCTION IF EXISTS public.batch_whatsapp_message(text, text, text, timestamp with time zone, text, text, text, text, boolean, text, timestamp with time zone, text, text);
+DROP FUNCTION IF EXISTS public.batch_whatsapp_message(text, text, text, timestamp with time zone, text, text, text, text, boolean, text, timestamp with time zone, text, text, uuid);
 -- Param named p_owner (not owner_id): this function's INSERT target list
 -- contains the literal column `owner_id`, which a same-named PL/pgSQL param
 -- would make ambiguous (PG17 hard-error). The facade injects p_owner for
 -- this RPC (see _RPC_OWNER_PARAM in core/services/db.py).
-CREATE OR REPLACE FUNCTION public.batch_whatsapp_message(p_sender_id text, p_sender_name text, p_body text, p_received_at timestamp with time zone, p_classification text, p_summary text, p_suggested_title text, p_suggested_project text, p_has_memory_value boolean, p_linked_person_name text, p_expires_at timestamp with time zone, p_owner uuid DEFAULT NULL::uuid)
+--
+-- Phase 1 hardening (thread-aware classification): the app now passes
+-- p_chat_id + p_participant (Stage-0 split, db/21). Merging/locking is by
+-- CHAT, not sender, so a group's rapid replies from DIFFERENT participants
+-- batch into one episode row; the split is persisted into metadata. Owner
+-- scoping kept (p_owner injected by the facade).
+CREATE OR REPLACE FUNCTION public.batch_whatsapp_message(p_sender_id text, p_sender_name text, p_body text, p_received_at timestamp with time zone, p_classification text, p_summary text, p_suggested_title text, p_suggested_project text, p_has_memory_value boolean, p_linked_person_name text, p_expires_at timestamp with time zone, p_chat_id text DEFAULT NULL::text, p_participant text DEFAULT NULL::text, p_owner uuid DEFAULT NULL::uuid)
  RETURNS jsonb
  LANGUAGE plpgsql
 AS $function$
@@ -484,16 +492,20 @@ DECLARE
     existing   messages;
     is_upgrade BOOLEAN;
     inserted_id BIGINT;
+    merge_key  TEXT;
 BEGIN
-    -- Advisory lock: serializes per-sender within the transaction.
-    lock_key := hashtext(p_sender_id)::bigint;
+    -- Merge key: chat_id when provided (new pipeline), else sender_id (legacy).
+    merge_key := COALESCE(NULLIF(p_chat_id, ''), p_sender_id);
+
+    -- Advisory lock: serializes per-CHAT within the transaction.
+    lock_key := hashtext(merge_key)::bigint;
     PERFORM pg_advisory_xact_lock(lock_key);
 
-    -- Look for existing pending row within 3-minute window
+    -- Look for existing pending row within 3-minute window (same chat)
     SELECT * INTO existing
     FROM messages
     WHERE channel = 'whatsapp'
-      AND sender_id = p_sender_id
+      AND COALESCE(metadata->>'chat_id', sender_id) = merge_key
       AND danny_decision IS NULL
       AND received_at >= NOW() - INTERVAL '3 minutes'
       AND (p_owner IS NULL OR messages.owner_id = p_owner)
@@ -530,7 +542,9 @@ BEGIN
             p_has_memory_value, p_received_at, 'completed',
             jsonb_build_object(
                 'sender_phone', p_sender_id,
-                'linked_person_name', p_linked_person_name
+                'linked_person_name', p_linked_person_name,
+                'chat_id', merge_key,
+                'participant', p_participant
             ),
             p_expires_at,
             p_owner

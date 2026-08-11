@@ -1,3 +1,19 @@
+"""WhatsApp ingest — hardened classification pipeline.
+
+Pipeline (Phase 1 of the thread-aware classification design):
+  Stage 0  split_chat_identity   → chat_id + participant (exact chat keys)
+  Stage A  classify_sieve        → free deterministic noise drop (media/emoji/
+                                   reactions/automated senders & notifications)
+  Stage B  should_escalate       → free cost filter: only ask-like messages
+                                   reach the LLM
+  Stage C  classify_whatsapp_message → LLM with EPISODE CONTEXT (same chat,
+                                   30-min silence boundary, ≤12 msgs) + graph
+                                   knowledge + salience signals
+
+All stages fail open (never 500 the ingest); the LLM is only called for the
+ask fraction. Verified against the golden set (tests/golden/whatsapp_classify).
+"""
+
 from core.llm.constants import CLASSIFICATION_MODEL
 from core.llm import get_embedding
 import json
@@ -8,24 +24,67 @@ from core.pulse.entity_extractor import extract_and_link_entities
 from core.services.db import tenant_aware_client
 from core.services.llm import call_gemini_classify
 from core.lib.time_utils import resolve_expiry
+from core.lib.chat_split import split_chat_identity, normalize_chat_key
+from core.lib.message_sieve import classify_sieve
+from core.lib.ask_detector import should_escalate
+from core.lib.episode_context import (
+    fetch_episode,
+    format_episode_lines,
+    resolve_graph_knowledge,
+)
 
 supabase = tenant_aware_client()
 
-NOREPLY_PATTERNS = [
-    'noreply', 'no-reply', 'donotreply', 'notification',
-    'alert', 'bot', 'automated', 'service'
-]
 
+async def classify_whatsapp_message(
+    sender_name: str,
+    sender_phone: str,
+    message_text: str,
+    chat_id: str = "",
+    episode_lines: list[str] | None = None,
+    graph_knowledge: str = "",
+    user_name: str | None = None,
+) -> dict:
+    """LLM classification WITH thread + graph context (Stage C).
 
-async def classify_whatsapp_message(sender_name: str, sender_phone: str, message_text: str) -> dict:
+    Args:
+        sender_name: sender display name (may be "Chat: Participant")
+        sender_phone: sender id / chat stamp
+        message_text: the message body
+        chat_id: Stage-0 chat key (group prefix or 1:1 name)
+        episode_lines: rendered episode window lines (oldest first)
+        graph_knowledge: compact resolved-knowledge lines (or "")
+        user_name: the user's name (mention detection)
+    """
     from core.services.user_settings import resolve_user_name
-    _user_name = resolve_user_name()
+    _user_name = user_name or resolve_user_name()
+
+    episode_section = ""
+    if episode_lines:
+        episode_section = (
+            "EPISODE CONTEXT (recent messages in this chat, oldest first — "
+            "use these only as context for the NEW message):\n"
+            + "\n".join(episode_lines)
+            + "\n"
+        )
+
+    graph_section = ""
+    if graph_knowledge:
+        graph_section = f"KNOWLEDGE GRAPH (verified context — if a name is not here it is unknown, do not guess):\n{graph_knowledge}\n"
+
+    mention_hint = ""
+    if user_name:
+        mention_hint = (
+            f"\nIf the message mentions {_user_name} (or asks about them), set "
+            f'"mentions_user": true.'
+        )
+
     prompt = f"""You are classifying a WhatsApp message for {_user_name}.
 
 MAILBOX CONTEXT: This is {_user_name}'s PERSONAL WhatsApp. It receives messages from family, friends, church contacts, and personal relationships. Work-related messages (clients, vendors, team) should be treated as actionable.
 
 Sender: {sender_name or sender_phone}
-Message: {message_text[:1000]}
+Chat: {chat_id or (sender_name or sender_phone)}{episode_section}{graph_section}NEW MESSAGE: {message_text[:1000]}
 
 CLASSIFICATION RULES
 
@@ -33,10 +92,11 @@ CLASSIFY AS "ignored" IF ANY:
 - Automated or service message (OTP, notification, delivery update, payment alert)
 - Group broadcast or mass-forwarded message with no personal context
 - Promotional or spam message from an unknown number
+- Trivial chit-chat, reactions, or casual filler that is NOT worth {_user_name} seeing
 
-CLASSIFY AS "fyi" IF:
-- A real person sharing information, updates, or casual conversation — no response needed
-- A forwarded message worth noting but requiring no action
+CLASSIFY AS "fyi" ONLY IF:
+- A real person sharing information, updates, or context that is genuinely worth {_user_name} seeing — but no response or action is needed
+- "fyi" means WORTH SEEING. Do NOT mark ordinary chit-chat as fyi — that is "ignored".
 
 CLASSIFY AS "actionable" IF:
 - A real person asking {_user_name} to do something, respond, decide, coordinate, or take action
@@ -62,6 +122,14 @@ has_memory_value:
 - true if the message contains a decision, commitment, relationship context, or information worth remembering weeks later
 - false for routine or trivial chat
 
+mentions_user:
+- true if the message mentions {_user_name} by name or asks something of them
+- false otherwise
+
+urgency:
+- "urgent" only if the message signals urgency (urgent, asap, today, deadline)
+- otherwise "normal"; "routine" for pure information
+
 Return ONLY valid JSON, NO markdown, NO explanation:
 {{
   "classification": "ignored|fyi|actionable",
@@ -69,8 +137,10 @@ Return ONLY valid JSON, NO markdown, NO explanation:
   "suggested_title": "verb-first task or null",
   "suggested_project": "project tag or null",
   "linked_person_name": "name or null",
-  "has_memory_value": true or false
-}}"""
+  "has_memory_value": true or false,
+  "mentions_user": true or false,
+  "urgency": "urgent|normal|routine"
+}}{mention_hint}"""
 
     response = await call_gemini_classify(
         prompt,
@@ -84,9 +154,33 @@ Return ONLY valid JSON, NO markdown, NO explanation:
         return {"classification": "fyi", "summary": "Unparseable message", "suggested_title": None, "suggested_project": None, "linked_person_name": None, "has_memory_value": False}
 
 
+def _ignored_row(sender_name, sender_phone, chat_id, participant, message_text, now_iso, summary, expires_iso):
+    metadata = {"sender_phone": sender_phone, "chat_id": chat_id}
+    if participant:
+        metadata["participant"] = participant
+    return {
+        "channel": "whatsapp",
+        "source": "whatsapp",
+        "sender_name": sender_name or sender_phone,
+        "sender_id": sender_phone,
+        "body": message_text.strip(),
+        "classification": "ignored",
+        "summary": summary,
+        "suggested_title": None,
+        "suggested_project": None,
+        "has_memory_value": False,
+        "received_at": now_iso,
+        "processing_status": "completed",
+        "metadata": metadata,
+        "danny_decision": "skipped",
+        "expires_at": expires_iso,
+    }
+
+
 async def process_whatsapp_message(sender_name: str, sender_phone: str, message_text: str, received_at: str = None) -> dict:
     print(f"Processing WhatsApp message from {sender_name or sender_phone}: {message_text[:60]}...")
 
+    # ── Dedup (unchanged) ────────────────────────────────────────────
     existing = supabase.table('messages')\
         .select('id')\
         .eq('channel', 'whatsapp')\
@@ -106,50 +200,62 @@ async def process_whatsapp_message(sender_name: str, sender_phone: str, message_
     expires_at = resolve_expiry(message_text, created_at_dt)
     expires_iso = expires_at.isoformat() if expires_at else None
 
-    if any(p in (sender_name or sender_phone).lower() for p in NOREPLY_PATTERNS):
+    # ── Stage 0: exact chat identity ─────────────────────────────────
+    identity = split_chat_identity(sender_phone)
+    chat_id = identity["chat_id"] or normalize_chat_key(sender_name)
+    participant = identity["participant"]
+
+    # ── Stage A: deterministic sieve (free) ──────────────────────────
+    sieve = classify_sieve(message_text, sender_name=sender_name, participant=participant)
+    if sieve["noise"]:
+        row = _ignored_row(sender_name, sender_phone, chat_id, participant,
+                           message_text, now_iso, f"Sieve: {sieve['reason']}", expires_iso)
+        supabase.table('messages').insert(row).execute()
+        print(f"[sieve:{sieve['reason']}] {sender_name or sender_phone}: {message_text[:60]}")
+        return {"status": "ignored", "classification": "ignored", "stage": "sieve"}
+
+    # ── Stage B: ask-detector (free) ─────────────────────────────────
+    from core.services.user_settings import resolve_user_name
+    _user_name = resolve_user_name()
+    ask = should_escalate(message_text, user_name=_user_name)
+    if not ask["escalate"]:
+        row = _ignored_row(sender_name, sender_phone, chat_id, participant,
+                           message_text, now_iso, "No ask detected — not worth surfacing", expires_iso)
+        supabase.table('messages').insert(row).execute()
+        print(f"[ask-detector:no-escalation] {sender_name or sender_phone}: {message_text[:60]}")
+        return {"status": "ignored", "classification": "ignored", "stage": "ask_detector"}
+
+    # ── Stage C: context-aware LLM classification ────────────────────
+    try:
+        episode = fetch_episode(supabase, chat_id, now_iso)
+        episode_lines = format_episode_lines(episode)
+        graph_knowledge = resolve_graph_knowledge(supabase, sender_name, chat_id, _user_name)
+        classification_data = await classify_whatsapp_message(
+            sender_name, sender_phone, message_text,
+            chat_id=chat_id,
+            episode_lines=episode_lines,
+            graph_knowledge=graph_knowledge,
+            user_name=_user_name,
+        )
+    except Exception as e:
+        print(f"Classification failed for {sender_phone}: {e}")
         classification_data = {
-            "classification": "ignored", "summary": "Automated or no-reply sender",
+            "classification": "ignored", "summary": "Classification error",
             "suggested_title": None, "suggested_project": None,
-            "linked_person_name": None, "has_memory_value": False
+            "linked_person_name": None, "has_memory_value": False,
         }
-    else:
-        try:
-            classification_data = await classify_whatsapp_message(sender_name, sender_phone, message_text)
-        except Exception as e:
-            print(f"Classification failed for {sender_phone}: {e}")
-            classification_data = {
-                "classification": "ignored", "summary": "Classification error",
-                "suggested_title": None, "suggested_project": None,
-                "linked_person_name": None, "has_memory_value": False
-            }
 
     classification = classification_data.get('classification', 'ignored')
 
     if classification == 'ignored':
-        row = {
-            "channel": "whatsapp",
-            "source": "whatsapp",
-            "sender_name": sender_name or sender_phone,
-            "sender_id": sender_phone,
-            "body": message_text.strip(),
-            "classification": classification,
-            "summary": classification_data.get('summary', ''),
-            "suggested_title": classification_data.get('suggested_title'),
-            "suggested_project": classification_data.get('suggested_project'),
-            "has_memory_value": classification_data.get('has_memory_value', False),
-            "received_at": now_iso,
-            "processing_status": "completed",
-            "metadata": {
-                "sender_phone": sender_phone
-            },
-            "danny_decision": "skipped",
-            "expires_at": expires_iso
-        }
+        row = _ignored_row(sender_name, sender_phone, chat_id, participant,
+                           message_text, now_iso,
+                           classification_data.get('summary', 'Ignored'), expires_iso)
         supabase.table('messages').insert(row).execute()
         print(f"[ignored] {sender_name or sender_phone}: {message_text[:60]}")
         return {"status": "ignored", "classification": classification}
 
-    # Actionable and FYI: Atomically batch or insert via RPC
+    # ── Actionable and FYI: atomically batch or insert via RPC ───────
     rpc_args = {
         'p_sender_id': sender_phone,
         'p_sender_name': sender_name or sender_phone,
@@ -162,12 +268,14 @@ async def process_whatsapp_message(sender_name: str, sender_phone: str, message_
         'p_has_memory_value': classification_data.get('has_memory_value', False),
         'p_linked_person_name': classification_data.get('linked_person_name'),
         'p_expires_at': expires_iso,
+        'p_chat_id': chat_id,
+        'p_participant': participant,
     }
-    
+
     result = supabase.rpc('batch_whatsapp_message', rpc_args).execute()
     action = result.data.get('action')
     final_class = result.data.get('classification', classification)
-    
+
     if action == 'batched':
         print(f"[{final_class}] {sender_phone}: Batched into row {result.data['message_id']}")
         return {"status": "batched", "classification": final_class}

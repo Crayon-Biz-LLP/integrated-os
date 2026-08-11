@@ -1,0 +1,756 @@
+[
+  {
+    "id": "golden_4",
+    "chat_id": "ACC Elders + Danny",
+    "category": "work/urgent scheduling ask",
+    "messages": [
+      {
+        "participant": "Abhishek ACC",
+        "sender_name": "ACC Elders + Danny: Abhishek ACC",
+        "body": "Any pending items from our side?",
+        "received_at": "2026-07-24T14:52:30.733079+00:00",
+        "current_classification": "actionable",
+        "current_title": "Check and update ACC Elders on pending items"
+      },
+      {
+        "participant": "Abhishek ACC",
+        "sender_name": "ACC Elders + Danny: Abhishek ACC",
+        "body": "Yashwant Daniel we're all logged in",
+        "received_at": "2026-07-24T15:03:26.809576+00:00",
+        "current_classification": "actionable",
+        "current_title": "Join ACC elders meeting"
+      },
+      {
+        "participant": "Abhishek ACC",
+        "sender_name": "ACC Elders + Danny: Abhishek ACC",
+        "body": "Thanks Danny for clearing up a lot of pending items. Lets work on closing the rest as well to have a clean slate. Some other items to look at when presenting next time. 1) Cumulative needed for Local/Outstation outreach 2) Gilgal continues to be pedning even when done quarterly - so what do we do? 3) Close out items pending (outstanding advances) from last financial year first as it affects audit ",
+        "received_at": "2026-07-24T15:23:58.884048+00:00",
+        "current_classification": "actionable",
+        "current_title": "Resolve pending ACC audit items and financial reports"
+      },
+      {
+        "participant": "Abhishek Paul ACC",
+        "sender_name": "ACC Elders + Danny: Abhishek Paul ACC",
+        "body": "Ok, still seems on the higher side (2.9L in Apr, 1.2L in May, 2.7L in June). Can you share the breakup as well for these 3 months to understand the spend better? If there's anything else that's relevant also please share. Not urgent. We can also talk sometime in the evening if easier.",
+        "received_at": "2026-08-11T02:59:39.395454+00:00",
+        "current_classification": "actionable",
+        "current_title": "Share expense breakup for April, May, and June with Abhishek Paul"
+      }
+    ],
+    "target_participant": "Marcus Durai",
+    "target": "Please let me know when we could talk about 2 issues on the CNF account. Bring Abhishek/ Danny into the call if necessary. Quite urgent\n---\nFrom Henry\n---\nAbhishek and Danny possible today ? If yes what time",
+    "expected": {
+      "classification": "actionable",
+      "suggested_title": "Talk with Marcus Durai about 2 issues on the CNF account \u2014 urgent, include Abhishek/Danny",
+      "mentions_user": true,
+      "urgency": "urgent"
+    },
+    "survives_sieve": true,
+    "escalates": true,
+    "raw_sender_id": "ACC Elders + Danny: Marcus Durai"
+  },
+  {
+    "id": "golden_2",
+    "chat_id": "CirroCraft - Paulsons Ledgers",
+    "category": "work/urgent scheduling ask",
+    "messages": [
+      {
+        "participant": "Nathan",
+        "sender_name": "CirroCraft - Paulsons Ledgers: Nathan",
+        "body": "\u21b7 Forwarded so that we can proceed with the ITR filing\n---\nAppa uncle do you mind taking a look, please?",
+        "received_at": "2026-07-29T06:04:00.114794+00:00",
+        "current_classification": "actionable",
+        "current_title": "File ITR with CirroCraft documents"
+      },
+      {
+        "participant": "Appa",
+        "sender_name": "CirroCraft - Paulsons Ledgers: Appa",
+        "body": "Sent a picture\n---\nCan you please ask the auditor to clarify the above difference",
+        "received_at": "2026-07-29T11:53:24.180169+00:00",
+        "current_classification": "actionable",
+        "current_title": "Ask auditor to clarify difference in Paulsons Ledgers"
+      },
+      {
+        "participant": "Nathan",
+        "sender_name": "CirroCraft - Paulsons Ledgers: Nathan",
+        "body": "Have shared it with them. Also shared our GST creds so they can check on their side",
+        "received_at": "2026-07-29T12:02:26.298255+00:00",
+        "current_classification": "actionable",
+        "current_title": "Verify GST credential sharing status with CirroCraft"
+      }
+    ],
+    "target_participant": "Nathan",
+    "target": "From our auditor, uncle. Could you please take a look?",
+    "expected": {
+      "classification": "actionable",
+      "suggested_title": "Review the auditor's message/attachment from Nathan",
+      "mentions_user": false,
+      "urgency": "normal"
+    },
+    "survives_sieve": true,
+    "escalates": true,
+    "raw_sender_id": "CirroCraft - Paulsons Ledgers: Nathan"
+  },
+  {
+    "id": "golden_5",
+    "chat_id": "Mohammed Yazir Crayon Employee",
+    "category": "work/urgent scheduling ask",
+    "messages": [
+      {
+        "participant": null,
+        "sender_name": "Mohammed Yazir Crayon Employee",
+        "body": "Ok \ud83d\udc4d",
+        "received_at": "2026-07-30T00:53:27.289721+00:00",
+        "current_classification": "fyi",
+        "current_title": null
+      }
+    ],
+    "target_participant": null,
+    "target": "Give USA git access for this id GitHub Username: Bhakiyarathi\n---\nAnd for me please give me a git write access for IAM I can\u2019t push anything",
+    "expected": {
+      "classification": "actionable",
+      "suggested_title": "Grant USA git access for Bhakiyarathi and Mohammed Yazir",
+      "mentions_user": false,
+      "urgency": "normal"
+    },
+    "survives_sieve": true,
+    "escalates": true,
+    "raw_sender_id": "Mohammed Yazir Crayon Employee"
+  },
+  {
+    "id": "golden_8",
+    "chat_id": "AM",
+    "category": "personal/family request",
+    "messages": [
+      {
+        "participant": null,
+        "sender_name": "AM",
+        "body": "i wanted something like Date: Day 1: Completed A, B & C Date: Day 2: Completed D, E & F Date: Day 3: Completed G, H & I\n---\nsorry am i communicating right\n---\njust a minute stepping out and calling you",
+        "received_at": "2026-07-27T10:51:56.21856+00:00",
+        "current_classification": "actionable",
+        "current_title": "Adopt task progress tracking format"
+      },
+      {
+        "participant": null,
+        "sender_name": "AM",
+        "body": "Sorry more people joined\n---\nAm leaving office now\n---\nMahabs",
+        "received_at": "2026-07-27T11:49:46.397937+00:00",
+        "current_classification": "actionable",
+        "current_title": "Update plans for extra guests"
+      },
+      {
+        "participant": null,
+        "sender_name": "AM",
+        "body": "Yes received \ud83d\ude4f",
+        "received_at": "2026-07-28T05:39:24.903247+00:00",
+        "current_classification": "fyi",
+        "current_title": null
+      },
+      {
+        "participant": null,
+        "sender_name": "AM",
+        "body": "hi can we text please\n---\nStaff page ?",
+        "received_at": "2026-08-05T09:35:36.628757+00:00",
+        "current_classification": "actionable",
+        "current_title": "Reply to AM about switching to text"
+      },
+      {
+        "participant": null,
+        "sender_name": "AM",
+        "body": "Let us sit on all the items on Friday. That way I can give feedback at one shot. Does that work.",
+        "received_at": "2026-08-05T09:39:09.602307+00:00",
+        "current_classification": "actionable",
+        "current_title": "Confirm Friday meeting with AM for feedback session"
+      }
+    ],
+    "target_participant": null,
+    "target": "Hi Yashwant. Please look into what will be needed to go live tomorrow once we review. Any tech glitches that can be fore seen\u2026\n---\ninternally, my team is mentioning staff page. We should look at completing that too.\n---\nHave asked Our gmail got suspended this morning\n---\nOffice gmail",
+    "expected": {
+      "classification": "actionable",
+      "suggested_title": "Look into what is needed to go live tomorrow after review",
+      "mentions_user": true,
+      "urgency": "normal"
+    },
+    "survives_sieve": true,
+    "escalates": true,
+    "raw_sender_id": "AM"
+  },
+  {
+    "id": "golden_12",
+    "chat_id": "Vasanth Crayon Employee",
+    "category": "work/urgent scheduling ask",
+    "messages": [],
+    "target_participant": null,
+    "target": "Hi bro\n---\nWhen will we start the AI gateway project?",
+    "expected": {
+      "classification": "actionable",
+      "suggested_title": "Confirm when to start the AI gateway project with Vasanth",
+      "mentions_user": false,
+      "urgency": "normal"
+    },
+    "survives_sieve": true,
+    "escalates": true,
+    "raw_sender_id": "Vasanth Crayon Employee"
+  },
+  {
+    "id": "golden_24",
+    "chat_id": "P K Raghuram",
+    "category": "forwarded/news noise",
+    "messages": [
+      {
+        "participant": null,
+        "sender_name": "P K Raghuram",
+        "body": "Yes... I thought that's the primary aspect?",
+        "received_at": "2026-07-29T05:01:34.925702+00:00",
+        "current_classification": "actionable",
+        "current_title": "Clarify primary aspect with P K Raghuram"
+      },
+      {
+        "participant": null,
+        "sender_name": "P K Raghuram",
+        "body": "Can you hold off until Monday? I'm in all-day meetings here...",
+        "received_at": "2026-07-29T05:11:31.517308+00:00",
+        "current_classification": "actionable",
+        "current_title": "Reschedule meeting or task with P K Raghuram to Monday"
+      },
+      {
+        "participant": null,
+        "sender_name": "P K Raghuram",
+        "body": "Good Morning, Yashwant...\n---\nI'm back .. Srikanth is coming to Chennai tomorrow... Let me know if you are free to meet?",
+        "received_at": "2026-08-04T04:46:42.206191+00:00",
+        "current_classification": "actionable",
+        "current_title": "Coordinate meeting with P K Raghuram and Srikanth"
+      },
+      {
+        "participant": null,
+        "sender_name": "P K Raghuram",
+        "body": "Ive asked for a time... Will update you",
+        "received_at": "2026-08-04T05:01:43.358045+00:00",
+        "current_classification": "actionable",
+        "current_title": "Follow up with P K Raghuram for meeting time"
+      }
+    ],
+    "target_participant": null,
+    "target": "Hi! Can we meet at 9.30 am tomorrow?",
+    "expected": {
+      "classification": "actionable",
+      "suggested_title": "Meet P K Raghuram at 9:30 am tomorrow",
+      "mentions_user": false,
+      "urgency": "normal"
+    },
+    "survives_sieve": true,
+    "escalates": true,
+    "raw_sender_id": "P K Raghuram"
+  },
+  {
+    "id": "golden_27",
+    "chat_id": "Solvstrat: Core Team",
+    "category": "work/urgent scheduling ask",
+    "messages": [
+      {
+        "participant": "Vasanth Crayon Employee",
+        "sender_name": "Solvstrat: Core Team: Vasanth Crayon Employee",
+        "body": "Ok bro",
+        "received_at": "2026-07-25T17:04:06.090867+00:00",
+        "current_classification": "fyi",
+        "current_title": null
+      },
+      {
+        "participant": "Mohammed Yazir Crayon Employee",
+        "sender_name": "Solvstrat: Core Team: Mohammed Yazir Crayon Employee",
+        "body": "Take care, bro. Hope you feel better soon.",
+        "received_at": "2026-08-03T02:58:28.426809+00:00",
+        "current_classification": "fyi",
+        "current_title": null
+      },
+      {
+        "participant": "Vasanth Crayon Employee",
+        "sender_name": "Solvstrat: Core Team: Vasanth Crayon Employee",
+        "body": "Sure bro",
+        "received_at": "2026-08-03T03:17:58.926674+00:00",
+        "current_classification": "fyi",
+        "current_title": null
+      }
+    ],
+    "target_participant": "Mohammed Yazir Crayon Employee",
+    "target": "Bro, \u2022 FC Madras \u2013 Arafath is starting the SMTP setup and Store page. \u2022 GRB \u2013 All bugs are completed. If any new bugs are reported today, Famitha will fix them. \u2022 USA \u2013 Famitha will start the basic setup today and begin development. \u2022 IAM \u2013 Today, I\u2019m implementing the Microsoft Entra ID connector by developing the Graph API client, connector configuration, authentication flow, evidence collection ",
+    "expected": {
+      "classification": "actionable",
+      "suggested_title": "Review SMTP/Store setup (FC Madras) and GRB bug progress from Mohammed Yazir",
+      "mentions_user": false,
+      "urgency": "normal"
+    },
+    "survives_sieve": true,
+    "escalates": true,
+    "raw_sender_id": "Solvstrat: Core Team: Mohammed Yazir Crayon Employee"
+  },
+  {
+    "id": "golden_16",
+    "chat_id": "Marcus Durai",
+    "category": "multi-message conversation",
+    "messages": [],
+    "target_participant": null,
+    "target": "Danny can u remove alpha and teens alpha from the website",
+    "expected": {
+      "classification": "actionable",
+      "suggested_title": "Remove alpha and teens alpha from the website",
+      "mentions_user": true,
+      "urgency": "normal"
+    },
+    "survives_sieve": true,
+    "escalates": true,
+    "raw_sender_id": "Marcus Durai"
+  },
+  {
+    "id": "golden_26",
+    "chat_id": "Binu ACC",
+    "category": "multi-message conversation",
+    "messages": [
+      {
+        "participant": null,
+        "sender_name": "Binu ACC",
+        "body": "Danny\n---\n?",
+        "received_at": "2026-08-02T06:27:46.366444+00:00",
+        "current_classification": "actionable",
+        "current_title": "Reply to Binu ACC"
+      },
+      {
+        "participant": null,
+        "sender_name": "Binu ACC",
+        "body": "Thank you Danny",
+        "received_at": "2026-08-02T06:30:44.877867+00:00",
+        "current_classification": "fyi",
+        "current_title": null
+      },
+      {
+        "participant": null,
+        "sender_name": "Binu ACC",
+        "body": "+91 84471 49749\n---\nAnugrah Das\n---\nHe is going to help in broadcast",
+        "received_at": "2026-08-02T07:12:27.319431+00:00",
+        "current_classification": "actionable",
+        "current_title": "Save Binu ACC contact details"
+      },
+      {
+        "participant": null,
+        "sender_name": "Binu ACC",
+        "body": "morning.\n---\n????\n---\nHe is learning\u2026as he spends time.\n---\ndon\u2019t want to scare him..he has to like it..and not be overwhelmed by the process of it",
+        "received_at": "2026-08-04T04:42:14.127034+00:00",
+        "current_classification": "actionable",
+        "current_title": "Follow up with Binu ACC"
+      }
+    ],
+    "target_participant": null,
+    "target": "Hi Danny\n---\ncalling you",
+    "expected": {
+      "classification": "actionable",
+      "suggested_title": "Call Binu ACC back",
+      "mentions_user": true,
+      "urgency": "normal"
+    },
+    "survives_sieve": true,
+    "escalates": true,
+    "raw_sender_id": "Binu ACC"
+  },
+  {
+    "id": "golden_23",
+    "chat_id": "ACC: Tech & Production",
+    "category": "work/urgent scheduling ask",
+    "messages": [
+      {
+        "participant": "Davidson ACN",
+        "sender_name": "ACC: Tech & Production : Davidson ACN",
+        "body": "No audio\n---\nIs it ok now?\n---\nAshok YS\n---\nAshok YS pc restarted",
+        "received_at": "2026-08-02T06:11:20.868345+00:00",
+        "current_classification": "actionable",
+        "current_title": "Resolve audio issue for Tech & Production"
+      },
+      {
+        "participant": "Ashok YS",
+        "sender_name": "ACC: Tech & Production : Ashok YS",
+        "body": "Yea\n---\nCan't hear Marcus online\n---\nYes yes\n---\nOh no, it's stuck",
+        "received_at": "2026-08-02T06:11:23.073185+00:00",
+        "current_classification": "actionable",
+        "current_title": "Troubleshoot audio issue for Marcus"
+      },
+      {
+        "participant": "Ashok YS",
+        "sender_name": "ACC: Tech & Production : Ashok YS",
+        "body": "Oh no, \ud83e\udd72",
+        "received_at": "2026-08-02T06:14:24.590019+00:00",
+        "current_classification": "fyi",
+        "current_title": null
+      }
+    ],
+    "target_participant": "Binu ACC",
+    "target": "Have informed ACC Zoom about above.",
+    "expected": {
+      "classification": "fyi",
+      "suggested_title": null,
+      "mentions_user": false,
+      "urgency": "normal"
+    },
+    "survives_sieve": true,
+    "escalates": false,
+    "raw_sender_id": "ACC: Tech & Production : Binu ACC"
+  },
+  {
+    "id": "golden_9",
+    "chat_id": "Sunjula Daniel",
+    "category": "personal/family request",
+    "messages": [
+      {
+        "participant": null,
+        "sender_name": "Sunjula Daniel",
+        "body": "Sent a voice note",
+        "received_at": "2026-08-05T10:51:18.014296+00:00",
+        "current_classification": "actionable",
+        "current_title": "Listen to voice note from Sunjula"
+      },
+      {
+        "participant": null,
+        "sender_name": "Sunjula Daniel",
+        "body": "Incoming call. Use the WhatsApp app to answer.",
+        "received_at": "2026-08-05T15:53:42.265245+00:00",
+        "current_classification": "ignored",
+        "current_title": null
+      },
+      {
+        "participant": null,
+        "sender_name": "Sunjula Daniel",
+        "body": "Blood test?",
+        "received_at": "2026-08-06T09:24:01.855132+00:00",
+        "current_classification": "actionable",
+        "current_title": "Update Sunjula about the blood test"
+      }
+    ],
+    "target_participant": null,
+    "target": "When will we be able to return\n---\nOk",
+    "expected": {
+      "classification": "actionable",
+      "suggested_title": "Answer Sunjula when we can return",
+      "mentions_user": false,
+      "urgency": "normal"
+    },
+    "survives_sieve": true,
+    "escalates": true,
+    "raw_sender_id": "Sunjula Daniel"
+  },
+  {
+    "id": "golden_14",
+    "chat_id": "Dr Mallika",
+    "category": "multi-message conversation",
+    "messages": [
+      {
+        "participant": null,
+        "sender_name": "Dr Mallika",
+        "body": "Gypsies received their food security \ud83e\udd70\n---\nGypsies received their food security \ud83e\udd70\n---\nGypsies Meeting Trust house 30 may 2026 Even though some gypsies had received their food security in the middle of the month , many had influx into Rameswaram hunting for jobs . Hence the coordinator Mr Charles requested that the trust help these New families with food . . He had tough time trying to collect only",
+        "received_at": "2026-07-24T16:50:58.664385+00:00",
+        "current_classification": "fyi",
+        "current_title": null
+      },
+      {
+        "participant": null,
+        "sender_name": "Dr Mallika",
+        "body": "Sent a voice note",
+        "received_at": "2026-07-25T11:34:17.559138+00:00",
+        "current_classification": "actionable",
+        "current_title": "Listen to voice note from Dr. Mallika"
+      },
+      {
+        "participant": null,
+        "sender_name": "Dr Mallika",
+        "body": "Incoming call. Use the WhatsApp app to answer.",
+        "received_at": "2026-07-29T16:05:58.824122+00:00",
+        "current_classification": "ignored",
+        "current_title": null
+      }
+    ],
+    "target_participant": null,
+    "target": "Call me when you are free",
+    "expected": {
+      "classification": "actionable",
+      "suggested_title": "Call Dr Mallika when free",
+      "mentions_user": false,
+      "urgency": "normal"
+    },
+    "survives_sieve": true,
+    "escalates": true,
+    "raw_sender_id": "Dr Mallika"
+  },
+  {
+    "id": "golden_13",
+    "chat_id": "A People who Pray",
+    "category": "multi-message conversation",
+    "messages": [
+      {
+        "participant": "Ashish Thomas AN",
+        "sender_name": "A People who Pray: Ashish Thomas AN",
+        "body": "Sent a video\n---\nSent a video",
+        "received_at": "2026-08-01T19:59:03.943102+00:00",
+        "current_classification": "fyi",
+        "current_title": null
+      },
+      {
+        "participant": "Deepa ACS",
+        "sender_name": "A People who Pray: Deepa ACS",
+        "body": "Praying for healing and for all of you. So lovely to see the family prayer together. I'm praying that Kristin's whole extended family will experience God's love and be drawn to him, and although this is such a hard season, that His name will be glorified.",
+        "received_at": "2026-08-02T02:08:41.613811+00:00",
+        "current_classification": "fyi",
+        "current_title": null
+      },
+      {
+        "participant": "Marcus Durai",
+        "sender_name": "A People who Pray: Marcus Durai",
+        "body": "Sent a file",
+        "received_at": "2026-08-02T03:29:21.285829+00:00",
+        "current_classification": "actionable",
+        "current_title": "Review file sent by Marcus Durai"
+      },
+      {
+        "participant": "Patty Aunty ABC",
+        "sender_name": "A People who Pray: Patty Aunty ABC",
+        "body": "Yes, have a blessed Sunday, Kristin and Ashish as you lean into the safety of knowing that God is in control and He knows best, even when we don't understand what's going on. He does \ud83d\ude4c so we now down in worship\n---\nYes, have a blessed Sunday, Kristin and Ashish as you lean into the safety of knowing that God is in control and He knows best, even when we don't understand what's going on. He does \ud83d\ude4c ",
+        "received_at": "2026-08-02T04:02:52.301736+00:00",
+        "current_classification": "fyi",
+        "current_title": null
+      }
+    ],
+    "target_participant": "Sarika Gandotra",
+    "target": "Praying for your Mom, Kristin and Ashish. \ud83d\ude4f. Our Lord is Merciful & gracious.\n---\nAmen \ud83d\ude4f",
+    "expected": {
+      "classification": "fyi",
+      "suggested_title": null,
+      "mentions_user": false,
+      "urgency": "routine"
+    },
+    "survives_sieve": true,
+    "escalates": false,
+    "raw_sender_id": "A People who Pray: Sarika Gandotra"
+  },
+  {
+    "id": "golden_22",
+    "chat_id": "We, our family \ud83d\ude0a",
+    "category": "work/urgent scheduling ask",
+    "messages": [
+      {
+        "participant": "Amma",
+        "sender_name": "We, our family \ud83d\ude0a: Amma",
+        "body": "Earlier, he touched his face and also seriously looked at himself\ud83d\ude03.",
+        "received_at": "2026-08-02T15:21:05.496926+00:00",
+        "current_classification": "fyi",
+        "current_title": null
+      },
+      {
+        "participant": "Einstein Perinbaraj",
+        "sender_name": "We, our family \ud83d\ude0a: Einstein Perinbaraj",
+        "body": "Super High energy and full of life.",
+        "received_at": "2026-08-02T15:24:39.208224+00:00",
+        "current_classification": "fyi",
+        "current_title": null
+      },
+      {
+        "participant": "Sunjula Daniel",
+        "sender_name": "We, our family \ud83d\ude0a: Sunjula Daniel",
+        "body": "And licked his reflection too \ud83d\ude04",
+        "received_at": "2026-08-02T15:28:18.535164+00:00",
+        "current_classification": "fyi",
+        "current_title": null
+      },
+      {
+        "participant": "Amma",
+        "sender_name": "We, our family \ud83d\ude0a: Amma",
+        "body": "Yes yess",
+        "received_at": "2026-08-02T15:28:36.410449+00:00",
+        "current_classification": "fyi",
+        "current_title": null
+      },
+      {
+        "participant": "Chinky",
+        "sender_name": "We, our family \ud83d\ude0a: Chinky",
+        "body": "Sent a video\n---\nSent a picture\n---\nSent a picture",
+        "received_at": "2026-08-02T15:42:56.771414+00:00",
+        "current_classification": "fyi",
+        "current_title": null
+      }
+    ],
+    "target_participant": "Sunjula Daniel",
+    "target": "Today marks one year of receiving Jeffrey \u263a\ufe0f.  Their first picture together!\n---\nToday marks one year of receiving Jeffrey \u263a\ufe0f.  Their first picture together!\n---\nSent a picture\n---\nSent a picture",
+    "expected": {
+      "classification": "fyi",
+      "suggested_title": null,
+      "mentions_user": false,
+      "urgency": "routine"
+    },
+    "survives_sieve": true,
+    "escalates": false,
+    "raw_sender_id": "We, our family \ud83d\ude0a: Sunjula Daniel"
+  },
+  {
+    "id": "golden_36",
+    "chat_id": "90-Day Prayer",
+    "category": "work/urgent scheduling ask",
+    "messages": [
+      {
+        "participant": "Rufus George ACC",
+        "sender_name": "90-Day Prayer: Rufus George ACC",
+        "body": "Amen",
+        "received_at": "2026-07-31T14:13:35.498544+00:00",
+        "current_classification": "fyi",
+        "current_title": null
+      },
+      {
+        "participant": "Andrew Lazarus",
+        "sender_name": "90-Day Prayer: Andrew Lazarus",
+        "body": "Sorry to hear this Ashish. We are praying.",
+        "received_at": "2026-07-31T15:30:41.008837+00:00",
+        "current_classification": "fyi",
+        "current_title": null
+      },
+      {
+        "participant": "Jessica Gomez",
+        "sender_name": "90-Day Prayer: Jessica Gomez",
+        "body": "Praying !",
+        "received_at": "2026-07-31T15:39:27.170203+00:00",
+        "current_classification": "fyi",
+        "current_title": null
+      },
+      {
+        "participant": "Sarika Gandotra",
+        "sender_name": "90-Day Prayer: Sarika Gandotra",
+        "body": "Praying for this.",
+        "received_at": "2026-07-31T17:12:57.666605+00:00",
+        "current_classification": "fyi",
+        "current_title": null
+      }
+    ],
+    "target_participant": "Prakash Rao ACN",
+    "target": "Sorry to hear Ashish & Kristin praying for healing!",
+    "expected": {
+      "classification": "fyi",
+      "suggested_title": null,
+      "mentions_user": false,
+      "urgency": "routine"
+    },
+    "survives_sieve": true,
+    "escalates": false,
+    "raw_sender_id": "90-Day Prayer: Prakash Rao ACN"
+  },
+  {
+    "id": "golden_19",
+    "chat_id": "ACT Fibernet",
+    "category": "multi-message conversation",
+    "messages": [],
+    "target_participant": null,
+    "target": "Service Alert Hi SUNJULA P, Your ACT Fibernet connection is up for renewal and bill is generated. Account No: 103011253269 Please pay now to avoid any disruption PAY NOW - Chat with Agent - <Will Pay Tomorrow> - <Taken new ACT connection> - <Need Call back> - <Pause Plan> - <Switch Plan> Use the WhatsApp app to click buttons Kindly ignore if already paid",
+    "expected": {
+      "classification": "ignored",
+      "suggested_title": null,
+      "mentions_user": false,
+      "urgency": "routine"
+    },
+    "survives_sieve": false,
+    "escalates": false,
+    "raw_sender_id": "ACT Fibernet"
+  },
+  {
+    "id": "golden_3",
+    "chat_id": "Tamil Nadu Weatherman",
+    "category": "work/urgent scheduling ask",
+    "messages": [
+      {
+        "participant": "WhatsApp bridge bot",
+        "sender_name": "Tamil Nadu Weatherman: WhatsApp bridge bot",
+        "body": "A common man's representative, nominated to the El Nino Expert Advisory Committee constituted by the Government. With over 20 years of experience in Water Supply Projects, Flood Forecasting, River Restoration, Lake Rejuvenation, and Storm Water Management across Tamil Nadu in my official capacity, coupled with my lifelong passion for weather and climate, I consider this nomination both an honour a",
+        "received_at": "2026-07-31T01:40:25.967303+00:00",
+        "current_classification": "ignored",
+        "current_title": null
+      },
+      {
+        "participant": "WhatsApp bridge bot",
+        "sender_name": "Tamil Nadu Weatherman: WhatsApp bridge bot",
+        "body": "Sent a picture",
+        "received_at": "2026-07-31T01:41:18.20485+00:00",
+        "current_classification": "ignored",
+        "current_title": null
+      },
+      {
+        "participant": "WhatsApp bridge bot",
+        "sender_name": "Tamil Nadu Weatherman: WhatsApp bridge bot",
+        "body": "*Today and tomorrow are likely to be the best days for widespread Southwest Monsoon rains across the Western Ghats*\n\n- Kerala\n- Karnataka, especially the Cauvery catchment areas\n- Tamil Nadu Ghat regions, including Valparai, the Nilgiris, Theni, Tenkasi, Tirunelveli, and Kanyakumari.\n\n*Will these rains help to cover the deficit in Catchment areas ?*\n-----------------------\nWhile this rainfall is m",
+        "received_at": "2026-07-31T01:42:06.892193+00:00",
+        "current_classification": "ignored",
+        "current_title": null
+      }
+    ],
+    "target_participant": "WhatsApp bridge bot",
+    "target": "Heavy to extremely heavy rainfall will continue over Kodagu, Chikkamagaluru, and Wayanad through tomorrow, maintaining strong inflows into the Cauvery basin.\n\nKabini Dam has reached full capacity, and surplus water is being released downstream towards Mettur Dam.\n\nHarangi Dam is already in surplus, with excess water being released into the KRS (Krishna Raja Sagara) Reservoir.\n\nKRS Dam catchment is",
+    "expected": {
+      "classification": "ignored",
+      "suggested_title": null,
+      "mentions_user": false,
+      "urgency": "routine"
+    },
+    "survives_sieve": false,
+    "escalates": false,
+    "raw_sender_id": "Tamil Nadu Weatherman: WhatsApp bridge bot"
+  },
+  {
+    "id": "golden_29",
+    "chat_id": "Playing Voice Note",
+    "category": "multi-message conversation",
+    "messages": [],
+    "target_participant": null,
+    "target": "-153722867280912:-55",
+    "expected": {
+      "classification": "ignored",
+      "suggested_title": null,
+      "mentions_user": false,
+      "urgency": "routine"
+    },
+    "survives_sieve": false,
+    "escalates": false,
+    "raw_sender_id": "Playing Voice Note"
+  },
+  {
+    "id": "golden_10",
+    "chat_id": "Youth",
+    "category": "forwarded/news noise",
+    "messages": [
+      {
+        "participant": "Sunjula Daniel",
+        "sender_name": "Youth: Sunjula Daniel",
+        "body": "\u21b7 Forwarded",
+        "received_at": "2026-08-11T08:30:12.55505+00:00",
+        "current_classification": "ignored",
+        "current_title": null
+      },
+      {
+        "participant": "Sunjula Daniel",
+        "sender_name": "Youth: Sunjula Daniel",
+        "body": "\u21b7 Forwarded",
+        "received_at": "2026-08-11T08:30:13.766302+00:00",
+        "current_classification": "ignored",
+        "current_title": null
+      },
+      {
+        "participant": "Sunjula Daniel",
+        "sender_name": "Youth: Sunjula Daniel",
+        "body": "How's this house?",
+        "received_at": "2026-08-11T08:30:46.202067+00:00",
+        "current_classification": "actionable",
+        "current_title": "Review the house shared by Sunjula Daniel"
+      }
+    ],
+    "target_participant": "Chinky",
+    "target": "Oh wow looks great \ud83d\ude03",
+    "expected": {
+      "classification": "ignored",
+      "suggested_title": null,
+      "mentions_user": false,
+      "urgency": "routine"
+    },
+    "survives_sieve": false,
+    "escalates": false,
+    "raw_sender_id": "Youth: Chinky"
+  }
+]
