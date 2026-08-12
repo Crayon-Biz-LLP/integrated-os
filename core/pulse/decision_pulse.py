@@ -59,8 +59,14 @@ async def _process_decision_pulse_impl(auth_secret: str = None, trigger: str = "
     if pulse_secret and auth_secret != pulse_secret:
         return {"error": "Unauthorized.", "status": 401}
 
-    lock_key = "pulse_concurrency_lock"
-    if not acquire_lock(lock_key, ttl=300):
+    # Per-tenant lock (matches briefing.py): a decision pulse must not run
+    # concurrently with a briefing for the SAME tenant (both do read-modify-
+    # write on the same tenant tables), but different tenants must be able to
+    # run in parallel. Legacy unscoped path keeps the global key.
+    from core.services.db import get_tenant
+    _lock_uid = get_tenant()
+    lock_key = f"pulse_concurrency_lock:{_lock_uid}" if _lock_uid else "pulse_concurrency_lock"
+    if not acquire_lock(lock_key, ttl=1200):
         return {"success": False, "message": "Pulse or Decision Pulse already running. Concurrency lock active."}
 
     run_id = await create_pulse_run(supabase, "decision", trigger)

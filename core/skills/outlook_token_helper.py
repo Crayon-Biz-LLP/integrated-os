@@ -1,4 +1,7 @@
+import base64
+import json
 import os
+import time
 from pathlib import Path
 from datetime import datetime, timezone
 import requests
@@ -17,6 +20,33 @@ REFRESH_TOKEN = os.getenv("OUTLOOK_REFRESH_TOKEN")
 SCOPES = os.getenv("OUTLOOK_SCOPES", "offline_access User.Read Mail.Read Mail.Send Chat.Read Files.Read.All")
 
 TOKEN_URL = f"https://login.microsoftonline.com/{TENANT_ID}/oauth2/v2.0/token"
+
+# Safety buffer before a token's exp: refresh at least this early so a token
+# that is about to expire (or has expired) is never sent to Graph.
+_TOKEN_FRESH_BUFFER_SECONDS = 120
+
+
+def access_token_is_fresh(access_token: str | None) -> bool:
+    """True when the token has a JWT `exp` comfortably in the future.
+
+    Outlook access tokens are JWTs whose payload carries `exp` (epoch
+    seconds). We decode only the claims — never verify the signature, which
+    is unnecessary for reading an expiry timestamp. A token that is missing,
+    malformed, or expiring within 120s is treated as stale so callers
+    refresh instead of burning a guaranteed 401 round-trip.
+    """
+    if not access_token:
+        return False
+    try:
+        payload_b64 = access_token.split(".")[1]
+        padding = "=" * (-len(payload_b64) % 4)
+        claims = json.loads(base64.urlsafe_b64decode(payload_b64 + padding))
+        if not isinstance(claims, dict):
+            return False  # malformed payload (not a JSON object) → stale
+        exp = int(claims.get("exp", 0))
+    except (IndexError, ValueError, TypeError):
+        return False
+    return exp > time.time() + _TOKEN_FRESH_BUFFER_SECONDS
 
 
 def _resolve_uid(user_id: str | None) -> str | None:
@@ -164,9 +194,11 @@ def get_outlook_access_token(user_id: str | None = None) -> str | None:
             return result.get("access_token")
         return None
     # Legacy unscoped mode: the env access token may already be cached;
-    # otherwise refresh from the env refresh token.
+    # otherwise refresh from the env refresh token. Only trust the cached
+    # token if it is actually fresh — a stale one would burn a guaranteed
+    # 401 round-trip on the first call of the hour.
     cached = os.getenv("OUTLOOK_ACCESS_TOKEN")
-    if cached:
+    if cached and access_token_is_fresh(cached):
         return cached
     result = refresh_outlook_token(write_back=True)
     if result:

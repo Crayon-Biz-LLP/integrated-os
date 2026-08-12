@@ -51,6 +51,13 @@ jobs:
 
       - name: Build APK (release — signed, auto-versioned)
         env:
+          # KEYSTORE_PATH is relative to rhodey_app/android/ (the Gradle
+          # project dir) — the keystore was decoded to exactly this filename
+          # in the step above. KEY_ALIAS is the standard 'upload' alias from
+          # android/key.properties; required alongside the passwords or the
+          # Gradle release-signing require() fails fast.
+          KEYSTORE_PATH: upload-keystore.jks
+          KEY_ALIAS: upload
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
           VERSION_NAME: ${{ steps.version.outputs.version_name }}

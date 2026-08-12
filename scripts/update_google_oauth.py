@@ -41,7 +41,13 @@ SCOPES = " ".join([
     "https://www.googleapis.com/auth/calendar",
     "https://www.googleapis.com/auth/tasks",
     "https://www.googleapis.com/auth/gmail.modify",
-    "https://www.googleapis.com/auth/drive.file",
+    # Full Drive access (NOT drive.file): call_ingest and renew_drive_channel
+    # watch a manually-created folder (Crayon/Rhodey OS/Call Recordings).
+    # drive.file only exposes files the app itself created/opened, so a
+    # hand-made folder returns 404 — which silently killed call ingest on
+    # 2026-08-06 when the token was re-issued. The consent screen will now
+    # ask for full Drive access.
+    "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/documents",
     "https://www.googleapis.com/auth/spreadsheets.readonly",
 ])

@@ -1,13 +1,11 @@
 name: Pulse Engine (Rhodey SITREP)
 on:
-  schedule:
-    # M9.7: global 30-minute heartbeat. The per-tenant `briefing_schedule`
-    # (core_config, owner-scoped) decides WHICH tenants are due at each
-    # heartbeat — the GHA cron is now just the alarm clock. This is the only
-    # way one static cron can serve tenants in different timezones (IST,
-    # Canada, etc.) with their own timeslots. Journal ingest + graph backfill
-    # moved to ingest.yml (runs before each briefing slot).
-    - cron: '*/30 * * * *'
+  # The 30-minute briefing heartbeat is now driven EXCLUSIVELY by
+  # cron-job.org → /api/pulse-cron (Option B fan-out: per-tenant brief_tenant
+  # Modal workers with 900s timeouts). This GHA workflow was the redundant
+  # second scheduler racing cron-job.org on the concurrency lock — disabling
+  # the schedule removes the race (and the double LLM spend) while keeping
+  # manual dispatch for on-demand runs.
   workflow_dispatch:
   repository_dispatch:
     types: [trigger_pulse]

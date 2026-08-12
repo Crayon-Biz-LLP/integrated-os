@@ -38,14 +38,17 @@ secrets = [modal.Secret.from_name("rhodey-os")]
 # ── Web Endpoint: All API Routes ──────────────────────────────────
 # min_containers=1: keeps one container always warm — zero cold starts.
 # scaledown_window=300: if no requests for 5 min, scale to 0.
-# timeout=300: 5 min for web requests (was 60s on Vercel).
+# timeout=900: 15 min for web requests (was 60s on Vercel, then 300s on
+# Modal). Raised so the /api/pulse-cron inline fallback (and any heavy
+# web-triggered path) has headroom — the primary briefing path is the
+# per-tenant brief_tenant worker below, which also runs at 900s.
 
 
 @app.function(
     secrets=secrets,
     min_containers=1,
     scaledown_window=300,
-    timeout=300,
+    timeout=900,
 )
 @modal.concurrent(max_inputs=10)
 @modal.asgi_app()
@@ -120,6 +123,41 @@ def process_message_background(payload: dict):
         # route either, so the channel-tenant fallback is the original
         # behavior — preserve it exactly.
         asyncio.run(_run_web_message_pipeline(fake_update, session_id))
+
+
+# ── Per-Tenant Briefing Worker (Option B) ───────────────────────────
+# The 30-min heartbeat (/api/pulse-cron, fired by cron-job.org) no longer
+# runs every tenant's briefing sequentially inside the web request — that
+# sequential fan-out overran the 300s web timeout and killed every tenant
+# after the first (real outage: Johan/Sunjula/Test got no briefings for
+# 28h while Danny's stayed fresh). Instead the web endpoint spawns ONE of
+# these per DUE tenant, in parallel, each with its own 900s timeout and its
+# own tenant scope — a slow tenant can no longer starve or kill the others,
+# and the fan-out scales to any number of tenants (each gets a container).
+# Same pattern as process_message_background: separate container, explicit
+# tenant_scope(uid) re-applied because the contextvar does NOT propagate
+# across containers.
+@app.function(
+    secrets=secrets,
+    timeout=900,
+)
+def brief_tenant(uid: str, auth_secret: str | None = None, trigger: str = "cron"):
+    """Run ONE tenant's briefing in a dedicated container.
+
+    Delegates to core.pulse.briefing.process_pulse_for_tenant — the exact
+    per-tenant unit the inline loop uses — so behavior is identical whether
+    a briefing runs in-request or here. The per-tenant concurrency lock
+    (acquired inside _process_pulse_impl) prevents duplicate runs of the
+    same tenant even if two heartbeats overlap.
+    """
+    import asyncio
+    from core.pulse.briefing import process_pulse_for_tenant
+
+    result = asyncio.run(
+        process_pulse_for_tenant(uid, auth_secret=auth_secret, trigger=trigger)
+    )
+    print(f"[brief-tenant:{uid[:8]}] {result}", flush=True)
+    return result
 
 
 # ── Beeper Bridge (Phase B1): sync the Matrix stream every 60s ───────

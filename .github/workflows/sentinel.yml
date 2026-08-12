@@ -1,8 +1,11 @@
 name: Sentinel Nudge (High Frequency)
 on:
-  schedule:
-    # Runs every 5 minutes
-    - cron: '*/5 * * * *'
+  # The 5-minute sentinel heartbeat is driven EXCLUSIVELY by cron-job.org
+  # → /api/sentinel (always-warm Modal web endpoint). This GHA workflow was
+  # the redundant second scheduler firing alongside cron-job.org every 5 min
+  # (DB evidence: mixed 'cron' + 'cli' triggers on pulse_runs) — disabling
+  # the schedule removes the duplicate runs/nudges while keeping manual
+  # dispatch for on-demand runs.
   workflow_dispatch:
 
 jobs:

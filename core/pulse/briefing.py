@@ -25,7 +25,7 @@ from core.lib.redis_cache import acquire_lock, release_lock
 from core.decisions import record_decision
 from core.pulse.models import PulseOutput
 from core.pulse.llm import supabase
-from core.services.db import active_user_ids, resolve_telegram_chat_id, tenant_scope
+from core.services.db import active_user_ids, get_tenant, resolve_telegram_chat_id, tenant_scope
 from core.pulse.utils import format_error
 from core.pulse.memory import (
     write_outcome_memory,
@@ -366,14 +366,10 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
     any_briefed = False
     for uid in uids:
         try:
-            with tenant_scope(uid):
-                if gated and (not _user_briefing_due(uid) or _recently_briefed(uid)):
-                    results.append({"tenant": uid, "skipped": "not_briefing_time"})
-                    continue
-                r = await _process_pulse_impl(auth_secret, request_id, trigger)
-                if r.get("briefing"):
-                    any_briefed = True
-                results.append(r)
+            r = await process_pulse_for_tenant(uid, auth_secret, request_id, trigger)
+            if r.get("briefing"):
+                any_briefed = True
+            results.append(r)
         except Exception as e:
             audit_log_sync("briefing", "ERROR", f"Briefing failed for tenant {uid}: {e}")
             results.append({"tenant": uid, "error": str(e)})
@@ -396,6 +392,52 @@ async def process_pulse(auth_secret: str = None, request_id: str = None, trigger
     }
 
 
+def due_tenant_ids(trigger: str = "cron") -> list[str]:
+    """Active users whose briefing is due RIGHT NOW (cheap gate, no LLM).
+
+    Used by the /api/pulse-cron fan-out (Option B) to decide which tenants
+    get a dedicated brief_tenant Modal worker. Mirrors the per-tenant gate
+    inside process_pulse's loop so behavior is identical whether a tenant is
+    briefed inline or in its own container. Fail-closed: any gate error
+    means NOT due — never a surprise briefing, never another tenant's row.
+    """
+    due = []
+    for uid in active_user_ids():
+        try:
+            with tenant_scope(uid):
+                if trigger != "cron":
+                    due.append(uid)
+                    continue
+                if _user_briefing_due(uid) and not _recently_briefed(uid):
+                    due.append(uid)
+        except Exception as e:
+            audit_log_sync("briefing", "WARNING", f"Due-check failed for tenant {uid}: {e}")
+    return due
+
+
+async def process_pulse_for_tenant(
+    uid: str, auth_secret: str = None, request_id: str = None, trigger: str = "cron"
+) -> dict:
+    """Brief ONE tenant (the Option B worker body, and the inline-loop unit).
+
+    Owner-scoped. Applies the same schedule gate as the loop: a tenant whose
+    slot is not due is skipped cheaply (no LLM, no push). Reaps stale
+    'running' runs before starting, so timeout-killed rows can never block
+    or mislead. Returns the impl's dict (success/briefing or error).
+    """
+    with tenant_scope(uid):
+        gated = trigger == "cron"
+        if gated and (not _user_briefing_due(uid) or _recently_briefed(uid)):
+            return {"tenant": uid, "skipped": "not_briefing_time"}
+        # ── Reap stale 'running' runs (timeout-killed rows never complete) ──
+        try:
+            from core.pulse.run_logger import reap_stuck_pulse_runs
+            reap_stuck_pulse_runs(supabase)
+        except Exception as e:
+            warning("pulse", f"Stuck-run reap skipped: {e}", format_error(e))
+        return await _process_pulse_impl(auth_secret, request_id, trigger)
+
+
 async def _process_pulse_impl(auth_secret: str = None, request_id: str = None, trigger: str = "api"):
     """Generate and send an AI briefing.
 
@@ -411,8 +453,14 @@ async def _process_pulse_impl(auth_secret: str = None, request_id: str = None, t
     if pulse_secret and auth_secret != pulse_secret:
         return {"error": "Unauthorized.", "status": 401}
 
-    lock_key = "pulse_concurrency_lock"
-    if not acquire_lock(lock_key, ttl=300):
+    # Per-tenant lock (Option B): parallel brief_tenant workers must not
+    # serialize on a global key — each tenant gets its own lock so a slow
+    # tenant can't block the others. TTL 1200s comfortably covers the 900s
+    # per-tenant Modal timeout (lock must outlive the run it guards).
+    # Legacy unscoped path (no active users) keeps the global key.
+    _lock_uid = get_tenant()
+    lock_key = f"pulse_concurrency_lock:{_lock_uid}" if _lock_uid else "pulse_concurrency_lock"
+    if not acquire_lock(lock_key, ttl=1200):
         return {"success": False, "message": "Pulse or Decision Pulse already running. Concurrency lock active."}
 
     run_id = None

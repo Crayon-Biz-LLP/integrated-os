@@ -221,12 +221,17 @@ async def pulse_route_post(request: Request):
 async def pulse_cron_route(request: Request):
     """Triggered by cron-job.org every 30 minutes — the briefing heartbeat.
 
-    Mirrors the /api/sentinel + /api/roundup auth (simple Bearer token, NOT
-    the HMAC-signed /api/pulse) so cron-job.org can call it. Crucially it
-    runs process_pulse with trigger="cron", which HONORS each tenant's
-    briefing_schedule: a tenant whose slot is not due is skipped cheaply.
-    (The old /api/pulse used trigger="api" which bypasses the gate — a
-    30-min cron against it would spam every tenant a briefing every 30 min.)
+    Option B fan-out: instead of running every tenant's briefing sequentially
+    inside this web request (which overran the 300s Modal timeout and killed
+    every tenant after the first), this endpoint spawns ONE dedicated Modal
+    worker (brief_tenant, 900s timeout) per DUE tenant, in parallel, and
+    returns immediately. Each tenant runs in its own container with its own
+    timeout budget — a slow tenant can never starve or kill the others, and
+    the fan-out scales to any number of tenants.
+
+    The schedule gate still applies (per-tenant briefing_schedule): only
+    tenants whose slot is due get a worker. If the Modal SDK is unavailable
+    (local dev / tests), it falls back to the inline sequential path.
     """
     auth_header = request.headers.get("Authorization", "")
     cron_secret = os.getenv("CRON_SECRET", os.getenv("PULSE_SECRET"))
@@ -237,8 +242,69 @@ async def pulse_cron_route(request: Request):
     if auth_header != f"Bearer {cron_secret}" and request.headers.get("x-pulse-secret") != cron_secret:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
-    result = await process_pulse(auth_secret=cron_secret, trigger="cron")
-    return result
+    from core.pulse.briefing import due_tenant_ids
+
+    due = due_tenant_ids(trigger="cron")
+    if not due:
+        # Nobody due at this heartbeat — keep the channel tenant's heartbeat
+        # fresh so the health check reports a healthy pipeline (same behavior
+        # as the inline path's fallback).
+        try:
+            from core.services.db import channel_tenant_scope
+            from core.pulse.pipeline import update_heartbeat
+            with channel_tenant_scope():
+                await update_heartbeat()
+        except Exception:
+            pass
+        return {"success": True, "mode": "fanout", "spawned": 0,
+                "tenants": [], "note": "no tenant due"}
+
+    try:
+        import modal
+    except ImportError:
+        # Local dev / tests without the Modal SDK — inline sequential fallback
+        # (identical behavior to the pre-Option-B path).
+        result = await process_pulse(auth_secret=cron_secret, trigger="cron")
+        result["mode"] = "inline_fallback"
+        return result
+
+    spawned = []
+    failed = []
+    for uid in due:
+        try:
+            modal.Function.from_name("rhodey-os", "brief_tenant").spawn({
+                "uid": uid,
+                "auth_secret": cron_secret,
+                "trigger": "cron",
+            })
+            spawned.append(uid)
+        except Exception as e:
+            audit_log_sync("pulse", "WARNING", f"brief_tenant spawn failed for {uid}: {e}")
+            failed.append(uid)
+
+    inline_results = []
+    if failed:
+        # Partial fallback: run ONLY the tenants whose spawn failed, inline
+        # (per-tenant unit — never double-briefs the successfully-spawned
+        # tenants). Covers Modal SDK/auth hiccups without a total outage.
+        from core.pulse.briefing import process_pulse_for_tenant
+
+        for uid in failed:
+            try:
+                inline_results.append(
+                    await process_pulse_for_tenant(uid, auth_secret=cron_secret, trigger="cron")
+                )
+            except Exception as e:
+                audit_log_sync("pulse", "WARNING", f"Inline fallback briefing failed for {uid}: {e}")
+
+    return {
+        "success": True,
+        "mode": "fanout",
+        "spawned": len(spawned),
+        "inline_fallback": len(inline_results),
+        "tenants": [str(u)[:8] for u in spawned],
+        "total_due": len(due),
+    }
 
 # --- THE SENTINEL WATCHER (Vercel Cron) ---
 @app.api_route("/api/sentinel", methods=["GET", "POST"])

@@ -3,28 +3,26 @@
 import { createBrowserClient } from '@supabase/ssr';
 import { Lock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { useEffect, useState } from 'react';
+import { Suspense } from 'react';
+import { useSearchParams } from 'next/navigation';
 
-export default function LoginPage() {
+function LoginContent() {
   const supabase = createBrowserClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
   );
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // NOTE: read the ?error= param in an effect, NOT in a useState initializer.
-  // This page is statically prerendered on the server; touching `window` during
-  // render crashes the Next.js build (ReferenceError: window is not defined).
-  useEffect(() => {
-    const error = new URLSearchParams(window.location.search).get('error');
-    if (error === 'not-authorized') {
-      setErrorMsg(
-        'This account is not authorized to access the dashboard. Access is restricted to approved admins.',
-      );
-    } else if (error) {
-      setErrorMsg('Sign-in failed. Please try again.');
-    }
-  }, []);
+  // Read ?error= via next/navigation (SSR-safe, no window access, no
+  // setState-in-effect). The message is derived during render.
+  const searchParams = useSearchParams();
+  const error = searchParams.get('error');
+  let errorMsg: string | null = null;
+  if (error === 'not-authorized') {
+    errorMsg =
+      'This account is not authorized to access the dashboard. Access is restricted to approved admins.';
+  } else if (error) {
+    errorMsg = 'Sign-in failed. Please try again.';
+  }
 
   const handleGoogleLogin = async () => {
     await supabase.auth.signInWithOAuth({
@@ -80,5 +78,13 @@ export default function LoginPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <LoginContent />
+    </Suspense>
   );
 }

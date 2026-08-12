@@ -55,10 +55,13 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 ENV_LOCAL = BASE_DIR / ".env.local"
 
 def get_access_token():
+    from core.skills.outlook_token_helper import access_token_is_fresh, refresh_outlook_token
     access_token = os.getenv("OUTLOOK_ACCESS_TOKEN")
-    if access_token:
+    # Only trust a cached env token that is still within its JWT lifetime.
+    # A stale token would otherwise be sent to Graph and burn a guaranteed
+    # 401 + refresh cycle on the first run of each hour.
+    if access_token and access_token_is_fresh(access_token):
         return access_token
-    from core.skills.outlook_token_helper import refresh_outlook_token
     result = refresh_outlook_token(write_back=True)
     if not result:
         # Tenant has no Outlook token — the caller skips cleanly instead of
