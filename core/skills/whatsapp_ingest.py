@@ -154,11 +154,11 @@ Return ONLY valid JSON, NO markdown, NO explanation:
         return {"classification": "fyi", "summary": "Unparseable message", "suggested_title": None, "suggested_project": None, "linked_person_name": None, "has_memory_value": False}
 
 
-def _ignored_row(sender_name, sender_phone, chat_id, participant, message_text, now_iso, summary, expires_iso):
+def _ignored_row(sender_name, sender_phone, chat_id, participant, message_text, now_iso, summary, expires_iso, event_id=None):
     metadata = {"sender_phone": sender_phone, "chat_id": chat_id}
     if participant:
         metadata["participant"] = participant
-    return {
+    row = {
         "channel": "whatsapp",
         "source": "whatsapp",
         "sender_name": sender_name or sender_phone,
@@ -175,9 +175,33 @@ def _ignored_row(sender_name, sender_phone, chat_id, participant, message_text, 
         "danny_decision": "skipped",
         "expires_at": expires_iso,
     }
+    # Native Matrix event id → exact dedup on ignored rows too (the
+    # unique_channel_message constraint protects them from re-delivery).
+    if event_id:
+        row["message_id"] = event_id
+    return row
 
 
-async def process_whatsapp_message(sender_name: str, sender_phone: str, message_text: str, received_at: str = None) -> dict:
+async def process_whatsapp_message(
+    sender_name: str,
+    sender_phone: str,
+    message_text: str,
+    received_at: str = None,
+    chat_id: str | None = None,
+    participant: str | None = None,
+    event_id: str | None = None,
+) -> dict:
+    """Classify + persist one WhatsApp message.
+
+    chat_id/participant: optional explicit Stage-0 identity overrides —
+    the Beeper bridge already resolved the room identity (room name or
+    WhatsApp phone) and passes it here, because the Matrix stream has no
+    "Chat: Participant" string to split. Defaults to the legacy
+    split_chat_identity() derivation when omitted (MacroDroid path).
+
+    event_id: native Matrix event id — passed through to the batch RPC so
+    the DB dedups re-delivered events exactly (unique_channel_message).
+    """
     print(f"Processing WhatsApp message from {sender_name or sender_phone}: {message_text[:60]}...")
 
     # ── Dedup (unchanged) ────────────────────────────────────────────
@@ -201,15 +225,20 @@ async def process_whatsapp_message(sender_name: str, sender_phone: str, message_
     expires_iso = expires_at.isoformat() if expires_at else None
 
     # ── Stage 0: exact chat identity ─────────────────────────────────
-    identity = split_chat_identity(sender_phone)
-    chat_id = identity["chat_id"] or normalize_chat_key(sender_name)
-    participant = identity["participant"]
+    # Explicit overrides win (Beeper bridge passes room-resolved identity);
+    # otherwise derive from the sender string (legacy MacroDroid stamps).
+    if chat_id is None:
+        identity = split_chat_identity(sender_phone)
+        chat_id = identity["chat_id"] or normalize_chat_key(sender_name)
+        if participant is None:
+            participant = identity["participant"]
 
     # ── Stage A: deterministic sieve (free) ──────────────────────────
     sieve = classify_sieve(message_text, sender_name=sender_name, participant=participant)
     if sieve["noise"]:
         row = _ignored_row(sender_name, sender_phone, chat_id, participant,
-                           message_text, now_iso, f"Sieve: {sieve['reason']}", expires_iso)
+                           message_text, now_iso, f"Sieve: {sieve['reason']}", expires_iso,
+                           event_id)
         supabase.table('messages').insert(row).execute()
         print(f"[sieve:{sieve['reason']}] {sender_name or sender_phone}: {message_text[:60]}")
         return {"status": "ignored", "classification": "ignored", "stage": "sieve"}
@@ -220,7 +249,8 @@ async def process_whatsapp_message(sender_name: str, sender_phone: str, message_
     ask = should_escalate(message_text, user_name=_user_name)
     if not ask["escalate"]:
         row = _ignored_row(sender_name, sender_phone, chat_id, participant,
-                           message_text, now_iso, "No ask detected — not worth surfacing", expires_iso)
+                           message_text, now_iso, "No ask detected — not worth surfacing", expires_iso,
+                           event_id)
         supabase.table('messages').insert(row).execute()
         print(f"[ask-detector:no-escalation] {sender_name or sender_phone}: {message_text[:60]}")
         return {"status": "ignored", "classification": "ignored", "stage": "ask_detector"}
@@ -250,7 +280,8 @@ async def process_whatsapp_message(sender_name: str, sender_phone: str, message_
     if classification == 'ignored':
         row = _ignored_row(sender_name, sender_phone, chat_id, participant,
                            message_text, now_iso,
-                           classification_data.get('summary', 'Ignored'), expires_iso)
+                           classification_data.get('summary', 'Ignored'), expires_iso,
+                           event_id)
         supabase.table('messages').insert(row).execute()
         print(f"[ignored] {sender_name or sender_phone}: {message_text[:60]}")
         return {"status": "ignored", "classification": classification}
@@ -270,6 +301,7 @@ async def process_whatsapp_message(sender_name: str, sender_phone: str, message_
         'p_expires_at': expires_iso,
         'p_chat_id': chat_id,
         'p_participant': participant,
+        'p_message_id': event_id,
     }
 
     result = supabase.rpc('batch_whatsapp_message', rpc_args).execute()

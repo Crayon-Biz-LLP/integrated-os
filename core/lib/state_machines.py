@@ -123,6 +123,9 @@ MESSAGES_DANNY_DECISIONS = {
     "reject",      # Rejected
     "skipped",     # Skipped (merged/duplicate)
     "merged",      # Auto-merged with existing task
+    "responded",   # Handled in the conversation — the user replied in the
+                   # chat, so the pending approval is stale (Phase A,
+                   # auto-resolve rule). Terminal: never surfaced.
 }
 
 MESSAGES_CHANNELS = {

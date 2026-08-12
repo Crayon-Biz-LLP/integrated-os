@@ -31,7 +31,6 @@ from core.services.briefing_refresh import (
 )
 from core.pulse.graph import process_pending_edge_decision
 from api.briefing import _snooze_ok, _notes_ok
-from core.skills.whatsapp_ingest import process_whatsapp_message
 from core.pulse.sentinel import process_sentinel
 from core.pulse import (
     process_pulse,
@@ -3910,54 +3909,47 @@ async def graph_edges_similar_route(request: Request):
 
 @app.post("/api/whatsapp-ingest")
 async def whatsapp_ingest_route(request: Request):
-    trace_id_var.set(f"wa_{uuid.uuid4().hex[:8]}")
-    expected_secret = os.getenv("WHATSAPP_INGEST_SECRET")
-    if not expected_secret:
-        # Fail closed (audit X5): an unset secret must reject, never leave the
-        # endpoint open — unless ALLOW_DEV_AUTH=1 is explicitly set (local dev).
-        if os.getenv("ALLOW_DEV_AUTH") != "1":
-            raise HTTPException(status_code=503, detail="WhatsApp ingest auth not configured")
-    else:
-        provided = request.headers.get("X-Ingest-Secret", "")
-        if not hmac.compare_digest(provided, expected_secret):
-            raise HTTPException(status_code=401, detail="Unauthorized")
+    """Retired — MacroDroid WhatsApp ingest replaced by the Beeper bridge
+    (Phase B1 cutover, Aug 12 2026).
 
-    begin_action_context()
-    try:
-        try:
-            body = await request.json()
-        except json.JSONDecodeError:
-            # MacroDroid sometimes sends payload with unescaped control characters (like newlines in text)
-            raw_bytes = await request.body()
-            body = json.loads(raw_bytes, strict=False)
-            
-        sender_name = body.get("sender", "") or body.get("sender_name", "")
-        sender_phone = body.get("phone", "") or body.get("sender_phone", "")
-        message_text = body.get("text", "") or body.get("body", "") or body.get("message", "")
-        received_at = body.get("received_at") or body.get("timestamp")
+    The bridge-agent (`/api/beeper-sync` + Modal scheduled function) is now
+    the primary WhatsApp source: it syncs both directions and routes
+    incoming through the same classification pipeline, with native Matrix
+    event-id dedup. This route is a 410 so any straggler MacroDroid
+    automation gets a clear "this endpoint is gone" signal instead of
+    silently failing. Remove the MacroDroid automation on the phone to
+    stop the calls entirely.
+    """
+    raise HTTPException(
+        status_code=410,
+        detail="WhatsApp ingest via MacroDroid is retired — the Beeper bridge is now the "
+               "WhatsApp source (see /api/beeper-sync). Disable the MacroDroid "
+               "automation on the phone.",
+    )
 
-        identifier = sender_phone or sender_name
 
-        if not identifier or not message_text:
-            raise HTTPException(status_code=400, detail="sender/phone and message required")
+# --- BEEPER BRIDGE (Phase B1 — Matrix stream sync) ---
+@app.api_route("/api/beeper-sync", methods=["GET", "POST"])
+async def beeper_sync_route(request: Request):
+    """Trigger one Beeper bridge tick (fan out per active tenant).
 
-        # Fallback to name if phone is missing so downstream logic doesn't break
-        if not sender_phone:
-            sender_phone = sender_name
+    The bridge-agent normally runs as the Modal scheduled function
+    (`beeper_bridge_sync`, every 60s). This route exists for cron-job.org
+    fallback, manual verification, and health pings — same bearer gate as
+    /api/sentinel. Returns a per-tenant summary of outgoing sends recorded
+    and any errors.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    cron_secret = os.getenv("CRON_SECRET", os.getenv("PULSE_SECRET"))
 
-        from core.services.db import channel_tenant_scope
-        with channel_tenant_scope():
-            result = await process_whatsapp_message(sender_name, sender_phone, message_text, received_at)
-            
-        return {"success": True, "result": result}
+    if not cron_secret:
+        raise HTTPException(status_code=500, detail="CRON_SECRET missing")
+    if auth_header != f"Bearer {cron_secret}" and request.headers.get("x-pulse-secret") != cron_secret:
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"WhatsApp ingest error: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-    finally:
-        clear_action_context()
+    from core.skills.beeper_ingest import run_beeper_sync
+    result = await run_beeper_sync()
+    return {"success": True, "result": result}
 
 
 # --- APP VERSION CHECK (for in-app updates) ---

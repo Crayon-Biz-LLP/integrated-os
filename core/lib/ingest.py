@@ -57,6 +57,7 @@ async def ingest(
     tracking_id: Optional[str] = None,
     received_at: Optional[str] = None,
     body: Optional[str] = None,
+    direction: str = "incoming",
 ) -> dict:
     """Persist a classified message into the system.
 
@@ -75,6 +76,10 @@ async def ingest(
         tracking_id: Channel-specific dedup ID (e.g. Gmail message_id)
         received_at: ISO timestamp of when the message was received
         body: Full body text (for emails with truncated summary)
+        direction: "incoming" | "outgoing" — direction records which side
+            sent the message. Outgoing rows are stored but never surfaced
+            for approval (callers set direction='outgoing' only for
+            messages the user actually sent).
 
     Returns:
         dict with keys: status, action, message_id, memory_id, etc.
@@ -88,6 +93,7 @@ async def ingest(
         supabase.table('messages').insert({
             "channel": source,
             "source": source,
+            "direction": direction,
             "body": body_text[:20000],
             "summary": summary[:1000],
             "classification": "ignored",
@@ -106,6 +112,7 @@ async def ingest(
         row = {
             "channel": source,
             "source": source,
+            "direction": direction,
             "body": body_text[:20000],
             "summary": summary[:1000],
             "classification": "note",
@@ -147,6 +154,7 @@ async def ingest(
     row = {
         "channel": source,
         "source": source,
+        "direction": direction,
         "body": body_text[:20000],
         "summary": summary[:1000],
         "classification": classification,
@@ -221,3 +229,140 @@ async def ingest(
             audit_log_sync("ingest", "WARNING", f"Draft generation failed: {e}")
 
     return {"status": "filed", "classification": classification, "message_id": message_id}
+
+
+async def record_outgoing_message(
+    chat_id: str,
+    source: str,
+    body: str,
+    sender_name: str = "",
+    received_at: Optional[str] = None,
+    tracking_id: Optional[str] = None,
+    participant: Optional[str] = None,
+    summary: str = "",
+    metadata: Optional[dict] = None,
+) -> dict:
+    """Record a message the USER sent (direction='outgoing') and run the
+    auto-resolve rule for that chat.
+
+    Outgoing rows are stored but NEVER surfaced for approval: they carry
+    danny_decision='responded' (terminal), so every pending feed
+    (`is_('danny_decision', 'null')`) excludes them by construction — no
+    feed query changes needed.
+
+    This is the Phase A receptor for the Beeper bridge-agent (Phase B1):
+    the bridge sees the user's send, calls this, and the stale-decision
+    bug is fixed — any pending items in that same chat that arrived before
+    the reply are marked 'responded' and vanish from Quick Confirmation /
+    Decision Pulse.
+
+    Dedup (Phase B3 guard): the body-match window (24h, same channel +
+    chat) mirrors the incoming pipeline, so a message seen by both the old
+    MacroDroid pipe and the Beeper pipe cannot land twice.
+
+    Returns:
+        dict with keys: status, action, message_id, resolved, or
+        {"status": "duplicate"} when already recorded.
+    """
+    from datetime import datetime, timezone, timedelta
+
+    now = datetime.now(timezone.utc).isoformat()
+    recv_at = received_at or now
+    body_text = body.strip()
+
+    # ── Dedup: (a) exact Matrix event_id (re-delivered sync events — the
+    # unique_channel_message constraint is (channel, message_id), so a
+    # second insert of the same event_id would violate it), then (b) same
+    # channel + chat + body within 24h (parallel-run guard vs MacroDroid
+    # or duplicate replies). ──
+    try:
+        if tracking_id:
+            existing = (
+                supabase.table('messages')
+                .select('id')
+                .eq('channel', source)
+                .eq('direction', 'outgoing')
+                .eq('message_id', tracking_id)
+                .limit(1)
+                .maybe_single()
+                .execute()
+            )
+            if existing.data:
+                return {"status": "duplicate", "message_id": existing.data["id"]}
+        existing = (
+            supabase.table('messages')
+            .select('id')
+            .eq('channel', source)
+            .eq('direction', 'outgoing')
+            .eq('body', body_text[:20000])
+            .eq('metadata->>chat_id', chat_id)
+            .gte('received_at', (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat())
+            .limit(1)
+            .maybe_single()
+            .execute()
+        )
+        if existing.data:
+            return {"status": "duplicate", "message_id": existing.data["id"]}
+    except Exception as e:
+        audit_log_sync("ingest", "WARNING", f"record_outgoing dedup check failed: {e}")
+
+    # ── Store the outgoing row (terminal decision — never surfaced) ──
+    row = {
+        "channel": source,
+        "source": source,
+        "direction": "outgoing",
+        "body": body_text[:20000],
+        "summary": summary[:1000],
+        "classification": "ignored",  # records only — not an approval item
+        "danny_decision": "responded",
+        "decided_at": recv_at,
+        "sender_name": sender_name or "",
+        "processing_status": "completed",
+        "received_at": recv_at,
+        "metadata": {
+            # Caller-provided metadata first so the authoritative chat_id
+            # (and participant) below can never be clobbered.
+            **(metadata or {}),
+            "chat_id": chat_id,
+            **({} if not participant else {"participant": participant}),
+        },
+    }
+    if tracking_id:
+        row["message_id"] = tracking_id
+
+    try:
+        insert_res = supabase.table('messages').insert(row).execute()
+    except Exception as e:
+        audit_log_sync("ingest", "WARNING", f"record_outgoing_message insert failed: {e}")
+        return {"status": "error", "reason": str(e)}
+    if not insert_res.data:
+        return {"status": "error", "reason": "insert returned no data"}
+    message_id = insert_res.data[0]["id"]
+
+    # ── Auto-resolve rule: mark this chat's stale pending items responded ──
+    try:
+        from core.services.awaiting_reply import auto_resolve_on_outgoing
+        from core.services.db import get_tenant, tenant_mode_enabled
+        uid = get_tenant()
+        if uid or not tenant_mode_enabled():
+            result = auto_resolve_on_outgoing(
+                supabase, uid, chat_id, channel=source, replied_at=recv_at
+            )
+            resolved = result.get("resolved", 0)
+        else:
+            resolved = 0
+    except Exception as e:
+        audit_log_sync("ingest", "WARNING", f"auto-resolve failed for chat {chat_id}: {e}")
+        resolved = 0
+
+    audit_log_sync(
+        "ingest", "INFO",
+        f"Recorded outgoing {source} message in chat {chat_id} "
+        f"(id={message_id}); auto-resolved {resolved} pending item(s)",
+    )
+    return {
+        "status": "filed",
+        "action": "outgoing",
+        "message_id": message_id,
+        "resolved": resolved,
+    }

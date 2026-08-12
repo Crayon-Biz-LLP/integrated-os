@@ -120,3 +120,27 @@ def process_message_background(payload: dict):
         # route either, so the channel-tenant fallback is the original
         # behavior — preserve it exactly.
         asyncio.run(_run_web_message_pipeline(fake_update, session_id))
+
+
+# ── Beeper Bridge (Phase B1): sync the Matrix stream every 60s ───────
+# Zero-hardware capture path (B1 CONFIRMED): the stored Matrix token
+# authenticates against the PUBLIC homeserver matrix.beeper.com, so this
+# scheduled function is the bridge-agent — no Mac, no tunnel. Each tick
+# advances the per-tenant sync cursor and records the user's own sends
+# through record_outgoing_message(), which fires the auto-resolve rule
+# (stale pending decisions in a replied-to chat stop being surfaced).
+@app.function(
+    secrets=secrets,
+    schedule=modal.Period(seconds=60),
+    # Headroom for the FIRST tick: an initial /sync over 3,391 rooms is a
+    # large payload; subsequent incremental syncs are tiny. 300s covers the
+    # cold-start full sync comfortably.
+    timeout=300,
+)
+def beeper_bridge_sync():
+    """Scheduled bridge tick: fan out the Beeper Matrix sync per tenant."""
+    import asyncio
+    from core.skills.beeper_ingest import run_beeper_sync
+    result = asyncio.run(run_beeper_sync())
+    print(f"[beeper-bridge] {result}", flush=True)
+    return result
