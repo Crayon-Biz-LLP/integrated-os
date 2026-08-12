@@ -2847,9 +2847,11 @@ async def teams_action_batch_route(request: Request):
 # --- EMAIL DRAFT ACTIONS (send or drop a generated reply draft) ---
 @app.post("/api/draft-action")
 async def draft_action_route(request: Request):
-    """Send or drop a pending email reply draft from the app.
+    """Send, edit, or drop a pending email reply draft from the app.
 
     action='send' → deliver via Gmail/Outlook (send_draft_reply), status='sent'.
+    action='edit' → update draft_body (mirrors the web dashboard's edit) so
+        the user can fix a draft before sending. Requires draft_body.
     action='drop' → mark draft rejected (status='rejected') so it leaves the
     Inbox's Email Drafts section. Never deletes the row (audit-able).
     """
@@ -2858,8 +2860,8 @@ async def draft_action_route(request: Request):
         body = await request.json()
         draft_id = body.get('draft_id')
         action = (body.get('action') or '').lower()
-        if not draft_id or action not in ('send', 'drop'):
-            raise HTTPException(status_code=400, detail="draft_id and action (send|drop) required")
+        if not draft_id or action not in ('send', 'edit', 'drop'):
+            raise HTTPException(status_code=400, detail="draft_id and action (send|edit|drop) required")
 
         if action == 'send':
             success, error = await send_draft_reply(int(draft_id))
@@ -2867,8 +2869,21 @@ async def draft_action_route(request: Request):
                 return {"success": False, "message": error or "Failed to send draft"}
             return {"success": True, "message": "Draft sent"}
 
-        # drop
         supabase = tenant_aware_client()
+
+        if action == 'edit':
+            new_body = (body.get('draft_body') or '').strip()
+            if not new_body:
+                raise HTTPException(status_code=400, detail="draft_body required for edit")
+            supabase.table('email_drafts')\
+                .update({'draft_body': new_body[:3000]})\
+                .eq('id', int(draft_id))\
+                .eq('status', 'pending')\
+                .execute()
+            audit_log_sync("draft_action", "INFO", f"Draft {draft_id} edited from app Inbox")
+            return {"success": True, "message": "Draft updated"}
+
+        # drop
         supabase.table('email_drafts')\
             .update({'status': 'rejected'})\
             .eq('id', int(draft_id))\
@@ -3950,6 +3965,64 @@ async def beeper_sync_route(request: Request):
     from core.skills.beeper_ingest import run_beeper_sync
     result = await run_beeper_sync()
     return {"success": True, "result": result}
+
+
+# --- BEEPER SEND (Phase C — user-approved WhatsApp sends through Beeper) ---
+@app.post("/api/beeper-send")
+async def beeper_send_route(request: Request):
+    """Send a USER-APPROVED WhatsApp message through Beeper.
+
+    The app calls this only after the user taps approve on a drafted reply.
+    Auth: per-user API key (require_api_auth) — NOT the cron bearer gate,
+    because this is an action taken by the tenant's own app session, not a
+    server-side scheduled job. The tenant context resolved here scopes the
+    room-map lookup, the outgoing-message record, and the awaiting-reply
+    tracker to the caller.
+
+    Body: {"chat_id": <chat key or phone>, "message": <text>,
+           "mark_awaiting": true}
+
+    Returns the send status: sent (with event_id), no_room, no_token, or
+    error. On success the send is recorded as an outgoing message (stale
+    pending approvals in that chat auto-resolve) and the chat is marked
+    awaiting-reply.
+    """
+    uid = require_api_auth(request)
+    try:
+        body = await request.json()
+        chat_id = (body.get("chat_id") or "").strip()
+        message = (body.get("message") or "").strip()
+        if not chat_id:
+            raise HTTPException(status_code=400, detail="chat_id required")
+        if not message:
+            raise HTTPException(status_code=400, detail="message required")
+        # JSON booleans only — a "false" string would be truthy, so accept
+        # the literal True and treat everything else as False.
+        mark_awaiting = body.get("mark_awaiting") is True
+
+        from core.skills.beeper_send import send_whatsapp_message
+        result = await send_whatsapp_message(
+            chat_id, message, uid=uid, mark_awaiting=mark_awaiting,
+        )
+
+        if result.get("status") == "sent":
+            return {"success": True, **result}
+        # Client-visible failures: no_room = the bridge hasn't seen this
+        # chat yet (404 — the client asked for something that doesn't
+        # exist); no_token = server-side config gap (503 — not the
+        # client's fault); error = the send itself failed (502).
+        if result.get("status") == "no_room":
+            status = 404
+        elif result.get("status") == "no_token":
+            status = 503
+        else:
+            status = 502
+        return JSONResponse({"success": False, **result}, status_code=status)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Beeper send error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # --- APP VERSION CHECK (for in-app updates) ---

@@ -26,6 +26,14 @@ class DecisionItem {
   /// used to determine whether to show the context sheet for person approvals.
   final String? nodeType;
 
+  /// Ingest chat key for channel items (metadata.chat_id — the room name or
+  /// phone). Lets the reply flow send back to the right chat via Beeper.
+  final String? chatId;
+
+  /// True when this channel item arrived via the Beeper bridge (native Matrix
+  /// event id present) vs the legacy MacroDroid path. Renders as BEEPER.
+  final bool viaBeeper;
+
   const DecisionItem({
     required this.id,
     required this.type,
@@ -37,6 +45,8 @@ class DecisionItem {
     required this.createdAt,
     this.metadata = const {},
     this.nodeType,
+    this.chatId,
+    this.viaBeeper = false,
   });
 
   String get urgencyIcon {
@@ -128,6 +138,14 @@ class DecisionItem {
   /// Whether this item is a merge proposal.
   bool get isMergeProposal => type == DecisionType.merge;
 
+  /// Whether this card can reply directly into the chat (WhatsApp/Beeper
+  /// channel items carry a chat key; the send path needs it).
+  ///
+  /// Beeper-sourced rows always qualify (their chat key is a room name or
+  /// phone the bridge has seen). Legacy MacroDroid-era keys may not resolve
+  /// to a Matrix room yet — the send then fails with a clear no_room message.
+  bool get canReply => type == DecisionType.whatsapp && chatId != null && chatId!.isNotEmpty;
+
   /// Serializes this item for the on-device inbox cache.
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -140,6 +158,8 @@ class DecisionItem {
         'createdAt': createdAt.toIso8601String(),
         'metadata': metadata,
         'nodeType': nodeType,
+        'chatId': chatId,
+        'viaBeeper': viaBeeper,
       };
 
   /// Rebuilds an item from a cached [json] map. Falls back to safe defaults so
@@ -165,6 +185,8 @@ class DecisionItem {
           DateTime.now(),
       metadata: (json['metadata'] as Map?)?.cast<String, dynamic>() ?? const {},
       nodeType: json['nodeType'] as String?,
+      chatId: json['chatId'] as String?,
+      viaBeeper: json['viaBeeper'] as bool? ?? false,
     );
   }
 }

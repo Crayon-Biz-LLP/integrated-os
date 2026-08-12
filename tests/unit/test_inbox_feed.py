@@ -99,6 +99,42 @@ def test_shape_channel_message_untitled_fallback():
     assert shaped["status"] == "pending"
 
 
+def test_shape_channel_message_passes_matrix_event_id_for_beeper():
+    # Beeper-sourced rows carry the native Matrix event id in message_id —
+    # the app uses its presence to label the card BEEPER (vs legacy WHATSAPP)
+    # and to distinguish the source for the reply flow.
+    row = {
+        "id": 42,
+        "channel": "whatsapp",
+        "suggested_title": "CNF call?",
+        "message_id": "$matrix_event_abc123",
+        "metadata": {"chat_id": "919176322898"},
+    }
+    shaped = shape_channel_message(row)
+    assert shaped["message_id"] == "$matrix_event_abc123"
+
+
+def test_shape_channel_message_omits_message_id_when_absent():
+    # MacroDroid-era / email rows have no native event id — the field must be
+    # absent so the app does not label them Beeper.
+    row = {"id": 7, "channel": "email", "suggested_title": "Review PO"}
+    shaped = shape_channel_message(row)
+    assert "message_id" not in shaped
+
+
+def test_shape_channel_message_does_not_leak_email_tracking_id():
+    # messages.message_id also holds Gmail tracking ids on email rows — those
+    # must NOT be passed through, or the app would label email cards Beeper.
+    row = {
+        "id": 8,
+        "channel": "email",
+        "suggested_title": "Review PO",
+        "message_id": "msg-gmail-tracking-abc",
+    }
+    shaped = shape_channel_message(row)
+    assert "message_id" not in shaped
+
+
 # ── fetch_pending_channel_messages ────────────────────────────────
 
 def test_fetch_pending_channel_messages_returns_shaped_rows():

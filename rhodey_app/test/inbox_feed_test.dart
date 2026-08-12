@@ -61,5 +61,69 @@ void main() {
       });
       expect(restored.type, DecisionType.clarification);
     });
+
+    test('chatId and viaBeeper survive toJson/fromJson', () {
+      final item = DecisionItem(
+        id: 'api_whatsapp_5',
+        type: DecisionType.whatsapp,
+        priority: DecisionPriority.standard,
+        title: 'CNF call?',
+        createdAt: DateTime.utc(2026, 8, 11, 10),
+        chatId: '919176322898',
+        viaBeeper: true,
+      );
+      final restored = DecisionItem.fromJson(item.toJson());
+      expect(restored.chatId, '919176322898');
+      expect(restored.viaBeeper, isTrue);
+    });
+
+    test('cache round-trip defaults viaBeeper to false', () {
+      final restored = DecisionItem.fromJson({
+        'id': 'api_whatsapp_6',
+        'type': 'whatsapp',
+        'priority': 'standard',
+        'title': 'Legacy',
+        'chatId': 'Mahi Rathi',
+      });
+      expect(restored.viaBeeper, isFalse);
+      expect(restored.chatId, 'Mahi Rathi');
+    });
+  });
+
+  group('DecisionItem.canReply (Beeper reply flow)', () {
+    test('whatsapp item with a chat key can reply', () {
+      final item = DecisionItem(
+        id: 'api_whatsapp_7',
+        type: DecisionType.whatsapp,
+        priority: DecisionPriority.standard,
+        title: 'Confirm the CNF call',
+        createdAt: DateTime.utc(2026, 8, 11, 10),
+        chatId: 'Henry',
+      );
+      expect(item.canReply, isTrue);
+    });
+
+    test('whatsapp item without a chat key cannot reply', () {
+      final item = DecisionItem(
+        id: 'api_whatsapp_8',
+        type: DecisionType.whatsapp,
+        priority: DecisionPriority.standard,
+        title: 'No chat identity',
+        createdAt: DateTime.utc(2026, 8, 11, 10),
+      );
+      expect(item.canReply, isFalse);
+    });
+
+    test('non-whatsapp items never offer reply', () {
+      final item = DecisionItem(
+        id: 'api_email_1',
+        type: DecisionType.email,
+        priority: DecisionPriority.standard,
+        title: 'Review PO',
+        createdAt: DateTime.utc(2026, 8, 11, 10),
+        chatId: 'anything',
+      );
+      expect(item.canReply, isFalse);
+    });
   });
 }

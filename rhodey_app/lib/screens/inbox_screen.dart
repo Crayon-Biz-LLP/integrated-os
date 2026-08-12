@@ -146,14 +146,23 @@ class _InboxScreenState extends State<InboxScreen>
             pd.raw['type'] as String? ?? pd.raw['node_type'] as String?;
         final isMerge = status == 'merge_proposed';
         final source = pd.source;
+        final type = isMerge ? DecisionType.merge : _sourceToType(source);
+
+        // Channel items carry their ingest chat key in metadata.chat_id (the
+        // room name or phone) — the reply flow sends back to that chat. A
+        // native Matrix event id marks the item as Beeper-sourced.
+        final rawMeta = pd.raw['metadata'] is Map
+            ? (pd.raw['metadata'] as Map).cast<String, dynamic>()
+            : <String, dynamic>{};
+        final chatId = rawMeta['chat_id'] as String?;
+        final messageId = pd.raw['message_id'] as String?;
+        final viaBeeper = messageId != null && messageId.isNotEmpty;
 
         items.add(
           DecisionItem(
             id: 'api_${source}_${pd.id}',
-            type: isMerge ? DecisionType.merge : _sourceToType(source),
-            priority: isMerge
-                ? DecisionPriority.high
-                : DecisionPriority.standard,
+            type: type,
+            priority: _derivePriority(type, confidence, isMerge),
             title: pd.title,
             description: isMerge
                 ? 'Merge proposed — accept to combine duplicate nodes'
@@ -161,6 +170,8 @@ class _InboxScreenState extends State<InboxScreen>
             confidence: confidence > 0 ? confidence : null,
             createdAt: DateTime.now().subtract(const Duration(hours: 2)),
             nodeType: nodeType,
+            chatId: chatId,
+            viaBeeper: viaBeeper,
             metadata: {'api_id': pd.id, 'source': source},
           ),
         );
@@ -222,6 +233,31 @@ class _InboxScreenState extends State<InboxScreen>
       default:
         return DecisionType.clarification;
     }
+  }
+
+  /// Derive the priority bucket from what the feed actually tells us — the
+  /// old code hardcoded every non-merge item to standard, so the High
+  /// Priority / Low Effort sections were always empty.
+  ///
+  /// Rules (deliberately simple, judgment-based):
+  ///   - merges stay high (they decide data correctness)
+  ///   - low-confidence graph items (< 0.7) need human judgment → high
+  ///   - high-confidence graph items (>= 0.9) are near-certain → low effort
+  ///   - everything else (channels, clarifications, mid-confidence graph) → standard
+  DecisionPriority _derivePriority(
+    DecisionType type,
+    double confidence,
+    bool isMerge,
+  ) {
+    if (isMerge) return DecisionPriority.high;
+    // Clarifications are "awaiting your input" — blocking, like a merge.
+    if (type == DecisionType.clarification) return DecisionPriority.high;
+    final isGraph = type == DecisionType.edge || type == DecisionType.person;
+    if (isGraph) {
+      if (confidence > 0 && confidence < 0.7) return DecisionPriority.high;
+      if (confidence >= 0.9) return DecisionPriority.low;
+    }
+    return DecisionPriority.standard;
   }
 
   // ── Person Context Bottom Sheet (S1#1) ───────────────────────
@@ -680,6 +716,172 @@ class _InboxScreenState extends State<InboxScreen>
     }
   }
 
+  // ── Beeper Reply (Phase C — reply straight into the chat) ──────
+
+  Future<void> _showBeeperReplySheet(DecisionItem item) async {
+    final chatKey = item.chatId;
+    if (chatKey == null || chatKey.isEmpty) return;
+
+    final textController = TextEditingController();
+    final reply = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppTheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => Padding(
+        padding: EdgeInsets.only(
+          left: 20,
+          right: 20,
+          top: 16,
+          bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: AppTheme.textTertiary.withValues(alpha: 0.3),
+                borderRadius: BorderRadius.circular(2),
+              ),
+              margin: const EdgeInsets.only(bottom: 16),
+            ),
+            Row(
+              children: [
+                const Text('💬', style: TextStyle(fontSize: 14)),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    'Reply to $chatKey',
+                    style: AppTheme.title.copyWith(fontSize: 15),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Sends via Beeper to the original chat',
+              style: AppTheme.bodySmall.copyWith(
+                color: AppTheme.textTertiary,
+                fontSize: 12,
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: textController,
+              autofocus: true,
+              maxLines: 4,
+              minLines: 2,
+              textInputAction: TextInputAction.newline,
+              decoration: InputDecoration(
+                hintText: 'Type your reply…',
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide(color: AppTheme.border),
+                ),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 12,
+                ),
+              ),
+              style: AppTheme.body,
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(10),
+                      onTap: () => Navigator.pop(ctx, ''),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: AppTheme.border),
+                        ),
+                        child: const Text(
+                          'Cancel',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            color: AppTheme.textSecondary,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  flex: 2,
+                  child: Material(
+                    color: AppTheme.accent,
+                    borderRadius: BorderRadius.circular(10),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(10),
+                      onTap: () {
+                        final text = textController.text.trim();
+                        Navigator.pop(ctx, text);
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        child: const Text(
+                          'Send via Beeper',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (reply != null && reply.isNotEmpty && mounted) {
+      await _sendBeeperReply(item, reply);
+    }
+  }
+
+  Future<void> _sendBeeperReply(DecisionItem item, String message) async {
+    final chatKey = item.chatId;
+    if (chatKey == null || chatKey.isEmpty) return;
+
+    final result = await _api.sendBeeperMessage(chatKey, message);
+    if (!mounted) return;
+    if (result.success) {
+      // The send is recorded as outgoing → auto-resolve marks this chat's
+      // pending items responded, so the card (and its siblings in the chat)
+      // are handled — reload the feed to reflect the resolved state.
+      _showSnack('💬 Reply sent via Beeper', isError: false);
+      _removeItem(item);
+      _loadDecisions(silent: true);
+    } else {
+      final err = result.error ?? 'Failed to send reply';
+      // no_room is the honest failure for legacy chat keys the bridge hasn't
+      // seen yet — say so instead of a generic error.
+      if (err.contains('no Matrix room')) {
+        _showSnack('⚠️ This chat isn\'t synced by the bridge yet — approve or reject instead');
+      } else {
+        _showSnack(err);
+      }
+    }
+  }
+
   // ── Auto-Decision Confirm/Undo (S1#3) ────────────────────────
 
   // ── Email Drafts ──────────────────────────────────────────
@@ -707,6 +909,147 @@ class _InboxScreenState extends State<InboxScreen>
       _showSnack('Draft dropped', isError: false);
     } else {
       _showSnack(result.error ?? 'Failed to drop draft');
+    }
+  }
+
+  /// Edit a draft body before sending (mirrors the web dashboard).
+  Future<void> _editDraft(Map<String, dynamic> draft) async {
+    final draftId = draft['id'] as int?;
+    if (draftId == null) return;
+    final textController =
+        TextEditingController(text: draft['draft_body'] as String? ?? '');
+
+    final newBody = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppTheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => Padding(
+        padding: EdgeInsets.only(
+          left: 20,
+          right: 20,
+          top: 16,
+          bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: AppTheme.textTertiary.withValues(alpha: 0.3),
+                borderRadius: BorderRadius.circular(2),
+              ),
+              margin: const EdgeInsets.only(bottom: 16),
+            ),
+            Text(
+              'Edit draft',
+              style: AppTheme.title.copyWith(fontSize: 15),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              draft['subject'] as String? ?? 'Email draft',
+              style: AppTheme.bodySmall.copyWith(
+                color: AppTheme.textTertiary,
+                fontSize: 12,
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: textController,
+              autofocus: true,
+              maxLines: 8,
+              minLines: 4,
+              textInputAction: TextInputAction.newline,
+              decoration: InputDecoration(
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide(color: AppTheme.border),
+                ),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 12,
+                ),
+              ),
+              style: AppTheme.body,
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(10),
+                      onTap: () => Navigator.pop(ctx),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: AppTheme.border),
+                        ),
+                        child: const Text(
+                          'Cancel',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            color: AppTheme.textSecondary,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  flex: 2,
+                  child: Material(
+                    color: AppTheme.accent,
+                    borderRadius: BorderRadius.circular(10),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(10),
+                      onTap: () {
+                        final text = textController.text.trim();
+                        if (text.isNotEmpty) Navigator.pop(ctx, text);
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        child: const Text(
+                          'Save',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (newBody != null && newBody.isNotEmpty && mounted) {
+      final result = await _api.editDraft(draftId, newBody);
+      if (!mounted) return;
+      if (result.success) {
+        setState(() {
+          final i = _drafts.indexWhere((d) => d['id'] == draftId);
+          if (i >= 0) _drafts[i] = {..._drafts[i], 'draft_body': newBody};
+        });
+        _showSnack('✅ Draft updated', isError: false);
+      } else {
+        _showSnack(result.error ?? 'Failed to update draft');
+      }
     }
   }
 
@@ -755,10 +1098,34 @@ class _InboxScreenState extends State<InboxScreen>
   // ── Batch Operations (S2#7) ──────────────────────────────────
 
   Future<void> _batchApprove(String itemType) async {
-    final confirm = await _showBatchConfirm('Approve all $itemType?');
+    final count = _items.where((d) {
+      switch (itemType) {
+        case 'edges':
+          return d.type == DecisionType.edge;
+        case 'nodes':
+          return d.type == DecisionType.person;
+        case 'emails':
+          return d.type == DecisionType.email;
+        case 'whatsapps':
+          return d.type == DecisionType.whatsapp;
+        default:
+          return false;
+      }
+    }).length;
+    final confirm = await _showBatchConfirm(
+      'Approve $count $itemType?',
+    );
     if (!confirm || !mounted) return;
 
     ApiResult result;
+    // Channel batch routes require explicit ids (unlike graph/email batch
+    // which approve-all when ids are omitted) — collect the visible ids.
+    List<int> idsFor(DecisionType type) => _items
+        .where((d) => d.type == type)
+        .map((d) => int.tryParse(d.metadata['api_id'] as String? ?? ''))
+        .whereType<int>()
+        .toList();
+
     switch (itemType) {
       case 'edges':
         result = await _api.post(
@@ -773,10 +1140,10 @@ class _InboxScreenState extends State<InboxScreen>
         );
         break;
       case 'emails':
-        result = await _api.post(
-          '/api/email-action/batch',
-          body: {'action': 'approve'},
-        );
+        result = await _api.batchChannelAction('email', idsFor(DecisionType.email));
+        break;
+      case 'whatsapps':
+        result = await _api.batchChannelAction('whatsapp', idsFor(DecisionType.whatsapp));
         break;
       default:
         return;
@@ -878,6 +1245,12 @@ class _InboxScreenState extends State<InboxScreen>
     final nodeCount = nonMerges
         .where((d) => d.type == DecisionType.person)
         .length;
+    final emailCount = nonMerges
+        .where((d) => d.type == DecisionType.email)
+        .length;
+    final whatsappCount = nonMerges
+        .where((d) => d.type == DecisionType.whatsapp)
+        .length;
 
     return Scaffold(
       appBar: AppBar(
@@ -933,12 +1306,19 @@ class _InboxScreenState extends State<InboxScreen>
               ),
 
             // ── Batch Operations (S2#7) ──
-            if (edgeCount >= 2 || nodeCount >= 2)
+            if (edgeCount >= 2 ||
+                nodeCount >= 2 ||
+                emailCount >= 2 ||
+                whatsappCount >= 2)
               _BatchOperationsBar(
                 edgeCount: edgeCount,
                 nodeCount: nodeCount,
+                emailCount: emailCount,
+                whatsappCount: whatsappCount,
                 onApproveEdges: () => _batchApprove('edges'),
                 onApproveNodes: () => _batchApprove('nodes'),
+                onApproveEmails: () => _batchApprove('emails'),
+                onApproveWhatsapps: () => _batchApprove('whatsapps'),
               ),
 
             // ── Email Drafts (generated reply drafts awaiting approval) ──
@@ -949,6 +1329,7 @@ class _InboxScreenState extends State<InboxScreen>
                   draft: d,
                   onSend: () => _sendDraft(d),
                   onDrop: () => _dropDraft(d),
+                  onEdit: () => _editDraft(d),
                 ),
               ),
               const SizedBox(height: 16),
@@ -989,6 +1370,7 @@ class _InboxScreenState extends State<InboxScreen>
                 onMerge: d.type == DecisionType.person
                     ? () => _showMergeSheet(d)
                     : null,
+                onReply: d.canReply ? () => _showBeeperReplySheet(d) : null,
               ),
             ),
             if (highPriority.isNotEmpty && standardPriority.isNotEmpty)
@@ -1006,6 +1388,7 @@ class _InboxScreenState extends State<InboxScreen>
                 onMerge: d.type == DecisionType.person
                     ? () => _showMergeSheet(d)
                     : null,
+                onReply: d.canReply ? () => _showBeeperReplySheet(d) : null,
               ),
             ),
             if (standardPriority.isNotEmpty && lowPriority.isNotEmpty)
@@ -1017,9 +1400,13 @@ class _InboxScreenState extends State<InboxScreen>
                 item: d,
                 onApprove: () => _handleApprove(d),
                 onReject: () => _handleReject(d),
+                onEdit: d.type == DecisionType.edge
+                    ? () => _showEdgeEditSheet(d)
+                    : null,
                 onMerge: d.type == DecisionType.person
                     ? () => _showMergeSheet(d)
                     : null,
+                onReply: d.canReply ? () => _showBeeperReplySheet(d) : null,
               ),
             ),
 
@@ -1107,14 +1494,22 @@ class _AutoDecisionBanner extends StatelessWidget {
 class _BatchOperationsBar extends StatelessWidget {
   final int edgeCount;
   final int nodeCount;
+  final int emailCount;
+  final int whatsappCount;
   final VoidCallback onApproveEdges;
   final VoidCallback onApproveNodes;
+  final VoidCallback onApproveEmails;
+  final VoidCallback onApproveWhatsapps;
 
   const _BatchOperationsBar({
     required this.edgeCount,
     required this.nodeCount,
+    required this.emailCount,
+    required this.whatsappCount,
     required this.onApproveEdges,
     required this.onApproveNodes,
+    required this.onApproveEmails,
+    required this.onApproveWhatsapps,
   });
 
   @override
@@ -1147,6 +1542,18 @@ class _BatchOperationsBar extends StatelessWidget {
                 _ChipButton(
                   label: '✅ Approve $nodeCount nodes',
                   onTap: onApproveNodes,
+                  color: AppTheme.accent,
+                ),
+              if (emailCount >= 2)
+                _ChipButton(
+                  label: '✅ Approve $emailCount emails',
+                  onTap: onApproveEmails,
+                  color: AppTheme.accent,
+                ),
+              if (whatsappCount >= 2)
+                _ChipButton(
+                  label: '✅ Approve $whatsappCount chats',
+                  onTap: onApproveWhatsapps,
                   color: AppTheme.accent,
                 ),
             ],
@@ -1271,11 +1678,13 @@ class _DraftCard extends StatelessWidget {
   final Map<String, dynamic> draft;
   final VoidCallback onSend;
   final VoidCallback onDrop;
+  final VoidCallback? onEdit;
 
   const _DraftCard({
     required this.draft,
     required this.onSend,
     required this.onDrop,
+    this.onEdit,
   });
 
   @override
@@ -1342,6 +1751,15 @@ class _DraftCard extends StatelessWidget {
                   color: AppTheme.green,
                   onTap: onSend,
                 ),
+                if (onEdit != null) ...[
+                  const SizedBox(width: 6),
+                  _ActionButton(
+                    label: 'Edit',
+                    icon: Icons.edit_outlined,
+                    color: AppTheme.accent,
+                    onTap: onEdit,
+                  ),
+                ],
                 const Spacer(),
                 _ActionButton(
                   label: 'Drop',

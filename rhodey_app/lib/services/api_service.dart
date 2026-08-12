@@ -647,6 +647,45 @@ class ApiService {
     );
   }
 
+  /// Edit a pending email draft body (mirrors the web dashboard).
+  Future<ApiResult<dynamic>> editDraft(int draftId, String newBody) async {
+    return post(
+      '/api/draft-action',
+      body: {'draft_id': draftId, 'action': 'edit', 'draft_body': newBody},
+    );
+  }
+
+  /// Send a user-approved WhatsApp message via the Beeper bridge.
+  /// [chatKey] is the ingest chat key (room name or phone) from the card's
+  /// metadata.chat_id — the exact key /api/beeper-send resolves to a room.
+  /// The send also auto-resolves stale pending approvals in that chat, so
+  /// replying from the card clears the item.
+  Future<ApiResult<dynamic>> sendBeeperMessage(
+    String chatKey,
+    String message,
+  ) async {
+    return post(
+      '/api/beeper-send',
+      body: {'chat_id': chatKey, 'message': message},
+      timeout: const Duration(seconds: 20),
+    );
+  }
+
+  /// Batch approve/reject channel items (email/whatsapp/call/teams) by id.
+  /// The channel batch routes require explicit ids (unlike the graph batch
+  /// routes which approve-all when ids are omitted).
+  Future<ApiResult<dynamic>> batchChannelAction(
+    String channel,
+    List<int> ids, {
+    String action = 'approve',
+  }) async {
+    if (ids.isEmpty) return ApiResult.ok({'processed': 0, 'failed': 0});
+    return post(
+      '/api/$channel-action/batch',
+      body: {'ids': ids, 'action': action},
+    );
+  }
+
   /// Acknowledge (dismiss) an FYI item.
   Future<ApiResult<dynamic>> acknowledgeFyi(int itemId) async {
     return post(

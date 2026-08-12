@@ -13,6 +13,21 @@
 >
 > **Phase B1 — SHIPPED Aug 12:** the bridge-agent is live.
 >
+> **Phase C (send path) — SHIPPED Aug 12:** Rhodey can now EXECUTE, not
+> just triage.
+> - NEW `core/skills/beeper_send.py` — user-approved sends via the public
+>   Matrix API (`PUT /rooms/{id}/send/m.room.message/{txnId}`). Resolves
+>   the room id by inverting the per-tenant room map (chat_key OR phone).
+> - After-send wiring closes the Phase A tracker gap: the send is recorded
+>   via `record_outgoing_message()` (fires the auto-resolve rule — stale
+>   pending approvals in that chat become 'responded') AND the chat is
+>   marked awaiting-reply (`mark_chat_awaiting_reply` — the first
+>   production caller of the tracker, which was previously never called).
+> - NEW `POST /api/beeper-send` — API-key gated (per-user), human-paced
+>   (one message per request, no batching). The app calls it only after the
+>   user taps approve.
+> - Tests: `tests/unit/test_beeper_send.py` (10 tests).
+>
 > **CUTOVER (B3 skipped by decision, Aug 12) — SHIPPED:** MacroDroid is
 > retired WITHOUT the 1-week parallel-run validation window (user
 > decision: "I will start using this new method itself"). Changes:
@@ -149,7 +164,7 @@ carry WhatsApp ban risk or a number change; option 1 can't see your sends.
 - `core/skills/beeper_ingest.py` — WS listener + catch-up + direction-aware ingest
 - `direction` support through the pipeline (outgoing rows stored, never shown in approval)
 - Awaiting-reply tracker (Phase A, **shipped**) — links replies to open asks across any gap
-- Send path (Phase C) — Rhodey sends on your behalf via Beeper
+- Send path (Phase C, **shipped**) — `beeper_send.py` + `/api/beeper-send`; Rhodey sends on your behalf via Beeper
 - Internal `/api/beeper-ingest` route (bridge-agent → Modal)
 
 ---
@@ -203,7 +218,7 @@ carry WhatsApp ban risk or a number change; option 1 can't see your sends.
 | **B1** | Bridge-agent on Modal via Matrix sync | `beeper_ingest.py` | Best case: none | Both-direction messages ingested live |
 | **B2** | Bridge-agent via Desktop API + Remote Access tunnel | same + tunnel | Mac powered on | Same |
 | **B3** | **Parallel-run + cutover** | dual-write during validation window (e.g. 1 week) | No | Beeper parity ≥ MacroDroid (no missed incoming); then MacroDroid disabled |
-| **C** | Send path (Rhodey replies through Beeper) | app UI + `beeper_send.py` | No | Approved reply lands in WhatsApp |
+| **C** | Send path (Rhodey replies through Beeper) | `beeper_send.py` + `/api/beeper-send` | No | Approved reply lands in WhatsApp | ✅ **SHIPPED** (API + module; app send-approval UI is the remaining wiring — endpoint is ready for it) |
 | **D** | Remove MacroDroid webhook + old dedup path; cross-network identity; chat-tier learning | cleanup + graph merge | No | `api/whatsapp-ingest` disabled; cleanup script run |
 
 **Parallel-run rule (B3):** for one week both MacroDroid and Beeper feed the

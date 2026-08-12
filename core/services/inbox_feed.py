@@ -36,7 +36,7 @@ def shape_channel_message(row: dict) -> dict:
     (bigint) is exactly what `/api/{channel}-action` expects on approve.
     """
     channel = row.get("channel") or "email"
-    return {
+    shaped = {
         "id": row.get("id"),
         "content": row.get("suggested_title") or row.get("subject") or "Untitled",
         "source": channel,
@@ -46,6 +46,14 @@ def shape_channel_message(row: dict) -> dict:
         "sender": row.get("sender_name"),
         "metadata": row.get("metadata") or {},
     }
+    # Native Matrix event id — present only for Beeper-sourced WhatsApp rows.
+    # Lets the app label those cards BEEPER (vs legacy MacroDroid-era WHATSAPP)
+    # and distinguishes the source for the reply flow. Guarded to whatsapp
+    # because messages.message_id also carries Gmail tracking ids on email
+    # rows — those must not look Beeper-sourced.
+    if channel == "whatsapp" and row.get("message_id"):
+        shaped["message_id"] = row.get("message_id")
+    return shaped
 
 
 def fetch_pending_channel_messages(supabase, limit: int = 50) -> list[dict]:
@@ -55,7 +63,7 @@ def fetch_pending_channel_messages(supabase, limit: int = 50) -> list[dict]:
             supabase.table("messages")
             .select(
                 "id, channel, classification, suggested_title, subject, "
-                "sender_name, created_at, received_at, metadata"
+                "sender_name, created_at, received_at, metadata, message_id"
             )
             .is_("danny_decision", "null")
             .in_("channel", PENDING_CHANNELS)

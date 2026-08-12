@@ -9,6 +9,9 @@ class DecisionCard extends StatelessWidget {
   final VoidCallback? onEdit;
   final VoidCallback? onMerge;
 
+  /// Opens the compose sheet to reply directly into the chat (Beeper send).
+  final VoidCallback? onReply;
+
   const DecisionCard({
     super.key,
     required this.item,
@@ -16,6 +19,7 @@ class DecisionCard extends StatelessWidget {
     this.onReject,
     this.onEdit,
     this.onMerge,
+    this.onReply,
   });
 
   @override
@@ -109,6 +113,15 @@ class DecisionCard extends StatelessWidget {
                     onTap: onEdit,
                   ),
                 ],
+                if (onReply != null) ...[
+                  const SizedBox(width: 6),
+                  _ActionButton(
+                    label: 'Reply',
+                    icon: Icons.reply,
+                    color: AppTheme.accent,
+                    onTap: onReply,
+                  ),
+                ],
                 if (onMerge != null) ...[
                   const SizedBox(width: 6),
                   _ActionButton(
@@ -146,7 +159,7 @@ class DecisionCard extends StatelessWidget {
       case DecisionType.email:
         return 'EMAIL';
       case DecisionType.whatsapp:
-        return 'WHATSAPP';
+        return item.viaBeeper ? 'BEEPER' : 'WHATSAPP';
       case DecisionType.call:
         return 'CALL';
       case DecisionType.teams:

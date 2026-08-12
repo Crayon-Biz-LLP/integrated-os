@@ -295,16 +295,22 @@ def _save_cursor(supabase, uid: str | None, since: str) -> None:
 # to it when they are not.
 
 
-def _room_map_key(uid: str | None) -> str:
+def room_map_key(uid: str | None) -> str:
     return ROOM_MAP_KEY if not uid else f"{ROOM_MAP_KEY}:{uid}"
 
 
-def _load_room_map(supabase, uid: str | None) -> dict:
+def load_room_map(supabase, uid: str | None) -> dict:
+    """Load the per-tenant room map (room_id → entry). Empty on failure.
+
+    Shared with the send path (beeper_send) so the inverse lookup
+    (chat_key/phone → room_id) reads the exact same persisted map the
+    bridge writes.
+    """
     try:
         res = (
             supabase.table("core_config")
             .select("content")
-            .eq("key", _room_map_key(uid))
+            .eq("key", room_map_key(uid))
             .limit(1)
             .maybe_single()
             .execute()
@@ -317,10 +323,10 @@ def _load_room_map(supabase, uid: str | None) -> dict:
     return {}
 
 
-def _save_room_map(supabase, uid: str | None, room_map: dict) -> None:
+def save_room_map(supabase, uid: str | None, room_map: dict) -> None:
     try:
         core_config_upsert(supabase, {
-            "key": _room_map_key(uid),
+            "key": room_map_key(uid),
             "content": room_map,
         })
     except Exception as e:
@@ -396,7 +402,7 @@ async def process_sync_tick(
     summary = {"outgoing": 0, "incoming": 0, "skipped": 0,
                "rooms_seen": 0, "errors": 0}
 
-    room_map = _load_room_map(supabase, uid)
+    room_map = load_room_map(supabase, uid)
     dirty = False
 
     joined = (payload.get("rooms") or {}).get("join") or {}
@@ -479,7 +485,7 @@ async def process_sync_tick(
                     summary["errors"] += 1
 
     if dirty:
-        _save_room_map(supabase, uid, room_map)
+        save_room_map(supabase, uid, room_map)
     return summary
 
 
