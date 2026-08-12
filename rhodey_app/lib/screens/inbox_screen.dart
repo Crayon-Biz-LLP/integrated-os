@@ -44,6 +44,16 @@ class _InboxScreenState extends State<InboxScreen>
   /// Count of unverified auto-decisions — fetched on load
   int _autoDecisionCount = 0;
 
+  /// Active type filter for the decision list (null = all types).
+  DecisionType? _typeFilter;
+
+  /// True while batch-selection mode is active (select → approve/reject).
+  bool _selectionMode = false;
+
+  /// Selected decision ids (DecisionItem.id — the stable card id). Only
+  /// selectable types (everything except clarifications) can be selected.
+  final Set<String> _selectedIds = {};
+
   /// Notification content carried in the push — rendered instantly on tap so
   /// the Inbox never shows a bare spinner before the real list arrives.
   String _pushContent = '';
@@ -187,7 +197,15 @@ class _InboxScreenState extends State<InboxScreen>
         // rendered inbox; the full spinner only shows on first load.
         if (!result.success && _items.isNotEmpty) return;
         _items = items;
-        _loading = false;
+        _loading =
+            false; // A filter pointing at a type with no remaining items would strand
+        // the screen on an empty view — fall back to All.
+        if (_typeFilter != null && !_items.any((d) => d.type == _typeFilter)) {
+          _typeFilter = null;
+        }
+        // Prune selections that no longer exist after a silent reload (items
+        // actioned elsewhere) — the "N selected" count must stay honest.
+        _selectedIds.retainWhere((id) => _items.any((d) => d.id == id));
       });
     }
 
@@ -875,7 +893,9 @@ class _InboxScreenState extends State<InboxScreen>
       // no_room is the honest failure for legacy chat keys the bridge hasn't
       // seen yet — say so instead of a generic error.
       if (err.contains('no Matrix room')) {
-        _showSnack('⚠️ This chat isn\'t synced by the bridge yet — approve or reject instead');
+        _showSnack(
+          '⚠️ This chat isn\'t synced by the bridge yet — approve or reject instead',
+        );
       } else {
         _showSnack(err);
       }
@@ -916,8 +936,9 @@ class _InboxScreenState extends State<InboxScreen>
   Future<void> _editDraft(Map<String, dynamic> draft) async {
     final draftId = draft['id'] as int?;
     if (draftId == null) return;
-    final textController =
-        TextEditingController(text: draft['draft_body'] as String? ?? '');
+    final textController = TextEditingController(
+      text: draft['draft_body'] as String? ?? '',
+    );
 
     final newBody = await showModalBottomSheet<String>(
       context: context,
@@ -946,10 +967,7 @@ class _InboxScreenState extends State<InboxScreen>
               ),
               margin: const EdgeInsets.only(bottom: 16),
             ),
-            Text(
-              'Edit draft',
-              style: AppTheme.title.copyWith(fontSize: 15),
-            ),
+            Text('Edit draft', style: AppTheme.title.copyWith(fontSize: 15)),
             const SizedBox(height: 4),
             Text(
               draft['subject'] as String? ?? 'Email draft',
@@ -1095,67 +1113,275 @@ class _InboxScreenState extends State<InboxScreen>
     }
   }
 
-  // ── Batch Operations (S2#7) ──────────────────────────────────
+  // ── Batch Selection (filter + select → approve/reject) ───────
 
-  Future<void> _batchApprove(String itemType) async {
-    final count = _items.where((d) {
-      switch (itemType) {
-        case 'edges':
-          return d.type == DecisionType.edge;
-        case 'nodes':
-          return d.type == DecisionType.person;
-        case 'emails':
-          return d.type == DecisionType.email;
-        case 'whatsapps':
-          return d.type == DecisionType.whatsapp;
-        default:
-          return false;
+  void _toggleSelectionMode() {
+    setState(() {
+      _selectionMode = !_selectionMode;
+      _selectedIds.clear();
+    });
+  }
+
+  /// An item can be batch-selected only when it has a resolvable server id
+  /// (api_id) — a selection that can't be acted on would silently vanish from
+  /// the batch and make the "N selected" count lie.
+  bool _isSelectable(DecisionItem d) {
+    if (d.type == DecisionType.clarification) return false;
+    return int.tryParse(d.metadata['api_id'] as String? ?? '') != null;
+  }
+
+  void _toggleSelect(String id) {
+    for (final d in _items) {
+      if (d.id == id) {
+        if (!_isSelectable(d)) return;
+        setState(() {
+          if (!_selectedIds.add(id)) _selectedIds.remove(id);
+        });
+        return;
       }
-    }).length;
-    final confirm = await _showBatchConfirm(
-      'Approve $count $itemType?',
-    );
+    }
+  }
+
+  void _selectAllVisible() {
+    setState(() {
+      _selectedIds.clear();
+      for (final d in _items) {
+        if (!_isSelectable(d)) continue;
+        if (_typeFilter != null && d.type != _typeFilter) continue;
+        _selectedIds.add(d.id);
+      }
+    });
+  }
+
+  /// Group the selected items by type and route each group through its batch
+  /// endpoint (the same per-item handlers the Inbox approve/reject use, so
+  /// every decision still writes its learning signals). Merges have no batch
+  /// route — they go through the per-item accept/reject calls.
+  Future<void> _batchSelected(String action) async {
+    if (_selectedIds.isEmpty) return;
+
+    final selected = _items.where((d) => _selectedIds.contains(d.id)).toList();
+    final graphCount = selected
+        .where(
+          (d) => d.type == DecisionType.person || d.type == DecisionType.edge,
+        )
+        .length;
+    final verb = action == 'approve' ? 'Approve' : 'Reject';
+    final message = action == 'reject' && graphCount > 0
+        ? 'Rejecting ${_selectedIds.length} item(s) — $graphCount graph '
+              'item(s). Graph rejects are permanent and can\'t be undone. '
+              'Continue?'
+        : '$verb ${_selectedIds.length} selected item(s)?';
+    final confirm = await _showBatchConfirm(message);
     if (!confirm || !mounted) return;
 
-    ApiResult result;
-    // Channel batch routes require explicit ids (unlike graph/email batch
-    // which approve-all when ids are omitted) — collect the visible ids.
-    List<int> idsFor(DecisionType type) => _items
-        .where((d) => d.type == type)
-        .map((d) => int.tryParse(d.metadata['api_id'] as String? ?? ''))
-        .whereType<int>()
-        .toList();
+    // Route by type: graph batch routes accept ids+action; channel batch
+    // routes require explicit ids; merges use the per-item merge endpoints.
+    final byType = <DecisionType, List<int>>{};
+    for (final d in selected) {
+      final apiId = int.tryParse(d.metadata['api_id'] as String? ?? '');
+      if (apiId != null) byType.putIfAbsent(d.type, () => []).add(apiId);
+    }
 
-    switch (itemType) {
-      case 'edges':
-        result = await _api.post(
-          '/api/graph-edge-action/batch',
-          body: {'action': 'approve'},
-        );
-        break;
-      case 'nodes':
-        result = await _api.post(
-          '/api/graph-node-action/batch',
-          body: {'action': 'approve'},
-        );
-        break;
-      case 'emails':
-        result = await _api.batchChannelAction('email', idsFor(DecisionType.email));
-        break;
-      case 'whatsapps':
-        result = await _api.batchChannelAction('whatsapp', idsFor(DecisionType.whatsapp));
-        break;
-      default:
-        return;
+    var processed = 0;
+    var failed = 0;
+    void tally(ApiResult<dynamic> r) {
+      if (r.success) {
+        final n = (r.data is Map) ? (r.data as Map)['processed'] : null;
+        processed += (n is int) ? n : 1;
+      } else {
+        failed += 1;
+      }
+    }
+
+    for (final entry in byType.entries) {
+      final ids = entry.value;
+      switch (entry.key) {
+        case DecisionType.edge:
+          tally(
+            await _api.post(
+              '/api/graph-edge-action/batch',
+              body: {'ids': ids, 'action': action},
+            ),
+          );
+          break;
+        case DecisionType.person:
+          tally(
+            await _api.post(
+              '/api/graph-node-action/batch',
+              body: {'ids': ids, 'action': action},
+            ),
+          );
+          break;
+        case DecisionType.email:
+        case DecisionType.whatsapp:
+        case DecisionType.call:
+        case DecisionType.teams:
+          tally(
+            await _api.batchChannelAction(entry.key.name, ids, action: action),
+          );
+          break;
+        case DecisionType.merge:
+          for (final id in ids) {
+            tally(
+              action == 'approve'
+                  ? await _api.acceptMerge(id)
+                  : await _api.rejectMerge(id),
+            );
+          }
+          break;
+        case DecisionType.clarification:
+          break;
+      }
     }
 
     if (!mounted) return;
-    if (result.success) {
-      _loadDecisions();
-      _showSnack('✅ Approved all $itemType', isError: false);
-    } else {
-      _showSnack(result.error ?? 'Batch approve failed');
+    _selectionMode = false;
+    _selectedIds.clear();
+    _loadDecisions();
+    _showSnack(
+      failed == 0
+          ? '✅ $verb ${processed + failed} item(s)'
+          : '⚠️ $verb $processed, $failed failed',
+      isError: failed > 0,
+    );
+  }
+
+  /// Short label for a filter chip (noun form).
+  String _chipLabel(DecisionType t) {
+    switch (t) {
+      case DecisionType.edge:
+        return 'Edges';
+      case DecisionType.person:
+        return 'Nodes';
+      case DecisionType.email:
+        return 'Emails';
+      case DecisionType.whatsapp:
+        return 'Chats';
+      case DecisionType.call:
+        return 'Calls';
+      case DecisionType.teams:
+        return 'Teams';
+      case DecisionType.merge:
+        return 'Merges';
+      case DecisionType.clarification:
+        return 'Clarify';
     }
+  }
+
+  /// Short label for the filtered-empty state (singular form).
+  String _filterLabel(DecisionType? type) {
+    switch (type) {
+      case DecisionType.edge:
+        return 'edge';
+      case DecisionType.person:
+        return 'node';
+      case DecisionType.email:
+        return 'email';
+      case DecisionType.whatsapp:
+        return 'chat';
+      case DecisionType.call:
+        return 'call';
+      case DecisionType.teams:
+        return 'teams';
+      case DecisionType.merge:
+        return 'merge';
+      case DecisionType.clarification:
+        return 'clarification';
+      case null:
+        return 'pending';
+    }
+  }
+
+  /// Horizontal chip row that filters the decision list by type. Types with
+  /// zero pending items are hidden to reduce noise.
+  Widget _buildFilterChips() {
+    final chipTypes = DecisionType.values
+        .where((t) => t != DecisionType.clarification)
+        .toList();
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      child: Row(
+        children: [
+          _ChipButton(
+            label: 'All',
+            color: _typeFilter == null
+                ? AppTheme.accent
+                : AppTheme.textTertiary,
+            // Clearing selection on filter change keeps the batch honest:
+            // selections never silently include items hidden by the filter.
+            onTap: () => setState(() {
+              _typeFilter = null;
+              _selectedIds.clear();
+            }),
+          ),
+          for (final t in chipTypes)
+            if (_items.any((d) => d.type == t)) ...[
+              const SizedBox(width: 6),
+              _ChipButton(
+                label:
+                    '${_chipLabel(t)} ${_items.where((d) => d.type == t).length}',
+                color: _typeFilter == t
+                    ? AppTheme.accent
+                    : AppTheme.textTertiary,
+                onTap: () => setState(() {
+                  _typeFilter = t;
+                  _selectedIds.clear();
+                }),
+              ),
+            ],
+        ],
+      ),
+    );
+  }
+
+  /// Bottom action bar while selection mode is active.
+  Widget _buildSelectionBar() {
+    final n = _selectedIds.length;
+    return SafeArea(
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 10),
+        decoration: BoxDecoration(
+          color: AppTheme.surface,
+          border: const Border(top: BorderSide(color: AppTheme.border)),
+        ),
+        // Horizontally scrollable so the bar never overflows on narrow
+        // phones (count label + Select all + Approve + Reject).
+        child: SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            children: [
+              Text(
+                n == 0 ? 'Select items' : '$n selected',
+                style: AppTheme.caption.copyWith(
+                  color: n == 0 ? AppTheme.textTertiary : AppTheme.accent,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const Spacer(),
+              _ChipButton(
+                label: 'Select all',
+                onTap: _selectAllVisible,
+                color: AppTheme.textTertiary,
+              ),
+              const SizedBox(width: 6),
+              _ChipButton(
+                label: '✅ Approve',
+                onTap: n == 0 ? null : () => _batchSelected('approve'),
+                color: AppTheme.green,
+              ),
+              const SizedBox(width: 6),
+              _ChipButton(
+                label: '❌ Reject',
+                onTap: n == 0 ? null : () => _batchSelected('reject'),
+                color: AppTheme.red,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   Future<bool> _showBatchConfirm(String message) async {
@@ -1213,7 +1439,10 @@ class _InboxScreenState extends State<InboxScreen>
           body: ListView(
             padding: const EdgeInsets.fromLTRB(0, 8, 0, 40),
             children: [
-              PushBanner(title: PersonaStore.current.inbox, content: _pushContent),
+              PushBanner(
+                title: PersonaStore.current.inbox,
+                content: _pushContent,
+              ),
               const SizedBox(height: 48),
               const Center(child: CircularProgressIndicator()),
             ],
@@ -1226,8 +1455,14 @@ class _InboxScreenState extends State<InboxScreen>
       );
     }
 
-    final merges = _items.where((d) => d.isMergeProposal).toList();
-    final nonMerges = _items.where((d) => !d.isMergeProposal).toList();
+    // Apply the active type filter first — every section below derives from
+    // the filtered pool so "All" shows everything and a single-type filter
+    // zooms the whole screen to that bucket.
+    final visible = _items
+        .where((d) => _typeFilter == null || d.type == _typeFilter)
+        .toList();
+    final merges = visible.where((d) => d.isMergeProposal).toList();
+    final nonMerges = visible.where((d) => !d.isMergeProposal).toList();
     final highPriority = nonMerges
         .where((d) => d.priority == DecisionPriority.high)
         .toList();
@@ -1237,20 +1472,6 @@ class _InboxScreenState extends State<InboxScreen>
     final lowPriority = nonMerges
         .where((d) => d.priority == DecisionPriority.low)
         .toList();
-
-    // Count types for batch operations
-    final edgeCount = nonMerges
-        .where((d) => d.type == DecisionType.edge)
-        .length;
-    final nodeCount = nonMerges
-        .where((d) => d.type == DecisionType.person)
-        .length;
-    final emailCount = nonMerges
-        .where((d) => d.type == DecisionType.email)
-        .length;
-    final whatsappCount = nonMerges
-        .where((d) => d.type == DecisionType.whatsapp)
-        .length;
 
     return Scaffold(
       appBar: AppBar(
@@ -1265,17 +1486,38 @@ class _InboxScreenState extends State<InboxScreen>
                 borderRadius: BorderRadius.circular(AppTheme.controlRadius),
               ),
               child: Text(
-                '${_items.length} pending',
+                _typeFilter == null
+                    ? '${_items.length} pending'
+                    : '${visible.length} of ${_items.length}',
                 style: AppTheme.monoLabel.copyWith(color: AppTheme.accent),
               ),
             ),
           ],
         ),
+        actions: [
+          // Batch-selection toggle — hidden when nothing is selectable.
+          if (_items.any(_isSelectable))
+            TextButton(
+              onPressed: _toggleSelectionMode,
+              child: Text(
+                _selectionMode ? 'Done' : 'Select',
+                style: TextStyle(
+                  color: _selectionMode
+                      ? AppTheme.accent
+                      : AppTheme.textTertiary,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          const SizedBox(width: 4),
+        ],
       ),
       body: RefreshIndicator(
         onRefresh: _loadDecisions,
         child: ListView(
-          padding: const EdgeInsets.fromLTRB(0, 8, 0, 80),
+          // Extra bottom padding in selection mode so the last card clears
+          // the selection action bar.
+          padding: EdgeInsets.fromLTRB(0, 8, 0, _selectionMode ? 140 : 80),
           children: [
             // Instant content from the notification that opened this screen
             if (_pushContent.isNotEmpty)
@@ -1305,21 +1547,8 @@ class _InboxScreenState extends State<InboxScreen>
                 onUndoChannels: _undoAutoChannelDecisions,
               ),
 
-            // ── Batch Operations (S2#7) ──
-            if (edgeCount >= 2 ||
-                nodeCount >= 2 ||
-                emailCount >= 2 ||
-                whatsappCount >= 2)
-              _BatchOperationsBar(
-                edgeCount: edgeCount,
-                nodeCount: nodeCount,
-                emailCount: emailCount,
-                whatsappCount: whatsappCount,
-                onApproveEdges: () => _batchApprove('edges'),
-                onApproveNodes: () => _batchApprove('nodes'),
-                onApproveEmails: () => _batchApprove('emails'),
-                onApproveWhatsapps: () => _batchApprove('whatsapps'),
-              ),
+            // ── Type filter chips ──
+            _buildFilterChips(),
 
             // ── Email Drafts (generated reply drafts awaiting approval) ──
             if (_drafts.isNotEmpty) ...[
@@ -1352,6 +1581,9 @@ class _InboxScreenState extends State<InboxScreen>
                   item: d,
                   onApprove: () => _handleApprove(d),
                   onReject: () => _handleReject(d),
+                  selectionMode: _selectionMode && _isSelectable(d),
+                  selected: _selectedIds.contains(d.id),
+                  onToggleSelect: () => _toggleSelect(d.id),
                 ),
               ),
               if (nonMerges.isNotEmpty) const SizedBox(height: 16),
@@ -1371,6 +1603,9 @@ class _InboxScreenState extends State<InboxScreen>
                     ? () => _showMergeSheet(d)
                     : null,
                 onReply: d.canReply ? () => _showBeeperReplySheet(d) : null,
+                selectionMode: _selectionMode && _isSelectable(d),
+                selected: _selectedIds.contains(d.id),
+                onToggleSelect: () => _toggleSelect(d.id),
               ),
             ),
             if (highPriority.isNotEmpty && standardPriority.isNotEmpty)
@@ -1389,6 +1624,9 @@ class _InboxScreenState extends State<InboxScreen>
                     ? () => _showMergeSheet(d)
                     : null,
                 onReply: d.canReply ? () => _showBeeperReplySheet(d) : null,
+                selectionMode: _selectionMode && _isSelectable(d),
+                selected: _selectedIds.contains(d.id),
+                onToggleSelect: () => _toggleSelect(d.id),
               ),
             ),
             if (standardPriority.isNotEmpty && lowPriority.isNotEmpty)
@@ -1407,6 +1645,9 @@ class _InboxScreenState extends State<InboxScreen>
                     ? () => _showMergeSheet(d)
                     : null,
                 onReply: d.canReply ? () => _showBeeperReplySheet(d) : null,
+                selectionMode: _selectionMode && _isSelectable(d),
+                selected: _selectedIds.contains(d.id),
+                onToggleSelect: () => _toggleSelect(d.id),
               ),
             ),
 
@@ -1418,10 +1659,23 @@ class _InboxScreenState extends State<InboxScreen>
                   style: TextStyle(color: AppTheme.textTertiary, fontSize: 13),
                 ),
               ),
+            ] else if (visible.isEmpty) ...[
+              const SizedBox(height: 40),
+              Center(
+                child: Text(
+                  'No ${_filterLabel(_typeFilter)} items in the queue',
+                  style: const TextStyle(
+                    color: AppTheme.textTertiary,
+                    fontSize: 13,
+                  ),
+                ),
+              ),
             ],
           ],
         ),
       ),
+      // Batch-selection action bar — swaps in while selection mode is on.
+      bottomNavigationBar: _selectionMode ? _buildSelectionBar() : null,
     );
   }
 }
@@ -1489,86 +1743,14 @@ class _AutoDecisionBanner extends StatelessWidget {
   }
 }
 
-// ── Batch Operations Bar (S2#7) ─────────────────────────────────
-
-class _BatchOperationsBar extends StatelessWidget {
-  final int edgeCount;
-  final int nodeCount;
-  final int emailCount;
-  final int whatsappCount;
-  final VoidCallback onApproveEdges;
-  final VoidCallback onApproveNodes;
-  final VoidCallback onApproveEmails;
-  final VoidCallback onApproveWhatsapps;
-
-  const _BatchOperationsBar({
-    required this.edgeCount,
-    required this.nodeCount,
-    required this.emailCount,
-    required this.whatsappCount,
-    required this.onApproveEdges,
-    required this.onApproveNodes,
-    required this.onApproveEmails,
-    required this.onApproveWhatsapps,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'BATCH ACTIONS',
-            style: TextStyle(
-              color: AppTheme.textTertiary.withValues(alpha: 0.6),
-              fontSize: 10,
-              letterSpacing: 0.8,
-            ),
-          ),
-          const SizedBox(height: 6),
-          Wrap(
-            spacing: 6,
-            runSpacing: 6,
-            children: [
-              if (edgeCount >= 2)
-                _ChipButton(
-                  label: '✅ Approve $edgeCount edges',
-                  onTap: onApproveEdges,
-                  color: AppTheme.accent,
-                ),
-              if (nodeCount >= 2)
-                _ChipButton(
-                  label: '✅ Approve $nodeCount nodes',
-                  onTap: onApproveNodes,
-                  color: AppTheme.accent,
-                ),
-              if (emailCount >= 2)
-                _ChipButton(
-                  label: '✅ Approve $emailCount emails',
-                  onTap: onApproveEmails,
-                  color: AppTheme.accent,
-                ),
-              if (whatsappCount >= 2)
-                _ChipButton(
-                  label: '✅ Approve $whatsappCount chats',
-                  onTap: onApproveWhatsapps,
-                  color: AppTheme.accent,
-                ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 // ── Chip Button Widget ──────────────────────────────────────────
 
 class _ChipButton extends StatelessWidget {
   final String label;
-  final VoidCallback onTap;
+
+  /// Null disables the chip (dimmed, no tap) — used by the selection bar's
+  /// Approve/Reject buttons when nothing is selected.
+  final VoidCallback? onTap;
   final Color color;
 
   const _ChipButton({
@@ -1579,6 +1761,7 @@ class _ChipButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final dimmed = onTap == null;
     return Material(
       color: color.withValues(alpha: 0.1),
       borderRadius: BorderRadius.circular(8),
@@ -1590,7 +1773,7 @@ class _ChipButton extends StatelessWidget {
           child: Text(
             label,
             style: TextStyle(
-              color: color,
+              color: dimmed ? color.withValues(alpha: 0.35) : color,
               fontSize: 11,
               fontWeight: FontWeight.w600,
             ),
@@ -1714,8 +1897,9 @@ class _DraftCard extends StatelessWidget {
                   Flexible(
                     child: Text(
                       sender,
-                      style: AppTheme.caption
-                          .copyWith(color: AppTheme.textTertiary),
+                      style: AppTheme.caption.copyWith(
+                        color: AppTheme.textTertiary,
+                      ),
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
@@ -1812,15 +1996,18 @@ class _FyiCard extends StatelessWidget {
               children: [
                 Text(channelIcon, style: const TextStyle(fontSize: 14)),
                 const SizedBox(width: 6),
-                Text('FYI · ${channel.toUpperCase()}',
-                    style: AppTheme.monoLabel),
+                Text(
+                  'FYI · ${channel.toUpperCase()}',
+                  style: AppTheme.monoLabel,
+                ),
                 const Spacer(),
                 if (sender != null)
                   Flexible(
                     child: Text(
                       sender,
-                      style: AppTheme.caption
-                          .copyWith(color: AppTheme.textTertiary),
+                      style: AppTheme.caption.copyWith(
+                        color: AppTheme.textTertiary,
+                      ),
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
