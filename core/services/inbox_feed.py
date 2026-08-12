@@ -108,6 +108,25 @@ def fetch_pending_drafts(supabase, limit: int = 20) -> list[dict]:
     return out
 
 
+def _fyi_preview(r: dict, limit: int = 80) -> str:
+    """A real, human-readable title for an FYI item.
+
+    FYI rows carry no suggested_title/subject (they are informational, not
+    task proposals), so the old `or "Untitled"` fallback made EVERY FYI card
+    in the app read "Untitled". Prefer the actual message text (body) so the
+    card shows what was said, then the classifier's summary, then give up.
+    The summary itself is still sent as the card's detail line.
+    """
+    for candidate in (r.get("suggested_title"), r.get("subject"),
+                      r.get("body"), r.get("summary")):
+        if not candidate or not str(candidate).strip():
+            continue
+        text = " ".join(str(candidate).split())
+        if text:
+            return text[:limit]
+    return "Untitled"
+
+
 def fetch_fyi_messages(supabase, limit: int = 20) -> list[dict]:
     """Undecided FYI channel items — informational, not approvals."""
     try:
@@ -115,7 +134,7 @@ def fetch_fyi_messages(supabase, limit: int = 20) -> list[dict]:
             supabase.table("messages")
             .select(
                 "id, channel, classification, suggested_title, subject, "
-                "sender_name, summary, created_at, received_at"
+                "sender_name, summary, body, created_at, received_at"
             )
             .is_("danny_decision", "null")
             .in_("channel", PENDING_CHANNELS)
@@ -131,7 +150,7 @@ def fetch_fyi_messages(supabase, limit: int = 20) -> list[dict]:
         out.append({
             "id": r.get("id"),
             "channel": r.get("channel") or "email",
-            "title": r.get("suggested_title") or r.get("subject") or "Untitled",
+            "title": _fyi_preview(r),
             "sender_name": r.get("sender_name"),
             "summary": (r.get("summary") or "")[:300],
             "created_at": r.get("created_at") or r.get("received_at"),

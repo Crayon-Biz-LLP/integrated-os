@@ -46,6 +46,19 @@ class _FocalItem {
   });
 }
 
+/// One dynamic action button on the focal card.
+class _FocalAction {
+  final String label;
+  final Color color;
+  final VoidCallback onTap;
+
+  const _FocalAction({
+    required this.label,
+    required this.color,
+    required this.onTap,
+  });
+}
+
 // ── AdaptiveHomeScreen ─────────────────────────────────────────
 
 class AdaptiveHomeScreen extends StatefulWidget {
@@ -411,8 +424,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
 
   Future<void> _loadFocalItems() async {
     try {
-      final decResult = await _api.getPendingDecisions();
-      final taskResult = await _api.getTasks(status: 'todo');
+    final decResult = await _api.getPendingDecisions();
+    // Fetch open (todo) AND committed (in_progress) tasks: committed tasks
+    // stay visible in the ledger/count but never become focal cards below.
+    final taskResult = await _api.getTasks(status: 'todo,in_progress');
       if (!mounted) return;
       final decisions = (decResult.success && decResult.data != null)
           ? decResult.data!
@@ -439,27 +454,13 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     if (!mounted) return;
     final items = <_FocalItem>[];
 
-    // Decisions first (graph nodes, edges, channel items)
-    // Live pending count for the decision digest — same source the Inbox
-    // screen reads, so the digest drops as items are actioned.
+    // Pending decisions are deliberately NOT added to the focal board — they
+    // live in Quick Confirmation (the single decision surface). Auto-dumping
+    // them here caused the same item to appear in two places with two
+    // different action vocabularies (View/Not now vs Approve/Reject).
+    // Decisions still feed the digest count below, and the briefing may
+    // promote ONE as the focal card when it's genuinely the top priority.
     _pendingDecisionCount = decisions.length;
-    for (final pd in decisions) {
-      final source = pd.source;
-      items.add(
-        _FocalItem(
-          id: pd.id,
-          title: pd.title,
-          description: pd.description,
-          actionLabel: _sourceActionLabel(source),
-          source: source,
-          metadata: {
-            'source': source,
-            'api_id': pd.id,
-            'pending_id': int.tryParse(pd.id),
-          },
-        ),
-      );
-    }
 
     // Only non-terminal tasks count toward the active ledger and the
     // title→id index — a stale on-device cache can briefly carry
@@ -494,6 +495,9 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       // reconciles.
       final st = (t['status'] as String? ?? 'todo').toLowerCase();
       if (st == 'done' || st == 'cancelled') continue;
+      // Committed ("I'll do it") tasks never get pushed back onto the focal
+      // board — the user already took them on; they stay on the board.
+      if (st == 'in_progress') continue;
       final deadline = t['deadline'] as String?;
       if (deadline == null || !_isUrgent(deadline)) continue;
       items.add(
@@ -737,40 +741,136 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     }
   }
 
-  String _sourceActionLabel(String source) {
-    switch (source) {
-      case 'graph_node':
-        return 'Approve';
-      case 'merge':
-        return 'Approve';
-      case 'graph_edge':
-        return 'Review';
-      case 'email':
-        return 'Create';
-      case 'whatsapp':
-        return 'Create';
-      case 'call':
-        return 'Create';
-      default:
-        return 'View';
-    }
-  }
-
   /// The focal item's type discriminator ("task", "graph_node", ...) from
   /// either the briefing's focal_type or the legacy source field.
   String _focalType(_FocalItem item) =>
       (item.metadata['focal_type'] as String?) ?? item.source ?? '';
 
-  /// True for graph items (node/edge/merge) where the third button should be
-  /// a permanent "Reject" — mirroring the Inbox. Tasks keep "Not right".
-  bool _isGraphType(_FocalItem item) {
-    final t = _focalType(item);
-    return t == 'graph_node' || t == 'graph_edge' || t == 'merge';
-  }
-
   /// True only for graph_node (person/org/concept) items — the merge picker
   /// applies to pending nodes only, never edges or merge proposals.
   bool _isFocalPerson(_FocalItem item) => _focalType(item) == 'graph_node';
+
+  /// The dynamic action set for a focal card — chosen by item type so the
+  /// options always match the Inbox's vocabulary for that item:
+  ///   task        → I'll do it · Not now · Not right (home trio)
+  ///   graph_node  → Approve · Not now · Reject (+ merge link below the card)
+  ///   graph_edge  → Approve · Edit · Reject
+  ///   merge       → Accept · Not now · Reject
+  ///   channel suggestion (email/whatsapp/teams/call) → Approve · Not right
+  ///     (2 buttons — messages have no snooze columns, and "Not right" keeps
+  ///     the correction signal while the item stays in the Inbox queue)
+  List<_FocalAction> _focalActionsFor(_FocalItem item) {
+    final type = _focalType(item);
+    switch (type) {
+      case 'graph_edge':
+        return [
+          _FocalAction(
+            label: 'Approve',
+            color: AppTheme.green,
+            onTap: () => _completeFocalItem(item),
+          ),
+          _FocalAction(
+            label: 'Edit',
+            color: AppTheme.accent,
+            onTap: () => _editFocalEdge(item),
+          ),
+          _FocalAction(
+            label: 'Reject',
+            color: AppTheme.red,
+            onTap: () => _rejectFocalItem(item),
+          ),
+        ];
+      case 'merge':
+        return [
+          _FocalAction(
+            label: 'Accept',
+            color: AppTheme.green,
+            onTap: () => _completeFocalItem(item),
+          ),
+          _FocalAction(
+            label: 'Snooze',
+            color: AppTheme.amber,
+            onTap: () => _snoozeFocalItem(item),
+          ),
+          _FocalAction(
+            label: 'Reject',
+            color: AppTheme.red,
+            onTap: () => _rejectFocalItem(item),
+          ),
+        ];
+      case 'graph_node':
+        return [
+          _FocalAction(
+            label: 'Approve',
+            color: AppTheme.green,
+            onTap: () => _completeFocalItem(item),
+          ),
+          _FocalAction(
+            label: 'Snooze',
+            color: AppTheme.amber,
+            onTap: () => _snoozeFocalItem(item),
+          ),
+          _FocalAction(
+            label: 'Reject',
+            color: AppTheme.red,
+            onTap: () => _rejectFocalItem(item),
+          ),
+        ];
+      case 'email':
+      case 'whatsapp':
+      case 'teams':
+      case 'call':
+        return [
+          _FocalAction(
+            label: 'Approve',
+            color: AppTheme.green,
+            onTap: () => _completeFocalItem(item),
+          ),
+          _FocalAction(
+            label: 'Not right',
+            color: AppTheme.red,
+            onTap: () => _correctFocalItem(item),
+          ),
+        ];
+      case 'task':
+      default:
+        return [
+          _FocalAction(
+            label: item.actionLabel,
+            color: AppTheme.green,
+            onTap: () => _completeFocalItem(item),
+          ),
+          _FocalAction(
+            label: 'Snooze',
+            color: AppTheme.amber,
+            onTap: () => _snoozeFocalItem(item),
+          ),
+          _FocalAction(
+            label: 'Not right',
+            color: AppTheme.red,
+            onTap: () => _correctFocalItem(item),
+          ),
+        ];
+    }
+  }
+
+  /// Render the dynamic action buttons as an evenly-spaced row (2 or 3
+  /// buttons depending on the item type).
+  List<Widget> _buildFocalActions(_FocalItem item) {
+    final actions = _focalActionsFor(item);
+    return [
+      for (var i = 0; i < actions.length; i++) ...[
+        if (i > 0) const SizedBox(width: 6),
+        Expanded(
+          child: _MiniButton(
+            label: actions[i].label,
+            color: actions[i].color,
+            onTap: actions[i].onTap,
+          ),
+        ),
+      ],
+    ];
+  }
 
   /// Derive the first-button label from the item's type field.
   /// This is the authoritative source — overrides the LLM's `action_label`
@@ -785,12 +885,13 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
         return 'Approve';
       case 'graph_edge':
         return 'Review';
+      // Pending channel suggestions (email/whatsapp/teams/call) promoted by
+      // the briefing — same verb as the Inbox so the action always matches.
       case 'email':
-        return 'Create';
       case 'whatsapp':
-        return 'Create';
+      case 'teams':
       case 'call':
-        return 'Create';
+        return 'Approve';
       default:
         return llmFallback ?? "I'll do it";
     }
@@ -808,12 +909,17 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     // 2. Execute via /api/focal-action (Phase 2 v2 unified endpoint)
     ApiResult<dynamic>? result;
     final fromBriefing = item.metadata['from_briefing'] == true;
+    // "I'll do it" is a commitment, never a completion: the task flips to
+    // in_progress (stays on the board) instead of being closed. The user may
+    // not have finished it yet — 'done' only happens when they really do.
+    final focalType =
+        item.metadata['focal_type'] as String? ?? item.source ?? 'task';
+    final isTaskCommit = focalType == 'task';
     if (fromBriefing && item.metadata['focal_item_id'] != null) {
       // LLM-chosen item from briefing — use unified endpoint
       result = await _api.focalAction(
-        action: 'done',
-        itemType:
-            item.metadata['focal_type'] as String? ?? item.source ?? 'task',
+        action: isTaskCommit ? 'commit' : 'done',
+        itemType: focalType,
         itemId: item.metadata['focal_item_id'].toString(),
         title: item.title,
       );
@@ -822,7 +928,8 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       if (item.source == 'task') {
         final taskId = item.metadata['task_id'];
         if (taskId != null) {
-          result = await _api.updateTaskStatus(taskId as int, 'done');
+          result =
+              await _api.updateTaskStatus(taskId as int, 'in_progress');
         }
       } else {
         final source = item.metadata['source'] as String?;
@@ -846,6 +953,9 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
               break;
             case 'call':
               result = await _api.approveCall(pendingId);
+              break;
+            case 'teams':
+              result = await _api.approveTeams(pendingId);
               break;
           }
         }
@@ -898,7 +1008,27 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     // N4: local count decrement instead of a 5-call refetch — the action
     // already succeeded; the digest ticks down here and the next natural
     // refresh (pull / resume / Inbox return) reconciles with the server.
-    _decrementCountsFor(item);
+    // A task commit is NOT a count decrement — the task stays active
+    // (in_progress) and still counts toward the ledger; only done/cancelled
+    // removals tick the count.
+    if (!isTaskCommit) {
+      _decrementCountsFor(item);
+    }
+
+    // Honest commit feedback: the card vanishes but the task didn't close —
+    // say so, so "I'll do it" never reads like a completion.
+    if (isTaskCommit && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            "Marked as in progress — it stays on your board until you finish it.",
+            style: TextStyle(fontSize: 12),
+          ),
+          backgroundColor: AppTheme.green,
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
   }
 
   /// Resolve the (itemType, itemId) pair for ANY focal item so the unified
@@ -1278,6 +1408,179 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     }
     // N4: local count decrement instead of a 5-call refetch.
     _decrementCountsFor(item);
+  }
+
+  /// "Edit" on graph-edge cards — same bottom sheet as the Inbox: change the
+  /// relationship and approve in one step (approve with the new relation).
+  Future<void> _editFocalEdge(_FocalItem item) async {
+    final parts = item.title.split(' → ');
+    final currentRel = parts.length >= 2 ? parts[1] : '';
+    final textController = TextEditingController(text: currentRel);
+
+    final newRel = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: AppTheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: AppTheme.textTertiary.withValues(alpha: 0.3),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+                margin: const EdgeInsets.only(bottom: 16),
+              ),
+              Text(
+                'Edit relationship',
+                style: AppTheme.title.copyWith(fontSize: 15),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                item.title,
+                style: AppTheme.bodySmall.copyWith(
+                  color: AppTheme.textTertiary,
+                  fontSize: 12,
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: textController,
+                autofocus: true,
+                textInputAction: TextInputAction.done,
+                onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
+                decoration: InputDecoration(
+                  hintText: 'KNOWS, WORKS_WITH, MEMBER_OF...',
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    borderSide: BorderSide(color: AppTheme.border),
+                  ),
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 12,
+                  ),
+                  isDense: true,
+                ),
+                style: AppTheme.body,
+              ),
+              const SizedBox(height: 16),
+              Row(
+                children: [
+                  Expanded(
+                    child: Material(
+                      color: Colors.transparent,
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(10),
+                        onTap: () => Navigator.pop(ctx),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: AppTheme.border),
+                          ),
+                          child: const Text(
+                            'Cancel',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: AppTheme.textSecondary,
+                              fontSize: 13,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    flex: 2,
+                    child: Material(
+                      color: AppTheme.accent,
+                      borderRadius: BorderRadius.circular(10),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(10),
+                        onTap: () {
+                          final text = textController.text.trim();
+                          if (text.isNotEmpty) Navigator.pop(ctx, text);
+                        },
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                          child: const Text(
+                            'Save & Approve',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+
+    if (newRel == null || newRel.isEmpty) return;
+    final rawId = item.metadata['focal_item_id'] ?? item.metadata['pending_id'];
+    final pendingId = int.tryParse(rawId.toString());
+    if (pendingId == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              "I couldn't edit that edge — it may have changed.",
+              style: TextStyle(fontSize: 12),
+            ),
+            backgroundColor: AppTheme.amber,
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+      return;
+    }
+    final result = await _api.approveGraphEdgeWithRelation(pendingId, newRel);
+    if (_focalActionOk(result)) {
+      setState(() {
+        _focalItems.removeWhere((c) => c.id == item.id);
+      });
+      _decrementCountsFor(item);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Edge updated: $newRel',
+              style: const TextStyle(fontSize: 12),
+            ),
+            backgroundColor: AppTheme.green,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    } else if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            "I couldn't update that edge — it may have changed.",
+            style: TextStyle(fontSize: 12),
+          ),
+          backgroundColor: AppTheme.amber,
+          duration: Duration(seconds: 2),
+        ),
+      );
+    }
   }
 
   /// "Not right" — persists the same deferral AND sends a correction signal
@@ -1849,7 +2152,9 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
   /// Re-tapping the task icon refreshes the ledger in place — it never stacks
   /// duplicate ledger messages.
   Future<void> _postTaskLedger() async {
-    final result = await _api.getTasks(includeSnoozed: true);
+    // Ledger shows open + committed tasks (committed = "I'll do it"), so a
+    // committed task stays visible until it's truly done.
+    final result = await _api.getTasks(status: 'todo,in_progress', includeSnoozed: true);
     if (!mounted) return;
     if (!result.success || result.data == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -2964,40 +3269,15 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
 
             SizedBox(height: compact ? 8 : 12),
 
-            // Three-button model
+            // Dynamic per-type actions — the button SET mirrors the Inbox's
+            // actions for that item's type (one vocabulary per surface):
+            //   task    → I'll do it · Not now · Not right
+            //   node    → Approve · Not now · Reject
+            //   edge    → Approve · Edit · Reject
+            //   merge   → Accept · Not now · Reject
+            //   channel → Approve · Not right (2 buttons)
             Row(
-              children: [
-                // "I'll do it" — confirm and complete
-                Expanded(
-                  child: _MiniButton(
-                    label: item.actionLabel,
-                    color: AppTheme.green,
-                    onTap: () => _completeFocalItem(item),
-                  ),
-                ),
-                const SizedBox(width: 6),
-                // "Not now" — snooze (no learning signal)
-                Expanded(
-                  child: _MiniButton(
-                    label: 'Not now',
-                    color: AppTheme.amber,
-                    onTap: () => _snoozeFocalItem(item),
-                  ),
-                ),
-                // Third button — type-aware:
-                //  graph nodes/edges/merges → "Reject" (permanent, mirrors Inbox)
-                //  tasks → "Not right" (defer + correction signal)
-                const SizedBox(width: 6),
-                Expanded(
-                  child: _MiniButton(
-                    label: _isGraphType(item) ? 'Reject' : 'Not right',
-                    color: AppTheme.red,
-                    onTap: () => _isGraphType(item)
-                        ? _rejectFocalItem(item)
-                        : _correctFocalItem(item),
-                  ),
-                ),
-              ],
+              children: _buildFocalActions(item),
             ),
 
             // Merge into existing — person (graph_node) cards only. A quiet
@@ -3440,7 +3720,9 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
   /// shows the existing "not found" snackbar.
   Future<int?> _taskIdForTitle(String title) async {
     if (_taskIdByTitle.isEmpty && !_taskIndexBackfilled) {
-      final result = await _api.getTasks(status: 'todo');
+      // Include committed (in_progress) tasks so "Mark done" on a card
+      // still resolves a task the user has already taken on.
+      final result = await _api.getTasks(status: 'todo,in_progress');
       if (result.success && result.data != null) {
         // Only mark backfilled on success — a transient failure retries on
         // the next tap instead of silently disabling lookup for the session.
@@ -3661,6 +3943,8 @@ class _MiniButton extends StatelessWidget {
         child: Center(
           child: Text(
             label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
             style: AppTheme.caption.copyWith(
               color: color,
               fontSize: 12,

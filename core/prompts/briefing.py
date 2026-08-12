@@ -221,9 +221,24 @@ NEW INPUT TAGS: {ctx.new_input_tags}
 Your JSON output includes a `top_focal_item` field that tells the app the
 SINGLE most important thing {user_name} should focus on right now.
 
-CRITICAL: Prefer ACTIVE TASKS over pending decisions. Only pick a pending
-(graph_node / graph_edge) decision if there are ZERO actionable tasks.
-{user_name} uses the Inbox for decisions — the focal card is for tasks first.
+CRITICAL: Prefer ACTIVE TASKS. Only pick a pending item when it genuinely
+beats the available tasks:
+- A pending graph decision (graph_node / graph_edge) only if there are ZERO
+  actionable tasks.
+- A PENDING SUGGESTION (email / whatsapp / teams / call — marked in the data)
+  when it is genuinely more important than the tasks: time-sensitive, from a
+  key sender, or clearly urgent. These are "quick task suggestions" — one tap
+  approves them.
+{user_name} uses the Inbox for the full decision queue — the focal card is for
+what matters right now.
+
+PENDING SUGGESTIONS are focal-candidate-only. NEVER list them as tasks in any
+briefing section (SYSTEM TASKS / NEW INPUTS) — they are not tasks yet.
+
+A task tagged [IN PROGRESS] is one {user_name} has already committed to
+("I'll do it" on the focal card). NEVER pick it as the focal item — it is
+already being worked on. You may still mention it in sections, but the
+focal slot goes to an open task (or a pending item that beats them).
 
 Pick ONE item from the data below. Only pick an item that {user_name} can actually
 act on. Follow these rules:
@@ -247,7 +262,9 @@ act on. Follow these rules:
    - For "task":     "I'll do it"
    - For "graph_node": "Approve person"
    - For "graph_edge": "Review edge"
-   - For other types: use a short verb ("View", "Create", "Review")
+   - For pending suggestions ("email" / "whatsapp" / "teams" / "call"):
+     "Approve" — the button must match the Inbox's action for that item
+   - For other types: use a short verb ("View", "Review")
 
 6. SET TO EMPTY if there's truly nothing worth surfacing (all is quiet).
    The app will show an "all clear" state instead.
@@ -272,6 +289,17 @@ For a pending person node:
   "reason": "New person to add to your network",
   "urgency": "normal",
   "action_label": "Approve person"
+}}
+```
+For a pending channel suggestion (email/whatsapp/teams/call):
+```json
+{{
+  "type": "teams",
+  "item_id": "789",
+  "title": "Enable 2FA via Teams",
+  "reason": "Urgent security request from the team — one tap approves it into a task",
+  "urgency": "important",
+  "action_label": "Approve"
 }}
 ```
 If nothing needs {user_name}'s attention, output an empty object {{}}.

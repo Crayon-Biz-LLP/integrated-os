@@ -6,12 +6,14 @@ from email.utils import getaddresses
 from core.services.google_service import get_cached_service
 from core.lib.audit_logger import audit_log_sync
 from core.lib.telemetry import emit_observation
+from core.lib.decision_features import build_decision_features
+from core.decisions import record_decision
 from core.webhook.telegram import send_telegram
 from core.webhook.utils import supabase, is_already_in_tasks_table
 from core.services.db import maybe_single_safe
 
 
-async def process_email_pending_decision(pending_id: int, decision: str, supabase_client=None, auto_decided: bool = False) -> dict:
+async def process_email_pending_decision(pending_id: int, decision: str, supabase_client=None, auto_decided: bool = False, rejection_context: str = None) -> dict:
     """Process approve/reject for an email pending task (shared by Telegram + API).
     (M3: wrapped in the channel tenant scope.)
 
@@ -22,15 +24,17 @@ async def process_email_pending_decision(pending_id: int, decision: str, supabas
         pending_id: ID in messages table.
         decision: 'approve' or 'reject'.
         supabase_client: Optional supabase client (defaults to module-level).
+        rejection_context: Optional user explanation for the rejection (e.g.
+            "already handled") — captured into the learning features.
 
     Returns: dict with keys: success (bool), message (str), action (str|None).
     """
     from core.webhook.utils import webhook_tenant_scope
     with webhook_tenant_scope():
-        return await _process_email_pending_decision(pending_id, decision, supabase_client, auto_decided)
+        return await _process_email_pending_decision(pending_id, decision, supabase_client, auto_decided, rejection_context)
 
 
-async def _process_email_pending_decision(pending_id: int, decision: str, supabase_client=None, auto_decided: bool = False) -> dict:
+async def _process_email_pending_decision(pending_id: int, decision: str, supabase_client=None, auto_decided: bool = False, rejection_context: str = None) -> dict:
     """Inner implementation (M3: tenant scope applied by the public wrapper)."""
     client = supabase_client or supabase
 
@@ -122,15 +126,36 @@ async def _process_email_pending_decision(pending_id: int, decision: str, supaba
 
         client.table('messages').update({'danny_decision': 'approved'}).eq('id', row['id']).execute()
 
+        # Unified feature construction (same source of truth as the channel
+        # path) + the email-specific is_human signal — so the pattern learner
+        # can tell human vs automated senders apart.
+        _features = build_decision_features(row, 'email', rejection_context=rejection_context)
+        _features['is_human'] = is_human
         await emit_observation(
             subsystem='email_pipeline',
             event_type='approval',
-            features={"has_project": bool(row.get('suggested_project')), "is_human": is_human},
+            features=_features,
             predicted=title,
             actual=title,
             outcome='confirmed',
             source='email_decision'
         )
+
+        # Structured decision record — closes the gap where email approvals
+        # never hit the decisions table (so they're auditable + reversible).
+        try:
+            record_decision(
+                decision_type="email_approval",
+                title=f"Approved email task: {title[:120]}",
+                context=f"Email message #{pending_id} approved. {title[:200]}",
+                entity_type="message",
+                entity_id=str(pending_id),
+                confidence=1.0,
+                source="email_decision",
+                auto_decided=auto_decided,
+            )
+        except Exception as dec_err:
+            audit_log_sync("webhook", "WARNING", f"Failed to record email approval decision: {dec_err}")
 
         if guard['result'] == 'flag':
             audit_log_sync("webhook", "INFO", f"Processed email task with possible_duplicate flag: {title}")
@@ -145,15 +170,31 @@ async def _process_email_pending_decision(pending_id: int, decision: str, supaba
     elif decision == 'reject':
         client.table('messages').update({'danny_decision': 'rejected'}).eq('id', row['id']).execute()
 
+        _features = build_decision_features(row, 'email', rejection_context=rejection_context)
+        _features['is_human'] = is_human
         await emit_observation(
             subsystem='email_pipeline',
             event_type='rejection',
-            features={"has_project": bool(row.get('suggested_project')), "is_human": is_human},
+            features=_features,
             predicted=title,
             actual='rejected',
             outcome='rejected',
             source='email_decision'
         )
+
+        try:
+            record_decision(
+                decision_type="email_rejection",
+                title=f"Rejected email task: {title[:120]}",
+                context=f"Email message #{pending_id} rejected. {title[:200]}",
+                entity_type="message",
+                entity_id=str(pending_id),
+                confidence=1.0,
+                source="email_decision",
+                auto_decided=auto_decided,
+            )
+        except Exception as dec_err:
+            audit_log_sync("webhook", "WARNING", f"Failed to record email rejection decision: {dec_err}")
 
         try:
             draft_res = maybe_single_safe(
@@ -181,6 +222,50 @@ def get_gmail_service():
     if service is None:
         raise ValueError("No Google creds for this tenant (M5) — Gmail unavailable")
     return service
+
+
+async def _emit_draft_observation(
+    event_type: str,
+    outcome: str,
+    predicted_body: str,
+    actual_body: str = None,
+    edit_delta_chars: int = 0,
+) -> None:
+    """Teach the pattern learner about draft outcomes.
+
+    Closes the gap where drafts were silently sent/edited/dropped without any
+    learning signal:
+      send  → event_type='approval',  outcome='confirmed'  (draft shipped as-is
+              — reinforces draft quality)
+      edit  → event_type='correction', outcome='corrected' (predicted = the AI
+              draft, actual = the user's fix — the strongest correction signal
+              Rhodey gets about what good drafts look like)
+      drop  → event_type='rejection', outcome='rejected'  (draft discarded —
+              teaches what not to write)
+
+    emit_observation is fail-open internally, so a telemetry hiccup can never
+    break a send/edit/drop.
+    """
+    _predicted = predicted_body[:500]
+    # Confirmed sends shipped as-is → actual == predicted. Corrections carry
+    # the user's rewrite explicitly. Rejections have no "actual" at all.
+    _actual = (
+        actual_body[:500]
+        if actual_body
+        else (_predicted if outcome == 'confirmed' else None)
+    )
+    await emit_observation(
+        subsystem='email_drafts',
+        event_type=event_type,
+        outcome=outcome,
+        predicted=_predicted,
+        actual=_actual,
+        features={
+            'body_len': len(predicted_body or ''),
+            'edit_delta_chars': edit_delta_chars,
+        },
+        source='email_draft_action',
+    )
 
 async def send_draft_reply(draft_id: int) -> tuple:
     """Send an approved draft via Gmail or Outlook based on email source.
@@ -293,6 +378,7 @@ async def _send_draft_reply(draft_id: int) -> tuple:
             print("Status remains 'sent' to prevent double-send attempts.")
             return (False, str(gmail_error))
 
+        await _emit_draft_observation('approval', 'confirmed', draft['draft_body'])
         return (True, None)
 
     except Exception as e:
@@ -334,6 +420,7 @@ async def send_outlook_draft(draft: dict) -> tuple:
             )
 
             if response.status_code == 202:
+                await _emit_draft_observation('approval', 'confirmed', body)
                 return (True, None)
 
             if response.status_code == 401:
@@ -349,6 +436,7 @@ async def send_outlook_draft(draft: dict) -> tuple:
                     headers=headers
                 )
                 if response.status_code == 202:
+                    await _emit_draft_observation('approval', 'confirmed', body)
                     return (True, None)
 
             audit_log_sync("webhook", "ERROR", f"Outlook send failed for draft {draft['id']}: HTTP {response.status_code}: {response.text}")
@@ -450,12 +538,17 @@ async def _handle_ed_command(text: str, chat_id: int):
     if reject_match:
         draft_id = int(reject_match.group(1))
         try:
+            old_body = ''
+            _old = maybe_single_safe(supabase.table('email_drafts').select('draft_body').eq('id', draft_id))
+            if _old and _old.data:
+                old_body = _old.data.get('draft_body') or ''
             res = supabase.table('email_drafts')\
                 .update({'status': 'rejected'})\
                 .eq('id', draft_id)\
                 .eq('status', 'pending')\
                 .execute()
             if res.data:
+                await _emit_draft_observation('rejection', 'rejected', old_body)
                 await send_telegram(chat_id, f"Draft {draft_id} is rejected and discarded.")
             else:
                 await send_telegram(chat_id, f"Couldn't find draft {draft_id} — maybe already handled.")
@@ -470,6 +563,10 @@ async def _handle_ed_command(text: str, chat_id: int):
         draft_id = int(edit_match.group(1))
         new_body = edit_match.group(2).strip()
         try:
+            old_body = ''
+            _old = maybe_single_safe(supabase.table('email_drafts').select('draft_body').eq('id', draft_id))
+            if _old and _old.data:
+                old_body = _old.data.get('draft_body') or ''
             upd = supabase.table('email_drafts')\
                 .update({'draft_body': new_body})\
                 .eq('id', draft_id)\
@@ -478,6 +575,14 @@ async def _handle_ed_command(text: str, chat_id: int):
             if not upd.data:
                 await send_telegram(chat_id, f"Couldn't find draft {draft_id} — maybe already handled.")
                 return
+
+            # The user corrected the AI's draft — capture the delta so the
+            # learner sees exactly where the generated reply went wrong.
+            await _emit_draft_observation(
+                'correction', 'corrected', old_body,
+                actual_body=new_body,
+                edit_delta_chars=abs(len(new_body) - len(old_body)),
+            )
 
             draft_res = maybe_single_safe(
                 supabase.table('email_drafts')

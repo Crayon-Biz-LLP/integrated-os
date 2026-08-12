@@ -15,6 +15,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from core.lib.audit_logger import audit_log_sync, trace_id_var
 from core.lib.telemetry import emit_observation
+from core.lib.decision_features import build_decision_features
 from core.decisions import record_decision
 from core.actions import begin_action_context, clear_action_context
 
@@ -22,6 +23,7 @@ from core.webhook import (
     process_channel_pending_decision,
     process_webhook,
     send_draft_reply,
+    _emit_draft_observation,
     process_email_pending_decision,
 )
 from core.services.briefing_refresh import (
@@ -408,7 +410,14 @@ async def get_tasks_route(request: Request, status: str = None, limit: int = 50,
             .eq('is_current', True)
         
         if status:
-            query = query.eq('status', status)
+            # Comma-separated statuses are supported (e.g. "todo,in_progress")
+            # so the app can keep committed (in_progress) tasks visible next
+            # to open todos in the same fetch.
+            statuses = [s.strip() for s in status.split(',') if s.strip()]
+            if len(statuses) > 1:
+                query = query.in_('status', statuses)
+            else:
+                query = query.eq('status', statuses[0] if statuses else 'todo')
         else:
             query = query.in_('status', ['todo'])
         
@@ -494,7 +503,7 @@ async def home_feed_route(request: Request):
       pending_edges     → same rows as /api/pending-graph-edges
       pending_merges    → same rows as /api/pending-merges
       pending_messages  → same rows as /api/messages (limit 50)
-      tasks             → same rows as /api/tasks?status=todo (limit 200)
+      tasks             → same rows as /api/tasks?status=todo,in_progress (limit 200)
       persona           → Phase 2B surface summary (or null, fail-closed)
     """
     require_api_auth(request)
@@ -583,10 +592,12 @@ async def home_feed_route(request: Request):
                                'graph_nodes(label)')
                 if _notes_ok(supabase, 'tasks'):
                     select_cols += ', notes'
+                # Open + committed ("I'll do it") tasks — a committed task
+                # stays on the home board until it's actually completed.
                 q = supabase.table('tasks') \
                     .select(select_cols) \
                     .eq('is_current', True) \
-                    .in_('status', ['todo'])
+                    .in_('status', ['todo', 'in_progress'])
                 if _snooze_ok(supabase, 'tasks'):
                     q = q.or_('snoozed_until.is.null,snoozed_until.lt.now')
                 rows = (await exec_query(q.order('created_at', desc=True).limit(200))).data or []
@@ -1955,7 +1966,7 @@ async def focal_action_route(request: Request):
     """Handle the three-button focal card actions.
 
     Body: {
-        "action": "done",       // "done", "snooze", "correct"
+        "action": "done",       // "done", "commit", "snooze", "correct"
         "item_type": "task",    // "task", "graph_node", "graph_edge", "merge"
         "item_id": "123",       // Task ID or pending item ID
         "title": "Fill DBS forms",
@@ -2143,6 +2154,18 @@ async def focal_action_route(request: Request):
         from core.services.persona import persona_surface_summary
         _persona_summary = persona_surface_summary()
 
+        if action == "commit":
+            # "I'll do it" — a commitment, NOT a completion. Flip the task to
+            # in_progress: no completed_at, no outcome memory, no calendar
+            # delete. The task stays on the user's board until they actually
+            # finish it (a later 'done' closes it for real).
+            if item_type != "task":
+                return {"success": False, "message": "Commit only applies to tasks."}
+            iid = _item_int()
+            if iid is None:
+                return _unactionable
+            return await _complete_task(iid, "in_progress")
+
         if action == "done":
             if item_type == "task":
                 iid = _item_int()
@@ -2176,6 +2199,31 @@ async def focal_action_route(request: Request):
                 if not res.get("success", False):
                     return res
                 return {"success": True, "message": f"Approved {item_type}"}
+            elif item_type in ("email", "whatsapp", "teams", "call"):
+                # Briefing-promoted pending channel suggestion — approving
+                # routes through the SAME handlers as the Inbox's approve
+                # button, so the result (task created) and learning signals
+                # are identical no matter where the tap happened.
+                iid = _item_int()
+                if iid is None:
+                    return _unactionable
+                try:
+                    # Both handlers are already imported at module top (via
+                    # `from core.webhook import ...`) — same as the Inbox.
+                    if item_type == "email":
+                        res = await process_email_pending_decision(
+                            iid, "approve", auto_decided=False
+                        )
+                    else:
+                        res = await process_channel_pending_decision(
+                            item_type, iid, "approve", auto_decided=False
+                        )
+                except Exception as branch_err:
+                    print(f"Focal channel approval error: {branch_err}")
+                    return _unactionable
+                if not res.get("success", False):
+                    return res
+                return {"success": True, "message": f"Approved {item_type} task"}
             return {
                 "success": True,
                 "message": message_voice.compose_done(_persona_summary),
@@ -2340,6 +2388,15 @@ async def focal_action_route(request: Request):
             except Exception as e:
                 print(f"Focal correction observation error (non-fatal): {e}")
             if not persisted:
+                # Channel suggestions have no snooze columns — the correction
+                # signal above was still recorded (that's the learning value).
+                # The item leaves the focal card for this session and stays in
+                # the Inbox queue. Honest: no deferral happened.
+                if item_type in ("email", "whatsapp", "teams", "call"):
+                    return {
+                        "success": True,
+                        "message": "Noted — I'll adjust my focus. It stays in your Inbox queue.",
+                    }
                 return {"success": False, "message": "Correction noted, but I couldn't defer this item — it may resurface."}
             return {
                 "success": True,
@@ -2471,7 +2528,10 @@ async def email_action_route(request: Request):
         elif action == 'no':
             action = 'reject'
 
-        result = await process_email_pending_decision(int(pending_id), action)
+        result = await process_email_pending_decision(
+            int(pending_id), action,
+            rejection_context=body.get('rejection_context'),
+        )
 
         if result['success']:
             return {"success": True, "message": result['message'], "action": result['action']}
@@ -2845,6 +2905,26 @@ async def teams_action_batch_route(request: Request):
 
 
 # --- EMAIL DRAFT ACTIONS (send or drop a generated reply draft) ---
+def _fetch_draft_body(supabase, draft_id: int) -> str:
+    """Fail-open read of a draft's current body (for learning deltas).
+
+    A telemetry read must never block the user's send/edit/drop — on any
+    error we degrade to '' so the action proceeds and the observation just
+    carries an empty predicted body.
+    """
+    try:
+        res = supabase.table('email_drafts')\
+            .select('draft_body')\
+            .eq('id', draft_id)\
+            .limit(1)\
+            .execute()
+        if res.data:
+            return res.data[0].get('draft_body') or ''
+    except Exception:
+        pass
+    return ''
+
+
 @app.post("/api/draft-action")
 async def draft_action_route(request: Request):
     """Send, edit, or drop a pending email reply draft from the app.
@@ -2875,20 +2955,32 @@ async def draft_action_route(request: Request):
             new_body = (body.get('draft_body') or '').strip()
             if not new_body:
                 raise HTTPException(status_code=400, detail="draft_body required for edit")
+            # Read-before-write for the learning signal — must fail open so a
+            # read hiccup never blocks the user's edit itself.
+            old_body = _fetch_draft_body(supabase, int(draft_id))
             supabase.table('email_drafts')\
                 .update({'draft_body': new_body[:3000]})\
                 .eq('id', int(draft_id))\
                 .eq('status', 'pending')\
                 .execute()
+            # The user corrected the AI's draft — the strongest learning signal
+            # the draft flow has. predicted=AI draft, actual=user's fix.
+            await _emit_draft_observation(
+                'correction', 'corrected', old_body,
+                actual_body=new_body,
+                edit_delta_chars=abs(len(new_body) - len(old_body)),
+            )
             audit_log_sync("draft_action", "INFO", f"Draft {draft_id} edited from app Inbox")
             return {"success": True, "message": "Draft updated"}
 
         # drop
+        old_body = _fetch_draft_body(supabase, int(draft_id))
         supabase.table('email_drafts')\
             .update({'status': 'rejected'})\
             .eq('id', int(draft_id))\
             .eq('status', 'pending')\
             .execute()
+        await _emit_draft_observation('rejection', 'rejected', old_body)
         audit_log_sync("draft_action", "INFO", f"Draft {draft_id} dropped from app Inbox")
         return {"success": True, "message": "Draft dropped"}
     except HTTPException:
@@ -2914,12 +3006,41 @@ async def fyi_action_route(request: Request):
         if not item_id:
             raise HTTPException(status_code=400, detail="id required")
         supabase = tenant_aware_client()
+        msg_row = None
+        try:
+            row = supabase.table('messages')\
+                .select('id, channel, suggested_title, subject, sender_name, summary, suggested_project, metadata')\
+                .eq('id', int(item_id))\
+                .limit(1)\
+                .execute()
+            if row.data:
+                msg_row = row.data[0]
+        except Exception:
+            pass  # ack must never fail because the read hiccupped
         supabase.table('messages')\
             .update({'danny_decision': 'acknowledged'})\
             .eq('id', int(item_id))\
             .is_('danny_decision', 'null')\
             .eq('classification', 'fyi')\
             .execute()
+        if msg_row:
+            # Ack = the user read and dismissed it. Emitted as 'confirmed' so
+            # the pattern learner builds per-sender/per-channel confidence on
+            # which FYIs you actually engage with (vs ones that expire unseen
+            # and never emit a signal at all).
+            try:
+                features = build_decision_features(msg_row, msg_row.get('channel') or 'email')
+            except Exception:
+                features = {}
+            await emit_observation(
+                subsystem='fyi_pipeline',
+                event_type='engagement',
+                outcome='confirmed',
+                predicted='fyi',
+                actual='acknowledged',
+                features=features,
+                source='fyi_action',
+            )
         audit_log_sync("fyi_action", "INFO", f"FYI item {item_id} acknowledged from app Inbox")
         return {"success": True, "message": "Acknowledged"}
     except HTTPException:

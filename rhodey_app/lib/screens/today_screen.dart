@@ -71,7 +71,9 @@ class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
 
   Future<void> _loadAll() async {
     final calFut = _api.getCalendarEvents();
-    final taskFut = _api.getTasks();
+    // Open + committed ("I'll do it") tasks — a committed task stays visible
+    // here until it's actually completed, not closed the moment it's taken on.
+    final taskFut = _api.getTasks(status: 'todo,in_progress');
     final capFut = _api.getCaptures(limit: 10);
 
     // Partial render: paint each section the moment it lands instead of

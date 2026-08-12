@@ -394,7 +394,9 @@ class ApiService {
 
   // ── Tasks (Today tab) ────────────────────────────────────────
 
-  /// Fetches active (todo) tasks from /api/tasks?status=todo.
+  /// Fetches active tasks from /api/tasks. [status] accepts a single value
+  /// or comma-separated list (e.g. 'todo,in_progress' — committed tasks stay
+  /// visible until truly completed).
   /// [includeSnoozed] also returns snoozed tasks (dimmed in the ledger).
   Future<ApiResult<List<Map<String, dynamic>>>> getTasks({
     String? status,

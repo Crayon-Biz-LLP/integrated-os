@@ -212,6 +212,29 @@ def test_fetch_fyi_messages_shapes_rows():
     assert items[0]["sender_name"] == "AIS"
 
 
+def test_fetch_fyi_messages_title_falls_back_to_body_then_summary():
+    # FYI rows carry no suggested_title/subject — the old shape showed
+    # "Untitled" on every FYI card. Title must fall back to the message
+    # body, then the classifier's summary, before giving up.
+    supabase = _supabase_with([
+        {"id": 1, "channel": "teams", "suggested_title": None,
+         "subject": None, "body": "  Wow.. So, on track..  ",
+         "summary": "Yashwant Daniel acknowledged the project is on track",
+         "created_at": "2026-08-11T00:00:00+00:00"},
+        {"id": 2, "channel": "whatsapp", "suggested_title": "",
+         "subject": "", "body": "",
+         "summary": "Mahi Rathi shared a reflection on her AI voice note",
+         "created_at": "2026-08-11T00:00:00+00:00"},
+        {"id": 3, "channel": "email", "suggested_title": None,
+         "subject": None, "body": "", "summary": "",
+         "created_at": "2026-08-11T00:00:00+00:00"},
+    ])
+    items = fetch_fyi_messages(supabase)
+    assert items[0]["title"] == "Wow.. So, on track.."
+    assert items[1]["title"] == "Mahi Rathi shared a reflection on her AI voice note"
+    assert items[2]["title"] == "Untitled"
+
+
 def test_fetch_fyi_messages_fails_open():
     supabase = MagicMock()
     supabase.table.side_effect = RuntimeError("boom")

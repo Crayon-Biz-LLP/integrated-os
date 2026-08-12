@@ -483,7 +483,7 @@ async def _process_pulse_impl(auth_secret: str = None, request_id: str = None, t
 
         # ── Fetch tasks (exclude snoozed — focal "Not now" deferral) ──
         active_tasks_q = supabase.table('tasks').select(
-            'id, title, organization_id, priority, created_at, reminder_at, google_event_id, direction, committed_to'
+            'id, title, status, organization_id, priority, created_at, reminder_at, google_event_id, direction, committed_to'
         ).eq('is_current', True).not_.in_('status', ['done', 'cancelled'])
         try:
             active_tasks_q = active_tasks_q.or_('snoozed_until.is.null,snoozed_until.lt.now')
@@ -656,8 +656,44 @@ async def _process_pulse_impl(auth_secret: str = None, request_id: str = None, t
             # If they fail the org check, they don't get included — even if urgent
             filtered_tasks.append(t)
 
+        # ── Pending channel suggestions (email/whatsapp/teams/call) ──
+        # Actionable, undecided messages the Inbox is holding. The briefing may
+        # promote ONE as the focal card (a "quick task suggestion" with an
+        # Approve action) when it genuinely beats the active tasks — judgment
+        # over volume: the full queue stays in Quick Confirmation.
+        pending_suggestions = []
+        try:
+            from core.services.inbox_feed import fetch_pending_channel_messages
+            pending_suggestions = await asyncio.to_thread(
+                fetch_pending_channel_messages, supabase, 8
+            )
+        except Exception as _sug_err:
+            audit_log_sync("pulse", "WARNING",
+                           f"Failed to fetch pending channel suggestions: {_sug_err}")
+
         # ── Build universal task map (ID matching only — built from filtered tasks) ──
-        universal_task_map = " | ".join([f"[ID:{t['id']}] {t['title']}" for t in filtered_tasks])[:4000]
+        # Suggestion lines are truncated (~80 chars) so a long message body
+        # can't eat the 4000-char map budget and push real task IDs out.
+        _suggestion_lines = []
+        for _s in pending_suggestions:
+            _sug_text = " ".join((_s.get('content') or 'Untitled').split())[:80]
+            _suggestion_lines.append(
+                f"[ID:{_s['id']}] {_sug_text} "
+                f"(PENDING {str(_s.get('source') or 'channel').upper()} SUGGESTION — "
+                "approve to create task)"
+            )
+        def _task_line(t: dict) -> str:
+            # Tag committed ("I'll do it") tasks so the prompt can keep them
+            # in briefing sections but never re-promote them as the focal
+            # item — the user already took them on.
+            if t.get('status') == 'in_progress':
+                return f"[ID:{t['id']}] [IN PROGRESS — user committed to it] {t['title']}"
+            return f"[ID:{t['id']}] {t['title']}"
+
+        universal_task_map = (
+            " | ".join(_task_line(t) for t in filtered_tasks)
+            + (" || " + " | ".join(_suggestion_lines) if _suggestion_lines else "")
+        )[:4000]
 
         # ── Context compression ──
         compressed_tasks_list = []

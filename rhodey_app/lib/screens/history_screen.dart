@@ -187,7 +187,9 @@ class _HistoryScreenState extends State<HistoryScreen>
   /// bug on Android". Null → the existing "not found" snackbar.
   Future<int?> _taskIdForTitle(String title) async {
     if (!_taskIndexLoaded) {
-      final result = await _api.getTasks(status: 'todo');
+      // Include committed (in_progress) tasks so completing a card still
+      // resolves a task the user has already taken on.
+      final result = await _api.getTasks(status: 'todo,in_progress');
       if (result.success && result.data != null) {
         // Only mark loaded on success — a transient failure retries on the
         // next tap instead of disabling lookup for the whole screen visit.
