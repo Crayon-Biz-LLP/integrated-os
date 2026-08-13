@@ -436,6 +436,7 @@ async def compute_pattern_confidence(
         # Try each fallback set until a hit is found
         best_match = None
         best_match_key = "exact"
+        matched_hash = None
         for i, fb_features in enumerate(fallback_sets):
             feature_hash = hash_features(fb_features, subsystem)
             if patterns_map is not None:
@@ -459,6 +460,7 @@ async def compute_pattern_confidence(
                 continue
             if row_data.get("total_count", 0) >= MIN_PATTERN_OBSERVATIONS:
                 best_match = row_data
+                matched_hash = feature_hash
                 if i == 0:
                     best_match_key = "exact"
                 else:
@@ -523,6 +525,24 @@ async def compute_pattern_confidence(
         if compress_penalty > 0:
             rule_parts.append("compress")
         rule = f"{' '.join(rule_parts)} ({final_confidence:.0%})"
+
+        # Explicit user approval (suggest-mode "auto-approve" tap) overrides
+        # pattern statistics — the user's own judgment beats model confidence.
+        # This makes the handler's "will auto-approve from now on"
+        # acknowledgement true instead of an overclaim (the key was written
+        # but never read).
+        if matched_hash and recommendation not in ("approve",):
+            try:
+                override = maybe_single_safe(
+                    supabase.table("core_config")
+                    .select("key")
+                    .eq("key", f"suggest_approved:{subsystem}:{matched_hash}")
+                )
+                if override and override.data:
+                    recommendation = "approve"
+                    rule += " (user-approved)"
+            except Exception:
+                pass
 
         return {
             "confidence": final_confidence,

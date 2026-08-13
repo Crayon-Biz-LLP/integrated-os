@@ -5,6 +5,7 @@ from core.actions.models import Action, action_param_error
 from core.services.db import tenant_aware_client
 from core.lib.audit_logger import audit_log_sync
 from core.lib.state_machines import guard_require_valid_transition
+from core.lib.rhodey_voice import ACK_INTENTS, ExecutionResult, render_acks
 from core.webhook.telegram import send_telegram
 
 
@@ -459,8 +460,7 @@ async def execute_planned_actions(
     
     sync_failed = False
     failed_tasks = []
-    closed_ids = []
-    created_labels = []
+    results: List[ExecutionResult] = []
     completed_actions = []  # Track for rollback
     
     execute_actions = []
@@ -551,7 +551,7 @@ async def execute_planned_actions(
             if action.operation == "delete_event":
                 try:
                     delete_calendar_event(str(action.target_id))
-                    closed_ids.append(action.target_id)
+                    results.append(ExecutionResult("delete_event", target_id=action.target_id, title=action.human_label))
                 except Exception as e:
                     sync_failed = True
                     failed_tasks.append(f"Event {action.target_id}: {e}")
@@ -563,7 +563,7 @@ async def execute_planned_actions(
                     upd = update_metadata_updates(action)
                     if upd:
                         supabase.table('tasks').update(upd).eq('id', int(action.target_id)).execute()
-                        closed_ids.append(action.target_id)
+                        results.append(ExecutionResult("update_metadata", target_id=action.target_id, title=action.human_label, values=upd))
                         # Sync metadata changes to Google Tasks/Calendar
                         try:
                             from core.services.google_service import sync_to_google, get_tasks_service
@@ -621,7 +621,7 @@ async def execute_planned_actions(
                                                   recurrence=upd.get('recurrence') or td.get('recurrence'))
                         if e_id:
                             supabase.table('tasks').update({'google_event_id': e_id}).eq('id', int(action.target_id)).execute()
-                        closed_ids.append(action.target_id)
+                        results.append(ExecutionResult("modify_recurring", target_id=action.target_id, title=action.human_label, values=upd))
                     else:
                         sync_failed = True
                         failed_tasks.append(f"Task {action.target_id}: modify_recurring — task not found")
@@ -662,7 +662,7 @@ async def execute_planned_actions(
                                                           duration_mins=td.get('duration_mins', 15))
                             if new_e_id and new_e_id != e_id:
                                 supabase.table('tasks').update({'google_event_id': new_e_id}).eq('id', int(action.target_id)).execute()
-                            closed_ids.append(action.target_id)
+                            results.append(ExecutionResult("reschedule", target_id=action.target_id, title=action.human_label, values={"new_reminder_at": new_reminder}))
                         else:
                             sync_failed = True
                             failed_tasks.append(f"Task {action.target_id}: reschedule — task not found")
@@ -716,7 +716,7 @@ async def execute_planned_actions(
                 else:
                     # "INFO:" means already in target state — no-op, don't track
                     if "INFO:" not in result_msg:
-                        closed_ids.append(action.target_id)
+                        results.append(ExecutionResult(action.operation, target_id=action.target_id, title=action.human_label))
             except Exception as e:
                 sync_failed = True
                 failed_tasks.append(f"Task {action.target_id}: {e}")
@@ -757,7 +757,7 @@ async def execute_planned_actions(
                         notes=text[:500] if text else None,
                     )
                 if result.get("action") == "created":
-                    created_labels.append(action.human_label or title)
+                    results.append(ExecutionResult("create_task", target_id=result.get("task_id"), title=action.human_label or title, values={"reminder_at": reminder_at}))
                     # Track for rollback
                     if result.get("task_id"):
                         action.params["_created_task_id"] = result["task_id"]
@@ -793,7 +793,7 @@ async def execute_planned_actions(
                         active_anchor=active_anchor,
                     )
                 if result.get("action") == "filed":
-                    created_labels.append(action.human_label or "Note created")
+                    results.append(ExecutionResult("create_note", target_id=result.get("memory_id"), title=action.human_label or "Note created"))
                     if result.get("memory_id"):
                         action.params["_created_note_id"] = result["memory_id"]
                         completed_actions.append(action)
@@ -826,7 +826,7 @@ async def execute_planned_actions(
                         notes=text[:500] if text else None,
                     )
                 if result.get("action") == "created":
-                    created_labels.append(action.human_label or title)
+                    results.append(ExecutionResult("create_event", target_id=result.get("task_id"), title=action.human_label or title, values={"reminder_at": event_time}))
                     if result.get("task_id"):
                         action.params["_created_event_id"] = result["task_id"]
                         completed_actions.append(action)
@@ -853,18 +853,19 @@ async def execute_planned_actions(
         audit_log_sync("executor", "WARNING",
                        f"{len(completed_actions)} completed actions to roll back after {len(failed_tasks)} failures")
         rolled_back_ids = set()
+        rolled_back_labels = set()
         for completed in reversed(completed_actions):
             await compensate_action(completed, supabase)
             # Track the human-visible label for the rollback message
             if completed.operation in ("close_task", "cancel_recurring", "suppress_instance"):
                 rolled_back_ids.add(str(completed.target_id))
-            elif completed.operation in ("create_task", "create_event"):
-                created_labels = [lb for lb in created_labels if completed.human_label not in lb]
-            elif completed.operation == "create_note":
-                created_labels = [lb for lb in created_labels if completed.human_label not in lb]
+            elif completed.operation in ("create_task", "create_event", "create_note"):
+                rolled_back_labels.add(completed.human_label)
 
-        # Remove rolled-back IDs from closed_ids so the success message doesn't claim them
-        closed_ids = [cid for cid in closed_ids if str(cid) not in rolled_back_ids]
+        # Mark rolled-back results so the success message never claims them
+        for r in results:
+            if str(r.target_id) in rolled_back_ids or (r.title and r.title in rolled_back_labels):
+                r.status = "rolled_back"
 
         if not suppress_telegram:
             rollback_msg = f"↩️ Rolled back {len(completed_actions)} previously completed actions." if completed_actions else ""
@@ -873,7 +874,10 @@ async def execute_planned_actions(
 \\nDetails: {error_details}")
     
     # ── Gap 1: After NOTE creation, check for new orgs in real-time ──
-    if intent == "NOTE" and created_labels and text:
+    if intent == "NOTE" and any(
+        r.status == "committed" and r.operation in ("create_task", "create_event", "create_note")
+        for r in results
+    ) and text:
         try:
             new_orgs = await _detect_new_orgs_and_create_pending(text, chat_id, cached_entities=_cached_entities)
             if new_orgs and not suppress_telegram:
@@ -886,26 +890,32 @@ async def execute_planned_actions(
         except Exception as e:
             audit_log_sync("executor", "WARNING", f"NOTE real-time org detection failed (non-critical): {e}")
     
-    # Send success messages for creations
-    if created_labels and not suppress_telegram:
-        titles = ", ".join(created_labels)
-        await send_telegram(chat_id, f"✅ Logged: {titles}")
-
-    # Send success messages for closures
-    if closed_ids and not suppress_telegram:
-        active_tasks = []
-        try:
-            tasks_res = supabase.table("tasks").select("id, title").in_("id", closed_ids).execute()
-            active_tasks = tasks_res.data or []
-        except Exception:
-            pass
-        
-        labels = [act.human_label for act in actions if act.target_id in closed_ids and act.human_label]
-        if labels:
-            closed_titles = ", ".join(labels)
-        else:
-            closed_titles = ", ".join(t["title"] for t in active_tasks if str(t["id"]) in [str(cid) for cid in closed_ids])
-            if not closed_titles:
-                closed_titles = f"{len(closed_ids)} items"
-        await send_telegram(chat_id, f"✅ Closed: {closed_titles}")
+    # Send success messages — the verb table (render_acks) renders one honest
+    # line per committed result. Fail-closed: nothing renders unless the DB
+    # write actually succeeded, and a reschedule is never claimed as a closure.
+    committed = [r for r in results if r.status == "committed"]
+    if committed and not suppress_telegram:
+        # Display titles: action labels first, DB titles for the rest.
+        titles_map = {str(r.target_id): r.title for r in committed if r.title}
+        missing = [str(r.target_id) for r in committed if not r.title and r.target_id is not None]
+        if missing:
+            try:
+                tasks_res = supabase.table("tasks").select("id, title").in_("id", missing).execute()
+                for t in (tasks_res.data or []):
+                    titles_map[str(t["id"])] = t["title"]
+            except Exception:
+                pass
+        for r in committed:
+            if not r.title and r.target_id is not None:
+                r.title = titles_map.get(str(r.target_id))
+        ack_lines = render_acks(committed)
+        if ack_lines:
+            # The app renders the card from the structured intent + title (no
+            # text parsing) — the line itself is free to sound like Rhodey.
+            primary = committed[0]
+            await send_telegram(
+                chat_id, "\n".join(ack_lines),
+                intent=ACK_INTENTS.get(primary.operation),
+                ack_title=primary.title,
+            )
         

@@ -72,9 +72,10 @@ async def handle_confident_note(text: str, chat_id: int, receipt: str = None, so
         return final
     except Exception as e:
         audit_log_sync("webhook", "WARNING", f"handle_confident_note failed: {e}")
-        final = receipt or "\u2705 Captured."
-        await send_telegram(chat_id, final)
-        return final
+        # Honest failure — never echo a success receipt for a save that didn't
+        # happen (the "✅ Captured." lie: failure logged, success shown).
+        await send_telegram(chat_id, "⚠️ Couldn't save that note — it didn't reach your vault. Try again?")
+        return None
 
 
 # Pending graph clarification state — now DB-backed via pending_graph_clarifications table

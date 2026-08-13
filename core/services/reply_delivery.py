@@ -16,7 +16,7 @@ Design:
 from core.lib.audit_logger import audit_log_sync
 
 
-def _persist_to_raw_dumps(message_text: str) -> None:
+def _persist_to_raw_dumps(message_text: str, intent: str = None, ack_title: str = None) -> None:
     """Write the reply to raw_dumps so the app's conversation history sees it.
 
     This is what /api/conversation-history and /api/messages read. Runs
@@ -30,6 +30,11 @@ def _persist_to_raw_dumps(message_text: str) -> None:
         # injects owner_id from the active tenant context.
         from core.services.db import tenant_aware_client
         supabase = tenant_aware_client()
+        metadata = {'type': 'bot_response'}
+        if intent:
+            metadata['intent'] = intent
+        if ack_title:
+            metadata['title'] = ack_title
         supabase.table('raw_dumps').insert({
             'content': message_text[:3000],  # Cap at 3000 chars for DB
             'status': 'completed',
@@ -37,7 +42,7 @@ def _persist_to_raw_dumps(message_text: str) -> None:
             'sender': 'system',
             'message_type': 'response',
             'source': 'telegram_bot',
-            'metadata': {'type': 'bot_response'},
+            'metadata': metadata,
         }).execute()
     except Exception as e:
         # In tenant mode, a TenantRequiredError means a caller forgot its
@@ -55,6 +60,8 @@ def _persist_to_raw_dumps(message_text: str) -> None:
 async def deliver_outbound_reply(
     message_text: str,
     notify_push: bool = True,
+    intent: str = None,
+    ack_title: str = None,
 ) -> int:
     """Deliver a bot reply to the app — no Telegram involved.
 
@@ -66,11 +73,15 @@ async def deliver_outbound_reply(
     Args:
         message_text: The full reply text.
         notify_push: Whether to fire the FCM push.
+        intent: Structured ack intent (e.g. TASK_RESCHEDULED) persisted in
+            raw_dumps metadata so the app renders the right card without
+            parsing the (voice-rendered) text.
+        ack_title: The bare entity title (task/note/event name) for that card.
 
     Returns:
         Number of devices pushed (0 if push skipped or failed).
     """
-    _persist_to_raw_dumps(message_text)
+    _persist_to_raw_dumps(message_text, intent=intent, ack_title=ack_title)
 
     if not notify_push:
         return 0

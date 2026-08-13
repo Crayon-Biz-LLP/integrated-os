@@ -274,6 +274,84 @@ mocked, cross-tenant leak sweep green:
   2026-08-20T12:40:28+05:30`. Measured reliability of the bare prompt across
   variants: 16/16 with a time; the backstop covers the residual flake.
 
+## Post-hardening fix: per-operation acks (no more false "✅ Closed")
+
+Follow-on found during the Aug 20 production check: the executor's success
+ack lumped **every** successful mutation into `closed_ids`, so a reschedule
+was acknowledged as `✅ Closed: <task>` while the task stayed open — a message-
+layer lie (the opposite direction of Aug 12: write happened, words wrong).
+The app's message parser maps `✅ Closed:` to a `taskDone` card, so the UI
+showed a done-card for an open task.
+
+Fix (`core/actions/executor.py` ack block): group successful actions by
+operation and emit one honest line per operation — `✅ Rescheduled: <title> →
+<date>` (human-formatted via `_human_friendly_date`), `✅ Recurrence updated:`,
+`✅ Updated:`, `🗑️ Deleted event:`, and `✅ Closed:` only for true closures
+(`close_task`/`cancel_recurring`/`suppress_instance`). Covered by
+`tests/unit/test_executor_acks.py` (6 cases: reschedule with date, DB-title
+fallback, closure unchanged, metadata, recurring, mixed batch).
+
+## Ack contract: one verb table, fail-closed rendering (follow-on)
+
+A follow-on audit of every Telegram ack found the same root cause as the
+"✅ Closed" bug in three more places, plus an app-side misrender:
+
+1. **"✅ Logged" for tasks/events** — `created_labels` lumped create_task,
+   create_note AND create_event into one "Logged" line. A task is on your
+   list; an event is scheduled; only notes are logged.
+2. **`handle_confident_note` false success** — the except path still sent
+   "✅ Captured." after a failed save (the Aug 12 anti-pattern, alive).
+3. **"will auto-approve from now on" overclaim** — the suggest-mode approve
+   tap wrote `suggest_approved:{subsystem}:{hash}` which was **never read**;
+   auto-approval actually keys off pattern stats. One tap changed nothing.
+4. **App misrender** — `rich_card_content.dart` mapped any non-Closed ✅ line
+   to an *approval card*, so our "✅ Rescheduled" fix showed a bogus approve
+   affordance; unknown ✅ lines hit the same generic fallback.
+
+**The design (result-driven acks):**
+
+- `ExecutionResult` (operation, status: committed|failed|skipped|rolled_back,
+  target_id, title, values, error) — the executor *emits facts* and never
+  writes ack text.
+- `render_acks()` in `core/lib/rhodey_voice.py` is the **single verb table**:
+  op × status → line. Fail-closed: only `committed` results render, so an
+  exception can never produce a success line. Per-op verbs: `📝 Logged`
+  (note), `📝 On your list` (task, +date), `📅 Scheduled` (event), `✅
+  Rescheduled → date`, `✅ Recurrence updated`, `✅ Updated`, `🗑️ Deleted
+  event`, and `✅ Closed` for true closures only.
+- **Pattern approve wired** — `compute_pattern_confidence` now reads the
+  `suggest_approved` key and overrides to `approve` (rule tagged
+  "user-approved"), making the handler's promise true. User judgment beats
+  stats.
+- **`handle_confident_note`** now sends an honest failure line and returns
+  None instead of echoing the success receipt.
+- **App contract** — `rich_card_content.dart` parses the same verb table
+  (reschedule/update → task card, never taskDone; On your list/Scheduled →
+  task; Logged → note), and the generic ✅-approval fallback now requires
+  approval language (word "approved" or a ✓/✅ marker) so unknown lines don't
+  become approval cards. Pinned by `rhodey_app/test/rich_card_content_test.dart`.
+
+### Rhodey Voice acks + structured intent (the text-parser contract dissolved)
+
+The ack text now follows the voice spec (`core/prompts/voice.py`): "Got it —
+X is on your list for Aug 20.", "Moved X to Aug 20.", "Done — X is off your
+plate.", "X — logged." — confirmations, contractions, the concrete date delta.
+No emoji prefixes: the app no longer parses ack text at all.
+
+- `render_acks()` renders the voice lines; `ACK_INTENTS` maps op → structured
+  intent (TASK_CREATED / TASK_RESCHEDULED / TASK_CLOSED / NOTE_LOGGED / …).
+- The executor sends the ack with `intent` + `ack_title` (the bare task name)
+  → `send_telegram` → `deliver_outbound_reply` → raw_dumps metadata.
+- `/api/messages` and `/api/conversation-history` flatten metadata.intent /
+  metadata.title onto the row; `ChatMessage.ackTitle` carries it into
+  `resolveCardData()`, which renders the card from intent + title — so the
+  card title is the bare task name and Mark-Done lookups keep working.
+- The text parser remains only as a fallback for legacy (pre-voice) rows.
+
+This kills the parser-drift class permanently: the ack text can change freely
+without breaking card rendering, and the card semantics come from the same
+structured facts (op/status/title) the backend already trusted.
+
 ## Commit Discipline
 
 Every commit carries the 4W1H Root Cause block (enforced by `.githooks/commit-msg`).

@@ -1725,6 +1725,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
           text: content,
           timestamp: ts,
           intent: m['intent'] as String?,
+          ackTitle: m['title'] as String?,
           sendStatus: role == MessageRole.user ? SendStatus.sent : null,
         ),
       );
@@ -3758,6 +3759,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       _cardDataCache[msg.id] = resolveCardData(
         intent: msg.intent,
         text: msg.text,
+        title: msg.ackTitle,
         timestamp: msg.timestamp,
       );
     }

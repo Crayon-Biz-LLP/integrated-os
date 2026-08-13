@@ -1272,7 +1272,16 @@ async def get_messages_route(request: Request, limit: int = 50, offset: int = 0)
             .limit(limit)\
             .offset(offset)\
             .execute()
-        return {"messages": result.data or []}
+        rows = result.data or []
+        # Flatten structured ack metadata (intent + title) so the app can
+        # render cards without parsing the voice-rendered ack text.
+        for row in rows:
+            meta = row.get('metadata') or {}
+            if meta.get('intent'):
+                row['intent'] = meta['intent']
+            if meta.get('title'):
+                row['title'] = meta['title']
+        return {"messages": rows}
     except Exception as e:
         print(f"Get messages error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -1364,14 +1373,16 @@ async def conversation_history_route(request: Request, limit: int = 100, offset:
                 continue
             seen.add(key)
             source = row.get('source') or ''
+            meta = row.get('metadata') or {}
             entries.append({
                 'id': f"r{row['id']}",
                 'role': 'bot',
-                'intent': 'BRIEFING' if source in ('pulse', 'pulse_engine') else 'RESPONSE',
+                'intent': meta.get('intent') or ('BRIEFING' if source in ('pulse', 'pulse_engine') else 'RESPONSE'),
                 'content': content,
                 'created_at': created,
                 'session_id': None,
-                'metadata': row.get('metadata'),
+                'metadata': meta,
+                'title': meta.get('title'),
             })
 
         entries.sort(key=lambda e: e.get('created_at') or '', reverse=True)

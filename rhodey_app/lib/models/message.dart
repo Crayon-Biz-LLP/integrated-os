@@ -24,6 +24,11 @@ class ChatMessage {
   /// briefings become Moment cards, clarifications become prompt cards, etc.
   final String? intent;
 
+  /// Bare entity title (task/note/event name) for ack messages. Rides along
+  /// with [intent] on the message row so the card shows the task name and
+  /// Mark-Done works — the ack text itself is voice-rendered and unparsed.
+  final String? ackTitle;
+
   /// Only meaningful for user messages.
   /// null = no send (inbound / Rhodey message).
   final SendStatus? sendStatus;
@@ -37,6 +42,7 @@ class ChatMessage {
     this.quickReplies,
     this.taskList,
     this.intent,
+    this.ackTitle,
     this.sendStatus,
   });
 

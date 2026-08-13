@@ -183,6 +183,62 @@ async def test_t5_compute_confidence_known():
         assert "42/42" in result["rule"]
 
 
+# ── T5b: user-approved override (suggest-mode tap makes auto-approve real) ──
+
+@pytest.mark.asyncio
+async def test_t5b_user_approved_overrides_stats():
+    """A suggest_approved key flips a low-confidence pattern to 'approve'.
+
+    The handler's "will auto-approve from now on" acknowledgement must be
+    true: the tap writes suggest_approved:{subsystem}:{hash}, and this
+    override makes the next decision for that pattern auto-approve.
+    """
+    features = {"source": "email", "node_type": "person"}
+    key_hash = hash_features(features, "entity_extraction")
+    # Zero correct answers → normally "review"; the override must flip it.
+    client = _FakeClient({
+        "subsystem_patterns": {
+            "total_count": 3,
+            "correct_count": 0,
+            "corrected_count": 0,
+            "soft_accepted_count": 0,
+            "feature_json": {"source": "email", "node_type": "person"},
+            "first_seen": _T1_AGO,
+            "last_seen": _T2_AGO,
+        },
+        "core_config": [{"key": f"suggest_approved:entity_extraction:{key_hash}"}],
+    })
+
+    with patch("core.lib.telemetry.tenant_aware_client", return_value=client):
+        result = await compute_pattern_confidence(features, "entity_extraction")
+
+    assert result["recommendation"] == "approve"
+    assert "user-approved" in result["rule"]
+
+
+@pytest.mark.asyncio
+async def test_t5c_no_override_without_suggest_key():
+    """Without the suggest_approved key, stats decide as before."""
+    features = {"source": "email", "node_type": "person"}
+    client = _FakeClient({
+        "subsystem_patterns": {
+            "total_count": 3,
+            "correct_count": 0,
+            "corrected_count": 0,
+            "soft_accepted_count": 0,
+            "feature_json": {"source": "email", "node_type": "person"},
+            "first_seen": _T1_AGO,
+            "last_seen": _T2_AGO,
+        },
+        "core_config": None,  # no suggest_approved key for this pattern
+    })
+
+    with patch("core.lib.telemetry.tenant_aware_client", return_value=client):
+        result = await compute_pattern_confidence(features, "entity_extraction")
+
+    assert result["recommendation"] != "approve"
+
+
 # ── T6: get_pattern_summary returns sorted results ─────────────────────────
 
 @pytest.mark.asyncio

@@ -65,10 +65,38 @@ CardData? parseMessageToCardData(String text) {
       );
     }
 
-    // Generic ✅ prefix with approval-like content
+    // Task mutations (backend verb table — core/lib/rhodey_voice.py render_acks).
+    // A reschedule / metadata update keeps the task OPEN — never a taskDone card.
+    final rescheduledMatch = RegExp(r'Rescheduled:\s*(.+?)(?:\s*→\s*.+)?$',
+        caseSensitive: false).firstMatch(firstLine);
+    if (rescheduledMatch != null) {
+      return CardData(
+        type: CardType.task,
+        title: rescheduledMatch.group(1)!.trim(),
+        fullText: trimmed,
+      );
+    }
+
+    final updatedMatch = RegExp(r'(?:Recurrence updated|Updated):\s*(.+)',
+        caseSensitive: false).firstMatch(firstLine);
+    if (updatedMatch != null) {
+      return CardData(
+        type: CardType.task,
+        title: updatedMatch.group(1)!.trim(),
+        fullText: trimmed,
+      );
+    }
+
+    // Generic ✅ prefix — only when the line actually reads like an approval
+    // (explicit "approved" word or a trailing ✓/✅ marker). Without this gate,
+    // any unknown ✅ line (e.g. "✅ Rescheduled: …") rendered as an approval
+    // card with a bogus approve/undo affordance.
     final genericApproval = RegExp(r'✅\s+(.+?)(?:\s+[✓✅])?$')
         .firstMatch(firstLine);
-    if (genericApproval != null) {
+    final looksApprovalLike = RegExp(r'\bapproved\b', caseSensitive: false)
+            .hasMatch(firstLine) ||
+        RegExp(r'[✓✅]\s*$').hasMatch(firstLine);
+    if (genericApproval != null && looksApprovalLike) {
       final title = genericApproval.group(1)!.trim();
       if (title.length > 5 && title.length < 80) {
         return CardData(type: CardType.approval, title: title, fullText: trimmed);
@@ -94,14 +122,37 @@ CardData? parseMessageToCardData(String text) {
     }
   }
 
-  // Pattern 3: "📝 Note saved: [title]"
+  // Pattern 3: "📝 ..." — task creations ("On your list") and note saves
   if (firstLine.startsWith('📝')) {
-    final noteMatch = RegExp(r'Note saved:\s*(.+)', caseSensitive: false)
-        .firstMatch(firstLine);
+    final onYourListMatch = RegExp(r'On your list:\s*(.+?)(?:\s*—\s*.+)?$',
+        caseSensitive: false).firstMatch(firstLine);
+    if (onYourListMatch != null) {
+      return CardData(
+        type: CardType.task,
+        title: onYourListMatch.group(1)!.trim(),
+        fullText: trimmed,
+      );
+    }
+
+    final noteMatch = RegExp(r'(?:Note saved|Logged):\s*(.+)',
+        caseSensitive: false).firstMatch(firstLine);
     if (noteMatch != null) {
       return CardData(
         type: CardType.note,
         title: noteMatch.group(1)!.trim(),
+        fullText: trimmed,
+      );
+    }
+  }
+
+  // Pattern 4: "📅 Scheduled: <title> — <date>" (create_event)
+  if (firstLine.startsWith('📅')) {
+    final scheduledMatch = RegExp(r'Scheduled:\s*(.+?)(?:\s*[—–-]\s*.+)?$',
+        caseSensitive: false).firstMatch(firstLine);
+    if (scheduledMatch != null) {
+      return CardData(
+        type: CardType.task,
+        title: scheduledMatch.group(1)!.trim(),
         fullText: trimmed,
       );
     }
@@ -120,6 +171,7 @@ CardData? parseMessageToCardData(String text) {
 CardData? resolveCardData({
   String? intent,
   required String text,
+  String? title,
   DateTime? timestamp,
 }) {
   final trimmed = text.trim();
@@ -152,6 +204,32 @@ CardData? resolveCardData({
         title: firstLine,
         fullText: trimmed,
         timestamp: timestamp,
+      );
+    case 'TASK_CREATED':
+    case 'TASK_RESCHEDULED':
+    case 'TASK_UPDATED':
+    case 'RECURRENCE_UPDATED':
+    case 'EVENT_SCHEDULED':
+      // Ack intents — the task is OPEN (rescheduled/updated tasks stay
+      // actionable), so the card carries Mark-Done. The bare task name comes
+      // structured from the backend (title) — never parsed from the voice text.
+      return CardData(
+        type: CardType.task,
+        title: title ?? firstLine,
+        fullText: trimmed,
+      );
+    case 'TASK_CLOSED':
+    case 'RECURRENCE_CANCELLED':
+      return CardData(
+        type: CardType.taskDone,
+        title: title ?? firstLine,
+        fullText: trimmed,
+      );
+    case 'NOTE_LOGGED':
+      return CardData(
+        type: CardType.note,
+        title: title ?? firstLine,
+        fullText: trimmed,
       );
     default:
       // No structured intent (live messages, RESPONSE, QUERY, ...) — rely on
