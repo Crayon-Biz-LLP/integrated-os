@@ -2987,9 +2987,11 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
             ),
           ),
           const SizedBox(width: 6),
-          // Flexible so a long pulse label + the sync chip never overflow the
-          // header row on narrow screens.
-          Flexible(
+          // Expanded (tight fit) so the label fills all free space and the
+          // task pill stays pinned to the right edge no matter how long the
+          // pulse label is — a loose Flexible left dead space after the text
+          // and the pill floated mid-row as the label grew.
+          Expanded(
             child: Text(
               'Rhodey${pulseLabel.isNotEmpty ? ' · $pulseLabel' : ''}',
               style: AppTheme.body.copyWith(
@@ -3023,8 +3025,6 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
               ),
             ),
           ],
-
-          const Spacer(),
 
           // Task icon — active task count. Tap opens the task ledger in chat.
           Material(

@@ -9,6 +9,75 @@ import '../widgets/decision_card.dart';
 import '../widgets/merge_search_sheet.dart';
 import '../widgets/push_banner.dart';
 
+/// Everything the Quick Confirmation queue can be filtered by — the decision
+/// types plus the sections (drafts / FYI) that live alongside the cards.
+/// Every chip is always shown (with a live count) so the filter vocabulary
+/// never depends on what happens to be pending right now.
+enum InboxFilter {
+  all,
+  drafts,
+  fyi,
+  edges,
+  nodes,
+  emails,
+  chats,
+  calls,
+  teams,
+  merges,
+}
+
+/// Plural noun for a filter chip.
+String _chipLabel(InboxFilter f) {
+  switch (f) {
+    case InboxFilter.edges:
+      return 'Edges';
+    case InboxFilter.nodes:
+      return 'Nodes';
+    case InboxFilter.emails:
+      return 'Emails';
+    case InboxFilter.chats:
+      return 'Chats';
+    case InboxFilter.calls:
+      return 'Calls';
+    case InboxFilter.teams:
+      return 'Teams';
+    case InboxFilter.merges:
+      return 'Merges';
+    case InboxFilter.drafts:
+      return 'Drafts';
+    case InboxFilter.fyi:
+      return 'FYI';
+    case InboxFilter.all:
+      return '';
+  }
+}
+
+/// Singular label for the filtered-empty state.
+String _filterLabel(InboxFilter f) {
+  switch (f) {
+    case InboxFilter.drafts:
+      return 'drafts';
+    case InboxFilter.fyi:
+      return 'FYI items';
+    case InboxFilter.edges:
+      return 'edges';
+    case InboxFilter.nodes:
+      return 'nodes';
+    case InboxFilter.emails:
+      return 'emails';
+    case InboxFilter.chats:
+      return 'chats';
+    case InboxFilter.calls:
+      return 'calls';
+    case InboxFilter.teams:
+      return 'teams items';
+    case InboxFilter.merges:
+      return 'merge proposals';
+    case InboxFilter.all:
+      return 'pending items';
+  }
+}
+
 class InboxScreen extends StatefulWidget {
   /// Push payload when this screen was opened from a notification tap. The
   /// carried `content` renders instantly (WhatsApp-style) while the real
@@ -44,8 +113,10 @@ class _InboxScreenState extends State<InboxScreen>
   /// Count of unverified auto-decisions — fetched on load
   int _autoDecisionCount = 0;
 
-  /// Active type filter for the decision list (null = all types).
-  DecisionType? _typeFilter;
+  /// Active filter for the whole Quick Confirmation queue — every section the
+  /// inbox can show, not just decision types. Drafts and FYI filter their own
+  /// lists; the type filters zoom the decision cards (all = everything).
+  InboxFilter _filter = InboxFilter.all;
 
   /// True while batch-selection mode is active (select → approve/reject).
   bool _selectionMode = false;
@@ -53,6 +124,12 @@ class _InboxScreenState extends State<InboxScreen>
   /// Selected decision ids (DecisionItem.id — the stable card id). Only
   /// selectable types (everything except clarifications) can be selected.
   final Set<String> _selectedIds = {};
+
+  /// Selected email-draft ids (draft['id']) when the Drafts filter is active.
+  final Set<int> _selectedDraftIds = {};
+
+  /// Selected FYI ids (item['id']) when the FYI filter is active.
+  final Set<int> _selectedFyiIds = {};
 
   /// Notification content carried in the push — rendered instantly on tap so
   /// the Inbox never shows a bare spinner before the real list arrives.
@@ -198,14 +275,22 @@ class _InboxScreenState extends State<InboxScreen>
         if (!result.success && _items.isNotEmpty) return;
         _items = items;
         _loading =
-            false; // A filter pointing at a type with no remaining items would strand
-        // the screen on an empty view — fall back to All.
-        if (_typeFilter != null && !_items.any((d) => d.type == _typeFilter)) {
-          _typeFilter = null;
+            false;        // A filter pointing at a category with no remaining items would
+        // strand the screen on an empty view (and its chip has now
+        // disappeared) — fall back to All.
+        if (_filter != InboxFilter.all &&
+            !_categoryHasItems(_filter)) {
+          _filter = InboxFilter.all;
         }
         // Prune selections that no longer exist after a silent reload (items
         // actioned elsewhere) — the "N selected" count must stay honest.
         _selectedIds.retainWhere((id) => _items.any((d) => d.id == id));
+        _selectedDraftIds.retainWhere(
+          (id) => _drafts.any((d) => d['id'] == id),
+        );
+        _selectedFyiIds.retainWhere(
+          (id) => _fyi.any((f) => f['id'] == id),
+        );
       });
     }
 
@@ -1119,6 +1204,29 @@ class _InboxScreenState extends State<InboxScreen>
     setState(() {
       _selectionMode = !_selectionMode;
       _selectedIds.clear();
+      _selectedDraftIds.clear();
+      _selectedFyiIds.clear();
+    });
+  }
+
+  /// How many items are selected under the ACTIVE filter — drafts count draft
+  /// ids, FYI counts fyi ids, everything else counts decision-card ids. Keeps
+  /// the selection-bar count honest per section.
+  int _selectedCount() {
+    if (_filter == InboxFilter.drafts) return _selectedDraftIds.length;
+    if (_filter == InboxFilter.fyi) return _selectedFyiIds.length;
+    return _selectedIds.length;
+  }
+
+  void _toggleSelectDraft(int id) {
+    setState(() {
+      if (!_selectedDraftIds.add(id)) _selectedDraftIds.remove(id);
+    });
+  }
+
+  void _toggleSelectFyi(int id) {
+    setState(() {
+      if (!_selectedFyiIds.add(id)) _selectedFyiIds.remove(id);
     });
   }
 
@@ -1128,6 +1236,47 @@ class _InboxScreenState extends State<InboxScreen>
   bool _isSelectable(DecisionItem d) {
     if (d.type == DecisionType.clarification) return false;
     return int.tryParse(d.metadata['api_id'] as String? ?? '') != null;
+  }
+
+  /// Whether the active filter's category currently has any items — the same
+  /// gate the chip row uses, so a filter never outlives its own chip.
+  bool _categoryHasItems(InboxFilter f) {
+    switch (f) {
+      case InboxFilter.drafts:
+        return _drafts.isNotEmpty;
+      case InboxFilter.fyi:
+        return _fyi.isNotEmpty;
+      case InboxFilter.all:
+        return true;
+      default:
+        final t = _filterType(f);
+        return t != null && _items.any((d) => d.type == t);
+    }
+  }
+
+  /// The decision type a filter chip zooms to, or null for the sections
+  /// (drafts / fyi / all) that don't map to a card type.
+  DecisionType? _filterType(InboxFilter f) {
+    switch (f) {
+      case InboxFilter.edges:
+        return DecisionType.edge;
+      case InboxFilter.nodes:
+        return DecisionType.person;
+      case InboxFilter.emails:
+        return DecisionType.email;
+      case InboxFilter.chats:
+        return DecisionType.whatsapp;
+      case InboxFilter.calls:
+        return DecisionType.call;
+      case InboxFilter.teams:
+        return DecisionType.teams;
+      case InboxFilter.merges:
+        return DecisionType.merge;
+      case InboxFilter.all:
+      case InboxFilter.drafts:
+      case InboxFilter.fyi:
+        return null;
+    }
   }
 
   void _toggleSelect(String id) {
@@ -1145,9 +1294,29 @@ class _InboxScreenState extends State<InboxScreen>
   void _selectAllVisible() {
     setState(() {
       _selectedIds.clear();
+      _selectedDraftIds.clear();
+      _selectedFyiIds.clear();
+      if (_filter == InboxFilter.drafts) {
+        for (final d in _drafts) {
+          final id = d['id'] as int?;
+          if (id != null) _selectedDraftIds.add(id);
+        }
+        return;
+      }
+      if (_filter == InboxFilter.fyi) {
+        for (final f in _fyi) {
+          final id = f['id'] as int?;
+          if (id != null) _selectedFyiIds.add(id);
+        }
+        return;
+      }
+      // A type filter only selects cards of that type; All selects every
+      // selectable card.
       for (final d in _items) {
         if (!_isSelectable(d)) continue;
-        if (_typeFilter != null && d.type != _typeFilter) continue;
+        if (_filter != InboxFilter.all && d.type != _filterType(_filter)) {
+          continue;
+        }
         _selectedIds.add(d.id);
       }
     });
@@ -1247,58 +1416,99 @@ class _InboxScreenState extends State<InboxScreen>
     );
   }
 
-  /// Short label for a filter chip (noun form).
-  String _chipLabel(DecisionType t) {
-    switch (t) {
-      case DecisionType.edge:
-        return 'Edges';
-      case DecisionType.person:
-        return 'Nodes';
-      case DecisionType.email:
-        return 'Emails';
-      case DecisionType.whatsapp:
-        return 'Chats';
-      case DecisionType.call:
-        return 'Calls';
-      case DecisionType.teams:
-        return 'Teams';
-      case DecisionType.merge:
-        return 'Merges';
-      case DecisionType.clarification:
-        return 'Clarify';
+  /// Batch send or drop the selected email drafts (Drafts filter).
+  Future<void> _batchDrafts(String action) async {
+    if (_selectedDraftIds.isEmpty) return;
+    final verb = action == 'send' ? 'Send' : 'Drop';
+    final confirm = await _showBatchConfirm(
+      '$verb ${_selectedDraftIds.length} selected draft(s)?',
+    );
+    if (!confirm || !mounted) return;
+
+    var processed = 0;
+    var failed = 0;
+    for (final id in _selectedDraftIds.toList()) {
+      final result = await _api.draftAction(id, action: action);
+      if (result.success) {
+        processed += 1;
+      } else {
+        failed += 1;
+      }
     }
+    if (!mounted) return;
+    _selectionMode = false;
+    _selectedDraftIds.clear();
+    _loadDecisions();
+    _showSnack(
+      failed == 0
+          ? '✅ $verb $processed draft(s)'
+          : '⚠️ $verb $processed, $failed failed',
+      isError: failed > 0,
+    );
   }
 
-  /// Short label for the filtered-empty state (singular form).
-  String _filterLabel(DecisionType? type) {
-    switch (type) {
-      case DecisionType.edge:
-        return 'edge';
-      case DecisionType.person:
-        return 'node';
-      case DecisionType.email:
-        return 'email';
-      case DecisionType.whatsapp:
-        return 'chat';
-      case DecisionType.call:
-        return 'call';
-      case DecisionType.teams:
-        return 'teams';
-      case DecisionType.merge:
-        return 'merge';
-      case DecisionType.clarification:
-        return 'clarification';
-      case null:
-        return 'pending';
+  /// Batch acknowledge (Got it) the selected FYI items (FYI filter).
+  Future<void> _batchFyi() async {
+    if (_selectedFyiIds.isEmpty) return;
+    final confirm = await _showBatchConfirm(
+      'Got it — acknowledge ${_selectedFyiIds.length} selected FYI item(s)?',
+    );
+    if (!confirm || !mounted) return;
+
+    var processed = 0;
+    var failed = 0;
+    for (final id in _selectedFyiIds.toList()) {
+      final result = await _api.acknowledgeFyi(id);
+      if (result.success) {
+        processed += 1;
+      } else {
+        failed += 1;
+      }
     }
+    if (!mounted) return;
+    _selectionMode = false;
+    _selectedFyiIds.clear();
+    _loadDecisions();
+    _showSnack(
+      failed == 0
+          ? '✅ Got it — $processed item(s)'
+          : '⚠️ Acknowledged $processed, $failed failed',
+      isError: failed > 0,
+    );
   }
 
-  /// Horizontal chip row that filters the decision list by type. Types with
-  /// zero pending items are hidden to reduce noise.
+  /// Horizontal chip row that filters the whole queue. A chip appears only
+  /// when its category actually has items in the queue (drafts / fyi / any
+  /// decision type) — an empty chip is noise. All is always shown as the
+  /// default, and the row stays clean because zero-count categories are
+  /// simply absent.
   Widget _buildFilterChips() {
-    final chipTypes = DecisionType.values
-        .where((t) => t != DecisionType.clarification)
-        .toList();
+    final chips = <(InboxFilter, int)>[
+      if (_drafts.isNotEmpty)
+        (InboxFilter.drafts, _drafts.length),
+      if (_fyi.isNotEmpty) (InboxFilter.fyi, _fyi.length),
+      if (_items.any((d) => d.type == DecisionType.edge))
+        (InboxFilter.edges,
+            _items.where((d) => d.type == DecisionType.edge).length),
+      if (_items.any((d) => d.type == DecisionType.person))
+        (InboxFilter.nodes,
+            _items.where((d) => d.type == DecisionType.person).length),
+      if (_items.any((d) => d.type == DecisionType.email))
+        (InboxFilter.emails,
+            _items.where((d) => d.type == DecisionType.email).length),
+      if (_items.any((d) => d.type == DecisionType.whatsapp))
+        (InboxFilter.chats,
+            _items.where((d) => d.type == DecisionType.whatsapp).length),
+      if (_items.any((d) => d.type == DecisionType.call))
+        (InboxFilter.calls,
+            _items.where((d) => d.type == DecisionType.call).length),
+      if (_items.any((d) => d.type == DecisionType.teams))
+        (InboxFilter.teams,
+            _items.where((d) => d.type == DecisionType.teams).length),
+      if (_items.any((d) => d.type == DecisionType.merge))
+        (InboxFilter.merges,
+            _items.where((d) => d.type == DecisionType.merge).length),
+    ];
     return SingleChildScrollView(
       scrollDirection: Axis.horizontal,
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
@@ -1306,39 +1516,42 @@ class _InboxScreenState extends State<InboxScreen>
         children: [
           _ChipButton(
             label: 'All',
-            color: _typeFilter == null
+            color: _filter == InboxFilter.all
                 ? AppTheme.accent
                 : AppTheme.textTertiary,
             // Clearing selection on filter change keeps the batch honest:
             // selections never silently include items hidden by the filter.
             onTap: () => setState(() {
-              _typeFilter = null;
+              _filter = InboxFilter.all;
               _selectedIds.clear();
             }),
           ),
-          for (final t in chipTypes)
-            if (_items.any((d) => d.type == t)) ...[
-              const SizedBox(width: 6),
-              _ChipButton(
-                label:
-                    '${_chipLabel(t)} ${_items.where((d) => d.type == t).length}',
-                color: _typeFilter == t
-                    ? AppTheme.accent
-                    : AppTheme.textTertiary,
-                onTap: () => setState(() {
-                  _typeFilter = t;
-                  _selectedIds.clear();
-                }),
-              ),
-            ],
+          for (final (f, count) in chips) ...[
+            const SizedBox(width: 6),
+            _ChipButton(
+              label: '${_chipLabel(f)} $count',
+              color: _filter == f
+                  ? AppTheme.accent
+                  : AppTheme.textTertiary,
+              onTap: () => setState(() {
+                _filter = f;
+                _selectedIds.clear();
+              }),
+            ),
+          ],
         ],
       ),
     );
   }
 
-  /// Bottom action bar while selection mode is active.
+  /// Bottom action bar while selection mode is active. The actions adapt to
+  /// the active filter: Drafts get Send/Drop, FYI gets Got it, decision
+  /// filters get Approve/Reject.
   Widget _buildSelectionBar() {
-    final n = _selectedIds.length;
+    final n = _selectedCount();
+    // Drafts / FYI have no approve/reject — their batch verbs differ.
+    final isDrafts = _filter == InboxFilter.drafts;
+    final isFyi = _filter == InboxFilter.fyi;
     return SafeArea(
       child: Container(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 10),
@@ -1347,7 +1560,7 @@ class _InboxScreenState extends State<InboxScreen>
           border: const Border(top: BorderSide(color: AppTheme.border)),
         ),
         // Horizontally scrollable so the bar never overflows on narrow
-        // phones (count label + Select all + Approve + Reject).
+        // phones (count label + Select all + actions).
         child: SingleChildScrollView(
           scrollDirection: Axis.horizontal,
           child: Row(
@@ -1359,24 +1572,44 @@ class _InboxScreenState extends State<InboxScreen>
                   fontWeight: FontWeight.w600,
                 ),
               ),
-              const Spacer(),
+              const SizedBox(width: 12),
               _ChipButton(
                 label: 'Select all',
                 onTap: _selectAllVisible,
                 color: AppTheme.textTertiary,
               ),
               const SizedBox(width: 6),
-              _ChipButton(
-                label: '✅ Approve',
-                onTap: n == 0 ? null : () => _batchSelected('approve'),
-                color: AppTheme.green,
-              ),
-              const SizedBox(width: 6),
-              _ChipButton(
-                label: '❌ Reject',
-                onTap: n == 0 ? null : () => _batchSelected('reject'),
-                color: AppTheme.red,
-              ),
+              if (isDrafts) ...[
+                _ChipButton(
+                  label: '📤 Send',
+                  onTap: n == 0 ? null : () => _batchDrafts('send'),
+                  color: AppTheme.green,
+                ),
+                const SizedBox(width: 6),
+                _ChipButton(
+                  label: '🗑 Drop',
+                  onTap: n == 0 ? null : () => _batchDrafts('drop'),
+                  color: AppTheme.red,
+                ),
+              ] else if (isFyi) ...[
+                _ChipButton(
+                  label: '✅ Got it',
+                  onTap: n == 0 ? null : _batchFyi,
+                  color: AppTheme.green,
+                ),
+              ] else ...[
+                _ChipButton(
+                  label: '✅ Approve',
+                  onTap: n == 0 ? null : () => _batchSelected('approve'),
+                  color: AppTheme.green,
+                ),
+                const SizedBox(width: 6),
+                _ChipButton(
+                  label: '❌ Reject',
+                  onTap: n == 0 ? null : () => _batchSelected('reject'),
+                  color: AppTheme.red,
+                ),
+              ],
             ],
           ),
         ),
@@ -1455,12 +1688,14 @@ class _InboxScreenState extends State<InboxScreen>
       );
     }
 
-    // Apply the active type filter first — every section below derives from
-    // the filtered pool so "All" shows everything and a single-type filter
-    // zooms the whole screen to that bucket.
-    final visible = _items
-        .where((d) => _typeFilter == null || d.type == _typeFilter)
-        .toList();
+    // Apply the active filter first — every section below derives from the
+    // filtered pool so "All" shows everything and a single-type filter zooms
+    // the decision cards to that bucket. Drafts / FYI filters show no cards;
+    // those sections filter their own lists below.
+    final filterType = _filterType(_filter);
+    final visible = filterType == null
+        ? (_filter == InboxFilter.all ? _items : <DecisionItem>[])
+        : _items.where((d) => d.type == filterType).toList();
     final merges = visible.where((d) => d.isMergeProposal).toList();
     final nonMerges = visible.where((d) => !d.isMergeProposal).toList();
     final highPriority = nonMerges
@@ -1486,17 +1721,27 @@ class _InboxScreenState extends State<InboxScreen>
                 borderRadius: BorderRadius.circular(AppTheme.controlRadius),
               ),
               child: Text(
-                _typeFilter == null
+                _filter == InboxFilter.all
                     ? '${_items.length} pending'
-                    : '${visible.length} of ${_items.length}',
+                    : _filter == InboxFilter.drafts
+                        ? '${_drafts.length} drafts'
+                        : _filter == InboxFilter.fyi
+                            ? '${_fyi.length} FYI'
+                            : '${visible.length} of ${_items.length}',
                 style: AppTheme.monoLabel.copyWith(color: AppTheme.accent),
               ),
             ),
           ],
         ),
         actions: [
-          // Batch-selection toggle — hidden when nothing is selectable.
-          if (_items.any(_isSelectable))
+          // Batch-selection toggle — shown whenever the ACTIVE section has
+          // something to select: decision cards, drafts (Drafts filter), or
+          // FYI items (FYI filter). Hidden when the filter is empty.
+          if (_filter == InboxFilter.drafts
+              ? _drafts.isNotEmpty
+              : _filter == InboxFilter.fyi
+                  ? _fyi.isNotEmpty
+                  : _items.any(_isSelectable))
             TextButton(
               onPressed: _toggleSelectionMode,
               child: Text(
@@ -1551,24 +1796,50 @@ class _InboxScreenState extends State<InboxScreen>
             _buildFilterChips(),
 
             // ── Email Drafts (generated reply drafts awaiting approval) ──
-            if (_drafts.isNotEmpty) ...[
+            // Shown on All, or when the Drafts filter is active.
+            if (_drafts.isNotEmpty &&
+                (_filter == InboxFilter.all ||
+                    _filter == InboxFilter.drafts)) ...[
               _SectionLabel('Email Drafts'),
               ..._drafts.map(
-                (d) => _DraftCard(
-                  draft: d,
-                  onSend: () => _sendDraft(d),
-                  onDrop: () => _dropDraft(d),
-                  onEdit: () => _editDraft(d),
-                ),
+                (d) {
+                  final draftId = d['id'] as int?;
+                  return _DraftCard(
+                    draft: d,
+                    selectionMode: _selectionMode &&
+                        _filter == InboxFilter.drafts,
+                    selected: _selectedDraftIds.contains(draftId),
+                    onToggleSelect: draftId == null
+                        ? null
+                        : () => _toggleSelectDraft(draftId),
+                    onSend: () => _sendDraft(d),
+                    onDrop: () => _dropDraft(d),
+                    onEdit: () => _editDraft(d),
+                  );
+                },
               ),
               const SizedBox(height: 16),
             ],
 
             // ── FYI (informational, no decision needed) ──
-            if (_fyi.isNotEmpty) ...[
+            // Shown on All, or when the FYI filter is active.
+            if (_fyi.isNotEmpty &&
+                (_filter == InboxFilter.all || _filter == InboxFilter.fyi)) ...[
               _SectionLabel('For your info'),
               ..._fyi.map(
-                (f) => _FyiCard(item: f, onAck: () => _acknowledgeFyi(f)),
+                (f) {
+                  final fyiId = f['id'] as int?;
+                  return _FyiCard(
+                    item: f,
+                    selectionMode: _selectionMode &&
+                        _filter == InboxFilter.fyi,
+                    selected: _selectedFyiIds.contains(fyiId),
+                    onToggleSelect: fyiId == null
+                        ? null
+                        : () => _toggleSelectFyi(fyiId),
+                    onAck: () => _acknowledgeFyi(f),
+                  );
+                },
               ),
               const SizedBox(height: 16),
             ],
@@ -1651,7 +1922,10 @@ class _InboxScreenState extends State<InboxScreen>
               ),
             ),
 
-            if (_items.isEmpty) ...[
+            if (_items.isEmpty &&
+                _drafts.isEmpty &&
+                _fyi.isEmpty &&
+                _filter == InboxFilter.all) ...[
               const SizedBox(height: 40),
               const Center(
                 child: Text(
@@ -1659,11 +1933,15 @@ class _InboxScreenState extends State<InboxScreen>
                   style: TextStyle(color: AppTheme.textTertiary, fontSize: 13),
                 ),
               ),
-            ] else if (visible.isEmpty) ...[
+            ] else if (visible.isEmpty &&
+                (_filter != InboxFilter.drafts || _drafts.isEmpty) &&
+                (_filter != InboxFilter.fyi || _fyi.isEmpty) &&
+                !(_filter == InboxFilter.all &&
+                    (_drafts.isNotEmpty || _fyi.isNotEmpty))) ...[
               const SizedBox(height: 40),
               Center(
                 child: Text(
-                  'No ${_filterLabel(_typeFilter)} items in the queue',
+                  'No ${_filterLabel(_filter)} in the queue',
                   style: const TextStyle(
                     color: AppTheme.textTertiary,
                     fontSize: 13,
@@ -1833,6 +2111,32 @@ class _ActionButton extends StatelessWidget {
   }
 }
 
+// ── Selection Checkbox ───────────────────────────────────────────
+
+class _SelectionCheck extends StatelessWidget {
+  final bool selected;
+  const _SelectionCheck({required this.selected});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 20,
+      height: 20,
+      decoration: BoxDecoration(
+        color: selected ? AppTheme.green : Colors.transparent,
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(
+          color: selected ? AppTheme.green : AppTheme.textTertiary,
+          width: 1.5,
+        ),
+      ),
+      child: selected
+          ? const Icon(Icons.check, size: 14, color: Colors.white)
+          : null,
+    );
+  }
+}
+
 // ── Section Label ───────────────────────────────────────────────
 
 class _SectionLabel extends StatelessWidget {
@@ -1863,11 +2167,20 @@ class _DraftCard extends StatelessWidget {
   final VoidCallback onDrop;
   final VoidCallback? onEdit;
 
+  /// Batch-selection mode (Drafts filter): checkbox + tap-to-toggle, and the
+  /// action buttons give way to a selection hint.
+  final bool selectionMode;
+  final bool selected;
+  final VoidCallback? onToggleSelect;
+
   const _DraftCard({
     required this.draft,
     required this.onSend,
     required this.onDrop,
     this.onEdit,
+    this.selectionMode = false,
+    this.selected = false,
+    this.onToggleSelect,
   });
 
   @override
@@ -1875,37 +2188,47 @@ class _DraftCard extends StatelessWidget {
     final sender = draft['sender_name'] as String?;
     final subject = draft['subject'] as String? ?? 'Email draft';
     final body = (draft['draft_body'] as String? ?? '').trim();
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      decoration: BoxDecoration(
-        color: AppTheme.surface,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppTheme.border, width: 1),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(14, 12, 14, 6),
-            child: Row(
-              children: [
-                const Text('📧', style: TextStyle(fontSize: 14)),
-                const SizedBox(width: 6),
-                Text('DRAFT REPLY', style: AppTheme.monoLabel),
-                const Spacer(),
-                if (sender != null)
-                  Flexible(
-                    child: Text(
-                      sender,
-                      style: AppTheme.caption.copyWith(
-                        color: AppTheme.textTertiary,
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-              ],
-            ),
+    return GestureDetector(
+      onTap: selectionMode ? onToggleSelect : null,
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+        decoration: BoxDecoration(
+          color: selected ? AppTheme.greenBg : AppTheme.surface,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: selected ? AppTheme.green : AppTheme.border,
+            width: selected ? 1.5 : 1,
           ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 12, 14, 6),
+              child: Row(
+                children: [
+                  if (selectionMode) ...[
+                    _SelectionCheck(selected: selected),
+                    const SizedBox(width: 8),
+                  ],
+                  const Text('📧', style: TextStyle(fontSize: 14)),
+                  const SizedBox(width: 6),
+                  Text('DRAFT REPLY', style: AppTheme.monoLabel),
+                  const Spacer(),
+                  if (sender != null)
+                    Flexible(
+                      child: Text(
+                        sender,
+                        style: AppTheme.caption.copyWith(
+                          color: AppTheme.textTertiary,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                ],
+              ),
+            ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 14),
             child: Text(
@@ -1925,36 +2248,50 @@ class _DraftCard extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
               ),
             ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
-            child: Row(
-              children: [
-                _ActionButton(
-                  label: 'Send',
-                  icon: Icons.send,
-                  color: AppTheme.green,
-                  onTap: onSend,
+          // Actions — replaced by a selection hint while in selection mode
+          if (selectionMode)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 4, 14, 12),
+              child: Text(
+                selected ? 'Selected — tap to deselect' : 'Tap to select',
+                style: AppTheme.caption.copyWith(
+                  color: selected ? AppTheme.green : AppTheme.textTertiary,
+                  fontSize: 11,
                 ),
-                if (onEdit != null) ...[
-                  const SizedBox(width: 6),
+              ),
+            ),
+          if (!selectionMode)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
+              child: Row(
+                children: [
                   _ActionButton(
-                    label: 'Edit',
-                    icon: Icons.edit_outlined,
-                    color: AppTheme.accent,
-                    onTap: onEdit,
+                    label: 'Send',
+                    icon: Icons.send,
+                    color: AppTheme.green,
+                    onTap: onSend,
+                  ),
+                  if (onEdit != null) ...[
+                    const SizedBox(width: 6),
+                    _ActionButton(
+                      label: 'Edit',
+                      icon: Icons.edit_outlined,
+                      color: AppTheme.accent,
+                      onTap: onEdit,
+                    ),
+                  ],
+                  const Spacer(),
+                  _ActionButton(
+                    label: 'Drop',
+                    icon: Icons.delete_outline,
+                    color: AppTheme.textTertiary,
+                    onTap: onDrop,
                   ),
                 ],
-                const Spacer(),
-                _ActionButton(
-                  label: 'Drop',
-                  icon: Icons.delete_outline,
-                  color: AppTheme.textTertiary,
-                  onTap: onDrop,
-                ),
-              ],
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -1966,7 +2303,19 @@ class _FyiCard extends StatelessWidget {
   final Map<String, dynamic> item;
   final VoidCallback onAck;
 
-  const _FyiCard({required this.item, required this.onAck});
+  /// Batch-selection mode (FYI filter): checkbox + tap-to-toggle, and the
+  /// Got-it button gives way to a selection hint.
+  final bool selectionMode;
+  final bool selected;
+  final VoidCallback? onToggleSelect;
+
+  const _FyiCard({
+    required this.item,
+    required this.onAck,
+    this.selectionMode = false,
+    this.selected = false,
+    this.onToggleSelect,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -1980,72 +2329,96 @@ class _FyiCard extends StatelessWidget {
       'teams' => '🟣',
       _ => '📧',
     };
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-      decoration: BoxDecoration(
-        color: AppTheme.surface,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppTheme.border, width: 1),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(14, 12, 14, 6),
-            child: Row(
-              children: [
-                Text(channelIcon, style: const TextStyle(fontSize: 14)),
-                const SizedBox(width: 6),
-                Text(
-                  'FYI · ${channel.toUpperCase()}',
-                  style: AppTheme.monoLabel,
-                ),
-                const Spacer(),
-                if (sender != null)
-                  Flexible(
-                    child: Text(
-                      sender,
-                      style: AppTheme.caption.copyWith(
-                        color: AppTheme.textTertiary,
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-              ],
-            ),
+    return GestureDetector(
+      onTap: selectionMode ? onToggleSelect : null,
+      behavior: HitTestBehavior.opaque,
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+        decoration: BoxDecoration(
+          color: selected ? AppTheme.greenBg : AppTheme.surface,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: selected ? AppTheme.green : AppTheme.border,
+            width: selected ? 1.5 : 1,
           ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 14),
-            child: Text(
-              title,
-              style: AppTheme.title.copyWith(fontSize: 14),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-          if (summary.isNotEmpty)
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
             Padding(
-              padding: const EdgeInsets.fromLTRB(14, 4, 14, 0),
+              padding: const EdgeInsets.fromLTRB(14, 12, 14, 6),
+              child: Row(
+                children: [
+                  if (selectionMode) ...[
+                    _SelectionCheck(selected: selected),
+                    const SizedBox(width: 8),
+                  ],
+                  Text(channelIcon, style: const TextStyle(fontSize: 14)),
+                  const SizedBox(width: 6),
+                  Text(
+                    'FYI · ${channel.toUpperCase()}',
+                    style: AppTheme.monoLabel,
+                  ),
+                  const Spacer(),
+                  if (sender != null)
+                    Flexible(
+                      child: Text(
+                        sender,
+                        style: AppTheme.caption.copyWith(
+                          color: AppTheme.textTertiary,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14),
               child: Text(
-                summary,
-                style: AppTheme.bodySmall.copyWith(fontSize: 12),
-                maxLines: 3,
+                title,
+                style: AppTheme.title.copyWith(fontSize: 14),
+                maxLines: 2,
                 overflow: TextOverflow.ellipsis,
               ),
             ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
-            child: Align(
-              alignment: Alignment.centerRight,
-              child: _ActionButton(
-                label: 'Got it',
-                icon: Icons.done,
-                color: AppTheme.accent,
-                onTap: onAck,
+            if (summary.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 4, 14, 0),
+                child: Text(
+                  summary,
+                  style: AppTheme.bodySmall.copyWith(fontSize: 12),
+                  maxLines: 3,
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
-            ),
-          ),
-        ],
+            // Actions — replaced by a selection hint while in selection mode
+            if (selectionMode)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 4, 14, 12),
+                child: Text(
+                  selected ? 'Selected — tap to deselect' : 'Tap to select',
+                  style: AppTheme.caption.copyWith(
+                    color: selected ? AppTheme.green : AppTheme.textTertiary,
+                    fontSize: 11,
+                  ),
+                ),
+              ),
+            if (!selectionMode)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: _ActionButton(
+                    label: 'Got it',
+                    icon: Icons.done,
+                    color: AppTheme.accent,
+                    onTap: onAck,
+                  ),
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
