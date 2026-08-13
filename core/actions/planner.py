@@ -2,7 +2,14 @@ import asyncio
 import json
 import re
 from typing import List
-from core.actions.models import Action
+from pydantic import ValidationError
+from core.actions.models import (
+    Action,
+    NeedsClarification,
+    PLAN_ACTION_ADAPTER,
+    inject_deterministic_delta,
+    validation_missing_fields,
+)
 from core.services.db import tenant_aware_client
 from core.lib.audit_logger import audit_log_sync
 from core.llm.fallback import generate_content_with_fallback
@@ -166,6 +173,19 @@ async def plan_actions(text: str, title: str = "", entity: str = "", active_anch
     from datetime import datetime, timezone
     current_time = datetime.now(timezone.utc).astimezone().isoformat()
 
+    # Phase 2 (invariant #2): resolve relative date expressions deterministically
+    # so the LLM never has to compute calendar math. Only the resolved copy is
+    # passed to the prompt — the raw `text` is untouched (it's used verbatim
+    # for notes / fallback content and the lexical candidate pre-filter).
+    from core.lib.time_utils import get_user_timezone, resolve_relative_dates
+    resolved_text = resolve_relative_dates(text, datetime.now(get_user_timezone()))
+    resolved_dates = resolved_text if resolved_text != text else ""
+
+    # Learning loop (vision #4): past clarifications for this tenant steer the
+    # prompt so the same operation-class mistakes get rarer. Fail-open + cached.
+    from core.lib.learning_hints import get_action_planner_hint
+    learned_hints = await get_action_planner_hint()
+
     prompt = build_planner_prompt(
         current_time=current_time,
         text=text,
@@ -174,18 +194,27 @@ async def plan_actions(text: str, title: str = "", entity: str = "", active_anch
         entity=entity,
         candidate_lines=candidate_lines_str,
         org_lines=org_lines,
-
         active_anchor=active_anchor,
+        resolved_dates=resolved_dates,
+        learned_hints=learned_hints,
     )
 
     try:
         # Use SYNTHESIS_MODEL for COMPLETION intents (close_task needs reliable matching)
         planner_model = SYNTHESIS_MODEL if intent == "COMPLETION" else CLASSIFICATION_MODEL
+        # Phase 5 (invariant #6): shape-level response schema constrains the LLM
+        # at generation time on both providers; per-op required fields stay in
+        # the typed models (strict backstop). Providers degrade gracefully if the
+        # schema is rejected.
+        from core.prompts.planner import PLANNER_ACTIONS_SCHEMA
         res = await generate_content_with_fallback(
             prompt=prompt,
             workload=WorkloadProfile.INTERACTIVE,
             primary_model=planner_model,
-            config={"response_mime_type": "application/json"}
+            config={
+                "response_mime_type": "application/json",
+                "response_schema": PLANNER_ACTIONS_SCHEMA,
+            }
         )
         parsed = res.parse_json()
         raw_actions = parsed.get("actions", [])
@@ -198,12 +227,29 @@ async def plan_actions(text: str, title: str = "", entity: str = "", active_anch
             if str(tid) == "None" and not op.startswith("create_") and op not in ["query_info", "no_op"]:
                 continue
                 
-            actions.append(Action(
-                operation=op,
-                target_id=tid,
-                params=a.get("params", {}),
-                human_label=a.get("human_label", "")
-            ))
+            # Phase 2 backstop (invariant #2): the LLM reads phrasing, code does
+            # arithmetic. If the LLM emitted a time-bearing op with no time, the
+            # raw text is re-read deterministically and the delta injected — so
+            # a "defer by 7 days" flake can never be asked about or dropped.
+            a = inject_deterministic_delta(a, text)
+
+            # Phase 1 fail-closed (invariant #3): every action must satisfy its
+            # per-op schema before it can reach the executor. A malformed action
+            # (e.g. reschedule with no new_reminder_at — the Aug 12 silent-ack
+            # failure) raises NeedsClarification so the user is asked instead of
+            # being acknowledged with zero writes.
+            try:
+                typed_action = PLAN_ACTION_ADAPTER.validate_python(a)
+            except ValidationError as ve:
+                missing = validation_missing_fields(ve.errors())
+                raise NeedsClarification(
+                    message=f"Planner produced an invalid {op} action: {ve.errors()[:3]}",
+                    text=text,
+                    operation=op,
+                    target_id=tid,
+                    missing_fields=missing or None,
+                )
+            actions.append(typed_action)
             
         if actions:
             try:
@@ -212,6 +258,10 @@ async def plan_actions(text: str, title: str = "", entity: str = "", active_anch
                 pass
             return actions
         return []
+    except NeedsClarification:
+        # Re-raise — the dispatch layer routes it to the user as a question.
+        # Must not be swallowed by the generic handler below.
+        raise
     except Exception as e:
         audit_log_sync("planner", "WARNING", f"Planner failed: {e}")
         return []

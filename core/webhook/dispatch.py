@@ -13,6 +13,7 @@ from core.webhook.classify import CLASSIFICATION_MODEL,  INTENT_OPTIONS, INTENT_
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 from core.actions import capture_response
+from core.actions.models import NeedsClarification
 from core.prompts.query import build_interrogate_brain_prompt, new_anaphora_prompt, get_query_type_sections
 from core.prompts.briefing import build_daily_brief_prompt
 from core.webhook.utils import supabase
@@ -519,8 +520,26 @@ async def _route_by_intent(intent: str, text: str, chat_id: int, session_id: str
         if contains_hidden:
             from core.actions.planner import plan_actions
             from core.actions.executor import execute_planned_actions
-            actions = await plan_actions(text, title, entity, active_anchor, intent=intent)
-            await execute_planned_actions(actions, chat_id, text=text, entity=entity, source=source, sender=sender, session_id=session_id, intent=intent, active_anchor=active_anchor)
+            clarified = False
+            try:
+                actions = await plan_actions(text, title, entity, active_anchor, intent=intent)
+            except NeedsClarification as nc:
+                # Phase 4: park the pending action so the reply resumes it,
+                # then ask — never silently acked or dropped. Skip execution
+                # (empty actions would otherwise trigger Guard 3's fallback
+                # note message on top of the question).
+                clarified = True
+                if session_id:
+                    from core.webhook.workflows import park_action_clarification
+                    await park_action_clarification(
+                        chat_id=chat_id, thread_id=session_id, original_text=text,
+                        intent=intent, title=title, entity=entity,
+                        operation=nc.operation, target_id=nc.target_id,
+                        missing_fields=nc.missing_fields,
+                    )
+                await handle_clarification(text, nc.to_question(), chat_id, session_id=session_id)
+            if not clarified:
+                await execute_planned_actions(actions, chat_id, text=text, entity=entity, source=source, sender=sender, session_id=session_id, intent=intent, active_anchor=active_anchor)
         if reply:
             capture_response(reply)
 
@@ -534,7 +553,21 @@ async def _route_by_intent(intent: str, text: str, chat_id: int, session_id: str
             return
         from core.actions.planner import plan_actions
         from core.actions.executor import execute_planned_actions
-        actions = await plan_actions(text, title, entity, active_anchor, intent=intent)
+        try:
+            actions = await plan_actions(text, title, entity, active_anchor, intent=intent)
+        except NeedsClarification as nc:
+            # Phase 4: park the pending action so the reply resumes it, then
+            # ask instead of acknowledging (invariant #1).
+            if session_id:
+                from core.webhook.workflows import park_action_clarification
+                await park_action_clarification(
+                    chat_id=chat_id, thread_id=session_id, original_text=text,
+                    intent=intent, title=title, entity=entity,
+                    operation=nc.operation, target_id=nc.target_id,
+                    missing_fields=nc.missing_fields,
+                )
+            await handle_clarification(text, nc.to_question(), chat_id, session_id=session_id)
+            return
         await execute_planned_actions(actions, chat_id, text=text, entity=entity, source=source, sender=sender, session_id=session_id, intent=intent, active_anchor=active_anchor)
         
     elif intent == 'DAILY_BRIEF':

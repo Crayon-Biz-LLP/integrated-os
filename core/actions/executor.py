@@ -1,7 +1,7 @@
 import uuid
 import hashlib
 from typing import List, Optional, Dict
-from core.actions.models import Action
+from core.actions.models import Action, action_param_error
 from core.services.db import tenant_aware_client
 from core.lib.audit_logger import audit_log_sync
 from core.lib.state_machines import guard_require_valid_transition
@@ -122,14 +122,64 @@ async def _save_fallback_note(text: str, chat_id: int, entity: str = None, sourc
 
 
 
+# ── #3.5: PATCH builders (Phase 3 — deltas only, never write None) ──
+
+def modify_recurring_updates(action: Action) -> dict:
+    """Build the tasks-table patch for modify_recurring (PATCH semantics).
+
+    Only fields the user actually changed are included — a time-only change
+    NEVER touches `recurrence`, so the series rule cannot be wiped by omission
+    (the Phase 3 data-loss class: `upd = {"recurrence": None}`).
+    """
+    upd = {}
+    if action.params.get("new_rrule"):
+        upd["recurrence"] = action.params["new_rrule"]
+    if action.params.get("new_reminder_at"):
+        from core.services.google_service import format_rfc3339
+        formatted = format_rfc3339(action.params["new_reminder_at"])
+        if formatted:
+            upd["reminder_at"] = formatted
+    return upd
+
+
+def update_metadata_updates(action: Action) -> dict:
+    """Build the tasks-table patch for update_metadata (PATCH semantics).
+
+    Never writes None: an explicitly-None field from a loosely-built action is
+    treated as "not provided" rather than a wipe.
+    """
+    upd = {}
+    if action.params.get("new_priority"):
+        upd["priority"] = action.params["new_priority"]
+    if action.params.get("new_deadline"):
+        upd["deadline"] = action.params["new_deadline"]
+    return upd
+
+
 # ── #3: Pre-execution validation ──
 
 def validate_operation(action: Action) -> Optional[str]:
     """Validate that an action can be executed before attempting.
 
     Returns None if valid, or an error message string if invalid.
-    Catches: missing target, nonexistent task, unparseable dates.
+    Catches: missing per-op params (Phase 1 fail-closed), missing target,
+    nonexistent task, unparseable dates.
     """
+    # Phase 1 fail-closed (invariant #3): per-op required params checked first,
+    # before any DB access. Mirror of the typed-model validators — catches
+    # loosely-constructed actions (legacy base `Action`) at the executor gate.
+    param_err = action_param_error(action)
+    if param_err:
+        return param_err
+
+    # Unparseable dates must not silently write None to the DB
+    if action.operation in ("reschedule", "modify_recurring"):
+        new_reminder = action.params.get("new_reminder_at")
+        if new_reminder:
+            from core.services.google_service import format_rfc3339
+            if not format_rfc3339(new_reminder):
+                return f"{action.operation}: unparseable new_reminder_at '{new_reminder}'"
+
     supabase = tenant_aware_client()
 
     # Operations that require an existing task
@@ -509,11 +559,8 @@ async def execute_planned_actions(
                 
             if action.operation == "update_metadata":
                 try:
-                    upd = {}
-                    if "new_priority" in action.params:
-                        upd["priority"] = action.params["new_priority"]
-                    if "new_deadline" in action.params:
-                        upd["deadline"] = action.params["new_deadline"]
+                    # Phase 3 PATCH semantics: deltas only, never None
+                    upd = update_metadata_updates(action)
                     if upd:
                         supabase.table('tasks').update(upd).eq('id', int(action.target_id)).execute()
                         closed_ids.append(action.target_id)
@@ -548,23 +595,30 @@ async def execute_planned_actions(
                 # Dedicated modify_recurring handler — does NOT go through update_task_status
                 # because update_task_status treats None reminder_at as "delete calendar event."
                 # Modifying a recurring task's schedule should update the event, not delete it.
-                new_rrule = action.params.get("new_rrule")
-                new_reminder = action.params.get("new_reminder_at")
                 try:
                     from core.services.google_service import sync_to_calendar
                     task_ref = supabase.table('tasks').select('*').eq('id', int(action.target_id)).limit(1).execute()
                     if task_ref.data:
                         td = task_ref.data[0]
                         e_id = td.get('google_event_id')
-                        upd = {"recurrence": new_rrule}
-                        if new_reminder:
-                            from core.services.google_service import format_rfc3339
-                            upd["reminder_at"] = format_rfc3339(new_reminder)
+                        # Phase 3 PATCH semantics: deltas only. A time-only change
+                        # must NOT touch `recurrence` (previously `{"recurrence":
+                        # new_rrule}` wrote None and wiped the series rule).
+                        upd = modify_recurring_updates(action)
+                        if not upd:
+                            # Phase 1 validation should have blocked this —
+                            # last line of defense (invariant #1).
+                            sync_failed = True
+                            failed_tasks.append(
+                                f"Task {action.target_id}: modify_recurring — no schedule change provided"
+                            )
+                            continue
                         supabase.table('tasks').update(upd).eq('id', int(action.target_id)).execute()
-                        # Sync to calendar — update existing event, don't delete
+                        # Sync to calendar — update existing event, don't delete.
+                        # Preserve the series' recurrence when only the time changed.
                         e_id = sync_to_calendar(td['title'], upd.get('reminder_at') or td.get('reminder_at'),
                                                   event_id=e_id, duration_mins=td.get('duration_mins', 15),
-                                                  recurrence=new_rrule)
+                                                  recurrence=upd.get('recurrence') or td.get('recurrence'))
                         if e_id:
                             supabase.table('tasks').update({'google_event_id': e_id}).eq('id', int(action.target_id)).execute()
                         closed_ids.append(action.target_id)
@@ -613,8 +667,17 @@ async def execute_planned_actions(
                             sync_failed = True
                             failed_tasks.append(f"Task {action.target_id}: reschedule — task not found")
                     else:
-                        # No new time provided — just acknowledge
-                        closed_ids.append(action.target_id)
+                        # Phase 1 fail-closed (invariant #1 — "no success without
+                        # a write"): a reschedule without a time is NEVER
+                        # acknowledged. Previously this branch silently acked
+                        # ("✅ Closed") with zero DB writes — the Aug 12 lie.
+                        # validate_operation should have caught this earlier;
+                        # this is the last line of defense.
+                        sync_failed = True
+                        failed_tasks.append(
+                            f"Task {action.target_id}: reschedule — no new time provided "
+                            f"(cannot reschedule without a time)"
+                        )
                 except Exception as e:
                     sync_failed = True
                     failed_tasks.append(f"Task {action.target_id} reschedule: {e}")

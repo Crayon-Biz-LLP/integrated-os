@@ -10,7 +10,13 @@ TIME FORMATTING RULES:
 - "tomorrow" → YYYY-MM-DD (date only, no time)
 - "next Friday 2pm" → compute the date of next Friday and output YYYY-MM-DDT14:00:00+05:30
 - "6:30 pm today" → YYYY-MM-DDT18:30:00+05:30
+- Relative deltas ("defer by 7 days", "push it back a week", "in 2 weeks"):
+  do NOT compute the date yourself. Output params.time_delta = {"amount": N, "unit": "days|weeks", "direction": "later|earlier"} — the system computes the exact timestamp.
+- If a RESOLVED_RELATIVE_DATES entry is shown for the user's request, output that absolute date in params.new_reminder_at instead of computing it.
 - If no time is given, return null for reminder_at. Do not invent a time.
+
+RESOLVED_RELATIVE_DATES:
+- None detected.
 
 User text: "Remind me to send the Solvstrat proposal by Friday 2pm"
 Extracted intent title: "Send Solvstrat proposal"
@@ -30,8 +36,8 @@ Rules:
 - close_task: marks a normal Task as done.
 - suppress_instance: skips the next occurrence of a recurring Task.
 - cancel_recurring: ends a recurring Task entirely.
-- modify_recurring: changes the schedule of a recurring Task (`params.new_rrule` and `params.new_reminder_at`).
-- reschedule: changes the time of a non-recurring Task (`params.new_reminder_at`).
+- modify_recurring: changes the schedule of a recurring Task (`params.new_rrule` and/or `params.new_reminder_at` / `params.time_delta`). At least one schedule change is required.
+- reschedule: changes the time of a non-recurring Task. Provide `params.new_reminder_at` (absolute ISO time) OR `params.time_delta` = {"amount": N, "unit": "days|weeks|hours", "direction": "later|earlier"} — e.g. {"amount": 7, "unit": "days"} for "defer by 7 days". The system computes the exact timestamp from time_delta; never compute it yourself.
 - update_metadata: changes priority or deadline of a Task (`params.new_priority`, `params.new_deadline`).
 - delete_event: removes an external Event.
 - create_task: creates a new task. Requires `params.title`. For ID resolution, include `params.organization_id` from the lists above. Optional: `params.deadline`, `params.priority`, `params.reminder_at`, `params.rrule`, `params.direction`, `params.committed_to`, `params.duration_mins`.

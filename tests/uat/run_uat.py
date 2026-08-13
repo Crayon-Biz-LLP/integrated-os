@@ -30,6 +30,7 @@ if os.path.exists(_env_path):
 
 import json  # noqa: E402
 import asyncio  # noqa: E402
+import re  # noqa: E402
 import uuid  # noqa: E402
 import traceback  # noqa: E402
 
@@ -1098,6 +1099,68 @@ async def scenario_19_task_update_and_reschedule(seed: dict) -> UatResult:
     return r
 
 
+async def scenario_19b_reschedule_without_time_fails_closed(seed: dict) -> UatResult:
+    """Reschedule with NO time must fail closed — zero DB writes, no silent ack.
+
+    Regression test for the Aug 12 incident: the executor used to acknowledge
+    a time-less reschedule with "✅ Closed" while leaving reminder_at untouched.
+    Phase 1 (typed contracts) blocks this at validation: the action never
+    reaches the DB.
+    """
+    r = UatResult("Reschedule without time fails closed (no silent ack)", tier=1)
+    _reset_sends()
+
+    from core.pulse.tools import create_task_direct
+    from core.actions.models import Action
+    from core.actions.executor import execute_planned_actions
+
+    marker = uuid.uuid4().hex[:6]
+    task_title = f"{PREFIX} Reschedule-no-time {marker}"
+    original_time = "2026-12-01T10:00:00+05:30"
+
+    result = await create_task_direct(
+        title=task_title,
+        priority="important",
+        reminder_at=original_time,
+        dedup_key=f"reschedule-notime-{marker}",
+    )
+    if not _assert(result.get('action') == 'created', f"Task created (action={result.get('action')})"):
+        r.fail("Task not created")
+        r.passed = False
+        return r
+    task_id = result['task_id']
+    r.details['task_id'] = task_id
+
+    # The Aug 12 shape: reschedule with NO new_reminder_at
+    actions = [
+        Action(
+            operation="reschedule",
+            target_id=task_id,
+            params={},
+            human_label=f"Reschedule task {task_id}"
+        )
+    ]
+
+    await execute_planned_actions(
+        actions=actions,
+        chat_id=CHAT_ID,
+        text=f"Reschedule {task_title} to next week",
+        source="uat",
+        suppress_telegram=True,
+    )
+
+    # Invariant #1: no success without a write — reminder_at must be untouched
+    task_after = supabase.table('tasks').select('reminder_at').eq('id', task_id).limit(1).execute()
+    if task_after and task_after.data:
+        new_val = (task_after.data[0].get('reminder_at') or "")
+        _assert('2026-12-01' in new_val, f"reminder_at NOT changed by time-less reschedule (got: {new_val[:25]})")
+    else:
+        r.fail("Task not found after blocked reschedule")
+
+    r.passed = len(r.errors) == 0
+    return r
+
+
 # ════════════════════════════════════════════════════════════════════════
 # TIER 1c: RECURRING TASK LIFECYCLE (Scenario 20)
 # ════════════════════════════════════════════════════════════════════════
@@ -1458,6 +1521,7 @@ ALL_SCENARIOS = [
     ("S17", "Health check", scenario_17_health_check),
     ("S18", "Graph enrichment E2E (nodes + edges)", scenario_18_graph_enrichment_e2e),
     ("S19", "Task update / reschedule via planner", scenario_19_task_update_and_reschedule),
+    ("S19b", "Reschedule without time fails closed (no silent ack)", scenario_19b_reschedule_without_time_fails_closed),
     ("S20", "Recurring task lifecycle (skip + cancel)", scenario_20_recurring_task_lifecycle),
     ("S21", "Google Calendar/Task sync (mocked)", scenario_21_google_calendar_and_task_sync),
     ("S22", "Briefing content quality & anti-hallucination", scenario_22_briefing_content_quality),
@@ -1473,7 +1537,9 @@ _TIER_NAMES = {
 
 _TIER_MAP = {}
 for sid, _, _ in ALL_SCENARIOS:
-    n = int(sid[1:])
+    # S19b (reschedule-without-time) is a suffix variant of S19 — parse the
+    # leading digits so suffix ids don't crash the tier map at import.
+    n = int(re.match(r'\d+', sid[1:]).group())
     if n <= 6:
         _TIER_MAP[sid] = 1
     elif n <= 10:

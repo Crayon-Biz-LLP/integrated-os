@@ -162,6 +162,41 @@ def compute_expires_at(content: str, created_at_iso: str) -> Optional[str]:
     return expiry.isoformat() if expiry else None
 
 
+def resolve_time_delta(delta: dict, reference: Optional[datetime] = None) -> datetime:
+    """Compute an absolute datetime from a structured time delta.
+
+    The LLM extracts `{amount, unit, direction}` from the phrasing (it reads
+    language well); this function does the arithmetic (LLMs are unreliable at
+    calendar math — the Aug 12 "defer by 7 days" failure). Always returns a
+    timezone-aware datetime in the tenant's zone, anchored to `reference`
+    (default: now).
+
+    Args:
+        delta: {"amount": int > 0, "unit": "days"|"weeks"|"hours",
+                "direction": "later"|"earlier"}
+        reference: anchor datetime (default: now in the tenant's timezone)
+
+    Returns:
+        reference ± amount×unit, timezone-aware.
+    """
+    ref = reference or datetime.now(get_user_timezone())
+    try:
+        amount = int(delta.get("amount", 0) or 0)
+    except (TypeError, ValueError):
+        amount = 0
+    if amount <= 0:
+        amount = 1
+    unit = (delta.get("unit") or "days").lower()
+    direction = (delta.get("direction") or "later").lower()
+    if unit == "weeks":
+        step = timedelta(weeks=amount)
+    elif unit == "hours":
+        step = timedelta(hours=amount)
+    else:
+        step = timedelta(days=amount)
+    return ref - step if direction == "earlier" else ref + step
+
+
 def resolve_relative_dates(text: str, reference_date: datetime) -> str:
     """Resolve relative date words in text against a reference timestamp.
 
@@ -173,6 +208,8 @@ def resolve_relative_dates(text: str, reference_date: datetime) -> str:
     - "today" / "tonight" -> "on {reference_date}"
     - "this Monday/Tuesday..." -> next occurrence from reference_date
     - "next Monday/Tuesday..." -> next occurrence in the following week
+    - "in/by N days/weeks", "next week", "in a week", "a week from now"
+      -> "on {reference_date + delta}"
 
     Returns the text with relative words replaced by absolute dates.
     """
@@ -214,7 +251,86 @@ def resolve_relative_dates(text: str, reference_date: datetime) -> str:
             date_str = target.strftime('%A, %B %d, %Y')
             result = re.sub(pattern, f'on {date_str}', result, flags=re.I)
 
+    # "in/by N days/weeks" -> "on {reference_date + N units}"
+    for m in re.finditer(r'\b(?:in|by)\s+(\d+)\s+(day|week)s?\b', text_lower):
+        amount = int(m.group(1))
+        unit = m.group(2)
+        target = reference_date + (timedelta(days=amount) if unit == 'day' else timedelta(weeks=amount))
+        date_str = target.strftime('%B %d, %Y')
+        result = re.sub(re.escape(m.group(0)), f'on {date_str}', result, flags=re.I)
+
+    # "next week" / "in a week" / "a week from now" -> "on {reference_date + 1 week}"
+    for phrase in ('next week', 'in a week', 'a week from now'):
+        if phrase in text_lower:
+            target = reference_date + timedelta(weeks=1)
+            date_str = target.strftime('%B %d, %Y')
+            result = re.sub(re.escape(phrase), f'on {date_str}', result, flags=re.I)
+
     return result
+
+
+_DELTA_UNITS = {
+    "day": "days", "days": "days",
+    "week": "weeks", "weeks": "weeks",
+    "hour": "hours", "hours": "hours",
+}
+_WORD_NUMBERS = {"one": 1, "two": 2, "three": 3, "four": 4, "five": 5}
+
+
+def extract_time_delta(text: str) -> Optional[dict]:
+    """Extract a structured {amount, unit, direction} delta from relative
+    time phrasing, or None when the text carries no computable delta.
+
+    Invariant #2 backstop: the LLM reads the phrasing into a delta (or an
+    absolute date); this is the deterministic fallback that re-reads the raw
+    text when the LLM drops the time on a time-bearing action — so "defer by
+    7 days" can never be silently acked and is never asked about (the Aug 12
+    failure class). Code does the arithmetic; the LLM never does.
+
+    Handles: "by/in N days|weeks|hours", "N days/weeks from now",
+    "push it back a week", "give me two more weeks",
+    "move the sync up 2 days" (earlier).
+    """
+    if not text or not isinstance(text, str):
+        return None
+    t = text.lower()
+    direction = "later"
+
+    # "by/in N days|weeks|hours" — the Aug 12 phrasing
+    m = re.search(r'\b(?:in|by)\s+(\d+)\s+(day|week|hour)s?\b', t)
+    # "N days/weeks from now"
+    if not m:
+        m = re.search(r'\b(\d+)\s+(day|week|hour)s?\s+from\s+now\b', t)
+    if m:
+        amount = int(m.group(1))
+        if amount <= 0:
+            return None
+        # earlier markers before the number ("move it up 2 days")
+        prefix = t[max(0, m.start() - 24):m.start()]
+        if re.search(r'\b(?:up|earlier|sooner)\b', prefix):
+            direction = "earlier"
+        return {"amount": amount, "unit": _DELTA_UNITS[m.group(2)], "direction": direction}
+
+    # "push it back a week" / "give me a week" / "in a week" (no digits)
+    m = re.search(r'\b(?:a|one)\s+(day|week|hour)s?\b', t)
+    if m:
+        return {"amount": 1, "unit": _DELTA_UNITS[m.group(1)], "direction": direction}
+
+    # "give me two more weeks" / "three more days"
+    m = re.search(r'\b(two|three|four|five)\s+more\s+(day|week|hour)s?\b', t)
+    if m:
+        return {"amount": _WORD_NUMBERS[m.group(1)], "unit": _DELTA_UNITS[m.group(2)], "direction": direction}
+
+    # "move the sync up 2 days" / "back 2 days" (marker-led, no in/by)
+    m = re.search(r'\b(up|earlier|sooner|back|forward|ahead)\s+(\d+)\s+(day|week|hour)s?\b', t)
+    if m:
+        direction = "earlier" if m.group(1) in ("up", "earlier", "sooner") else "later"
+        amount = int(m.group(2))
+        if amount <= 0:
+            return None
+        return {"amount": amount, "unit": _DELTA_UNITS[m.group(3)], "direction": direction}
+
+    return None
 
 
 def resolve_expiry(content: str, created_at: datetime) -> Optional[datetime]:

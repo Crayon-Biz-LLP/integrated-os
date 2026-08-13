@@ -44,6 +44,10 @@ def _no_tenant_leftover():
     """Ensure tenant context is clean between tests."""
     yield
     db_mod._tenant_var.set(None)
+    # Also reset the channel-tenant cache to its uncached-probe state: it is
+    # a module-level global, so without this the auto-mocked Supabase client
+    # would cache a truthy MagicMock and pollute later require_api_auth tests.
+    db_mod._channel_tenant = None
 
 
 # ── Tenant context ────────────────────────────────────────────────────────
@@ -233,11 +237,30 @@ def test_require_api_auth_sets_tenant_and_returns_uid():
     assert get_tenant() is None
 
 
-def test_require_api_auth_legacy_key_passes_unscoped():
+def test_require_api_auth_legacy_key_falls_back_to_channel_tenant():
+    """A legacy shared key is authorized, and the tenant falls back to the
+    channel tenant (db730b5): the shared key is unscoped by itself, so the
+    channel tenant keeps the TenantTable facade satisfied during the
+    frontend transition."""
     import api.index as api
     with patch.object(api, "resolve_user_by_api_key", return_value=None), \
+         patch.object(db_mod, "resolve_channel_tenant", return_value="u1"), \
          patch.dict(os.environ, {"API_SECRET_KEY": "legacy"}, clear=False):
-        api.require_api_auth(_req("legacy"))
+        uid = api.require_api_auth(_req("legacy"))
+    assert uid == "u1"
+    assert get_tenant() == "u1"
+
+
+def test_require_api_auth_legacy_key_stays_unscoped_without_channel_tenant():
+    """When no channel tenant resolves (no active user / pre-db/78), a valid
+    legacy key still authorizes — but stays unscoped: returns None and sets
+    no tenant."""
+    import api.index as api
+    with patch.object(api, "resolve_user_by_api_key", return_value=None), \
+         patch.object(db_mod, "resolve_channel_tenant", return_value=None), \
+         patch.dict(os.environ, {"API_SECRET_KEY": "legacy"}, clear=False):
+        uid = api.require_api_auth(_req("legacy"))
+    assert uid is None
     assert get_tenant() is None
 
 
@@ -270,13 +293,16 @@ def test_require_api_auth_fails_closed_without_env():
 
 
 def test_require_api_auth_dev_mode_allows_with_flag():
-    """Dev mode is explicit: ALLOW_DEV_AUTH=1 opts into open auth locally."""
+    """Dev mode is explicit: ALLOW_DEV_AUTH=1 opts into open auth locally,
+    falling back to the channel tenant when one resolves (db730b5)."""
     import api.index as api
     with patch.dict(os.environ, {"ALLOW_DEV_AUTH": "1"}, clear=False):
         if "API_SECRET_KEY" in os.environ:
             del os.environ["API_SECRET_KEY"]
-        api.require_api_auth(_req(None))  # dev flag set → allowed
-    assert get_tenant() is None
+        with patch.object(db_mod, "resolve_channel_tenant", return_value="u1"):
+            uid = api.require_api_auth(_req(None))  # dev flag set → allowed
+    assert uid == "u1"
+    assert get_tenant() == "u1"
 
 
 # ── Context isolation across concurrent async work ─────────────────────────

@@ -28,6 +28,188 @@ DECLINE_PHRASES = frozenset({
 
 NEGATION_WORDS = frozenset({"not", "no", "never", "don\'t", "doesn\'t", "won\'t", "can\'t"})
 
+# ── Phase 4: action_clarification workflows ──
+# A pending action that failed schema validation (NeedsClarification) is parked
+# here. The user's reply is the ANSWER (a date / delta), not a yes/no — this
+# workflow type resumes by re-planning the original text with the answer.
+
+_TIME_REPLY_RE = re.compile(
+    r'\b(\d{1,2}(?:st|nd|rd|th)?|monday|tuesday|wednesday|thursday|friday|saturday|'
+    r'sunday|tomorrow|tonight|today|next\s+week|in\s+a\s+week|week|day|pm|am|'
+    r'noon|midnight|later|now)\b',
+    re.I,
+)
+
+
+def _looks_like_time_reply(text: str) -> bool:
+    """True if the reply plausibly answers a 'when?' clarification."""
+    return bool(_TIME_REPLY_RE.search(text or ""))
+
+
+async def park_action_clarification(
+    chat_id: int,
+    thread_id: str,
+    original_text: str,
+    intent: str = None,
+    title: str = "",
+    entity: str = None,
+    operation: str = None,
+    target_id=None,
+    missing_fields: list = None,
+):
+    """Park a pending action clarification (Phase 4, invariant #5).
+
+    Creates an `action_clarification` workflow in `conversation_workflows` so
+    the user's reply resumes the pending action instead of being re-classified
+    from scratch. DB-backed + restart-safe (Layer 5 pattern), superseding any
+    prior active workflow for the thread.
+    """
+    supabase = tenant_aware_client()
+    from datetime import timedelta
+
+    payload = {
+        "original_text": original_text,
+        "intent": intent,
+        "title": title,
+        "entity": entity,
+        "operation": operation,
+        "target_id": target_id,
+        "missing_fields": missing_fields or [],
+    }
+    try:
+        supabase.table('conversation_workflows').update({'status': 'cancelled'}) \
+            .eq('thread_id', thread_id).eq('status', 'active').execute()
+    except Exception as e:
+        audit_log_sync("workflow", "WARNING", f"Failed to supersede workflows for {thread_id}: {e}")
+    try:
+        supabase.table('conversation_workflows').insert({
+            'chat_id': chat_id,
+            'thread_id': thread_id,
+            'workflow_type': 'action_clarification',
+            'status': 'active',
+            'awaiting_user_input': True,
+            'payload': payload,
+            'expires_at': (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(),
+        }).execute()
+        audit_log_sync("workflow", "INFO",
+                        f"Parked action_clarification for {thread_id} (op={operation}, missing={missing_fields})")
+    except Exception as e:
+        audit_log_sync("workflow", "WARNING", f"Failed to park action clarification: {e}")
+
+
+async def _emit_clarification_observation(workflow: dict, thread_id: str, outcome: str) -> None:
+    """Persist a clarification exchange into the learning loop (vision #4).
+
+    Every resolution of an action_clarification workflow becomes an observation
+    in `subsystem_telemetry` + its pattern counters (the codebase's learning
+    mechanism) — so Rhodey accumulates how often each operation needs
+    clarification and how the user resolves it. Fail-open: telemetry never
+    breaks the clarification loop.
+    """
+    payload = workflow.get("payload") or {}
+    features = {
+        "operation": payload.get("operation") or "unknown",
+        "missing_fields": payload.get("missing_fields") or [],
+        "intent": payload.get("intent") or "unknown",
+    }
+    try:
+        from core.lib.telemetry import emit_observation
+        await emit_observation(
+            subsystem="action_planner",
+            event_type="clarification",
+            features=features,
+            predicted=None,
+            actual=None,
+            outcome=outcome,
+            session_id=thread_id,
+            source="workflow",
+        )
+    except Exception as e:
+        audit_log_sync("workflow", "WARNING", f"Clarification learning emit failed (non-critical): {e}")
+
+
+async def _resume_action_clarification(chat_id: int, text: str, thread_id: str, workflow: dict) -> Tuple[bool, Optional[str]]:
+    """Resume an action_clarification workflow: the reply is the answer.
+
+    Re-plans the pending original text + the user's answer anchored to the
+    pending action context. Decline replies cancel the pending action.
+    Unrelated replies fall through to normal routing (workflow stays active).
+    """
+    supabase = tenant_aware_client()
+    w_id = workflow['id']
+    payload = workflow.get('payload') or {}
+    original_text = payload.get('original_text', '')
+    intent = payload.get('intent')
+    title = payload.get('title', '')
+    entity = payload.get('entity')
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # Decline replies abort the pending action
+    if get_deterministic_decision(text) == 'decline':
+        try:
+            supabase.table('conversation_workflows').update({
+                'status': 'cancelled', 'resolved_at': now_iso, 'updated_at': now_iso,
+            }).eq('id', w_id).eq('status', 'active').execute()
+        except Exception as e:
+            audit_log_sync("workflow", "WARNING", f"Failed to cancel workflow {w_id}: {e}")
+        await send_telegram(chat_id, "Got it — I won't change that.")
+        log_exchange(thread_id, 'user', 'WORKFLOW_REPLY', text, chat_id)
+        await _emit_clarification_observation(workflow, thread_id, "rejected")
+        return True, None
+
+    # Only consume the message if it plausibly ANSWERS the clarification
+    # (a date/delta) or declines it. Anything else (e.g. "what's the weather")
+    # falls through to normal routing — the workflow stays active, bounded by
+    # its 7-day expiry and supersede-on-repark. The generic topic-overlap guard
+    # can't discriminate here: it returns True for entity-less filler text.
+    if get_deterministic_decision(text) != 'decline' and not _looks_like_time_reply(text):
+        return False, None
+
+    # The answer completes the original request — re-plan with both.
+    combined = f"{original_text}\n[User clarification:] {text}"
+    from core.actions.planner import plan_actions
+    from core.actions.executor import execute_planned_actions
+    from core.actions.models import NeedsClarification
+    try:
+        actions = await plan_actions(combined, title=title, entity=entity, intent=intent)
+    except NeedsClarification as nc:
+        # Still unclear — re-ask and keep the workflow active
+        await send_telegram(chat_id, nc.to_question())
+        log_exchange(thread_id, 'user', 'WORKFLOW_REPLY', text, chat_id)
+        return True, None
+
+    if not actions:
+        # Couldn't resolve an action from the reply — close the loop honestly.
+        try:
+            supabase.table('conversation_workflows').update({
+                'status': 'cancelled', 'resolved_at': now_iso, 'updated_at': now_iso,
+            }).eq('id', w_id).eq('status', 'active').execute()
+        except Exception:
+            pass
+        await send_telegram(chat_id, "I couldn't work that out from what you said — the task is unchanged. Try again whenever.")
+        log_exchange(thread_id, 'user', 'WORKFLOW_REPLY', text, chat_id)
+        await _emit_clarification_observation(workflow, thread_id, "failed")
+        return True, None
+
+    await execute_planned_actions(
+        actions, chat_id, text=combined, entity=entity,
+        source="telegram", sender="user", session_id=thread_id, intent=intent,
+    )
+
+    # Resolve the workflow (atomic — only if still active)
+    try:
+        supabase.table('conversation_workflows').update({
+            'status': 'resolved', 'resolved_at': now_iso, 'updated_at': now_iso,
+        }).eq('id', w_id).eq('status', 'active').execute()
+    except Exception as e:
+        audit_log_sync("workflow", "WARNING", f"Failed to resolve workflow {w_id}: {e}")
+    audit_log_sync("workflow", "INFO",
+                   f"action_clarification resolved (w_id={w_id}, reply={text[:60]!r})")
+    log_exchange(thread_id, 'user', 'WORKFLOW_REPLY', text, chat_id)
+    await _emit_clarification_observation(workflow, thread_id, "confirmed")
+    return True, None
+
 
 def get_deterministic_decision(text: str) -> str | None:
     """Resolve simple confirm/decline replies without an LLM call.
@@ -114,6 +296,12 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
     w_id = workflow['id']
     w_type = workflow['workflow_type']
     payload = workflow.get('payload') or {}
+
+    # Phase 4 (invariant #5): action_clarification — the reply is the ANSWER
+    # (a date / delta), not a yes/no. Handled before the confirm/decline
+    # analysis; unrelated replies fall through to normal routing.
+    if w_type == "action_clarification":
+        return await _resume_action_clarification(chat_id, text, thread_id, workflow)
 
     # Batch-resume fields — MUST be initialized before the deterministic
     # bypass below: a simple "yes/sure" reply to a batch workflow skips the
