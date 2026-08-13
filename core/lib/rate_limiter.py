@@ -3,6 +3,7 @@ import asyncio
 from threading import Lock
 import os
 from core.lib.redis_cache import redis_rate_limit_check
+from core.lib.audit_logger import audit_log_sync
 
 class SlidingWindowLimiter:
     """Sliding window rate limiter. Thread-safe, works with both sync and async."""
@@ -48,8 +49,17 @@ class SlidingWindowLimiter:
             self._prune(now)
             self.timestamps.append(now)
 
-    async def acquire_async(self):
-        """Asynchronous acquire — awaits until a token is available."""
+    async def acquire_async(self, max_total_wait: float = 120.0):
+        """Asynchronous acquire — awaits until a token is available.
+
+        Bounded: if the total time spent waiting exceeds `max_total_wait`
+        (a saturated shared limiter, a misbehaving Redis, or a stuck peer),
+        stop waiting, audit a warning, and proceed WITHOUT a token. A caller
+        must never block indefinitely — the previous unbounded recursion
+        turned a temporary rate-limit block into a worker hang until Modal's
+        900s timeout killed it (the pulse outage). With the window at 60s,
+        120s covers one full slide plus re-check headroom.
+        """
         def _sync_acquire():
             with self.lock:
                 w = self._get_wait_secs()
@@ -58,12 +68,21 @@ class SlidingWindowLimiter:
                     self._prune(n)
                     self.timestamps.append(n)
                 return w
-                
-        wait = await asyncio.to_thread(_sync_acquire)
 
-        if wait > 0:
+        waited = 0.0
+        while True:
+            wait = await asyncio.to_thread(_sync_acquire)
+            if wait <= 0:
+                return
+            waited += wait
+            if waited >= max_total_wait:
+                audit_log_sync(
+                    "rate_limiter", "WARNING",
+                    f"Limiter wait budget exhausted ({waited:.0f}s >= {max_total_wait:.0f}s) "
+                    f"for '{self.redis_key or 'local'}' — proceeding without a token",
+                )
+                return
             await asyncio.sleep(wait)
-            return await self.acquire_async()
 
 
 class MultiKeyLimiter:
@@ -116,6 +135,11 @@ flash_lite_limiter = MultiKeyLimiter(prefix="flash_lite", max_rpm_per_key=13)
 
 # Gemini 3.5 Flash (Free tier: 5 RPM). We use 4 for safety.
 flash_3_5_limiter = MultiKeyLimiter(prefix="flash_3_5", max_rpm_per_key=4)
+
+# Sentinel workloads get their own pool so a sentinel burst can never starve
+# pulse briefings (and vice-versa) on the shared flash limiter — the two
+# workloads are independent and must fail independently.
+sentinel_flash_limiter = MultiKeyLimiter(prefix="sentinel_flash", max_rpm_per_key=4)
 
 # Gemini Embedding (Free tier: 1500 RPM). We use 1400 for safety.
 embedding_limiter = MultiKeyLimiter(prefix="embedding", max_rpm_per_key=1400)

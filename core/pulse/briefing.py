@@ -179,10 +179,15 @@ def _get_recent_briefings_context() -> str:
         return ""
 
 
-async def _wrap_calendar_context() -> str:
-    """Safe wrapper around get_calendar_context() for parallel gather."""
+async def _wrap_calendar_context(target_date: datetime) -> str:
+    """Safe wrapper around get_calendar_context() for parallel gather.
+
+    `target_date` is the tenant's resolved `now` — get_calendar_context
+    requires it to scope the day's events (missing it raised a TypeError on
+    every pulse, silently dropping calendar context).
+    """
     try:
-        return await get_calendar_context()
+        return await get_calendar_context(target_date)
     except Exception as e:
         audit_log_sync("pulse", "WARNING", f"Calendar context fetch failed: {e}")
         return ""
@@ -622,7 +627,7 @@ async def _process_pulse_impl(auth_secret: str = None, request_id: str = None, t
             check_task_dependencies(active_tasks),
             detect_temporal_patterns(),
             get_graph_centrality_context(),
-            _wrap_calendar_context(),
+            _wrap_calendar_context(now),
             context_provider.hydrate_tasks_context(f"Briefing for {briefing_mode}"),
             context_provider.hydrate_persona_context(),
         )

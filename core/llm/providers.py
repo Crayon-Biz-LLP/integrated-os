@@ -45,11 +45,19 @@ def openrouter_response_format(config: dict) -> Optional[dict]:
     return None
 
 
-async def call_gemini(model: str, prompt: str, contents: Any = None, timeout_s: float = 120.0, **kwargs) -> Tuple[str, Optional[List[Any]], Any]:
-    """Make a call to Gemini, enforcing the timeout via asyncio.wait_for. Supports multi-key failover."""
+async def call_gemini(model: str, prompt: str, contents: Any = None, timeout_s: float = 120.0, limiter: Any = None, **kwargs) -> Tuple[str, Optional[List[Any]], Any]:
+    """Make a call to Gemini, enforcing the timeout via asyncio.wait_for. Supports multi-key failover.
+
+    `limiter` overrides the auto-selected pool (e.g. a workload-dedicated
+    limiter like the sentinel's) so distinct workloads never share a window
+    and cannot starve each other.
+    """
     clients = get_gemini_clients()
     
-    if "flash-lite" in model:
+    if limiter is not None:
+        client_idx = await limiter.acquire_async()
+        clients = clients[client_idx:] + clients[:client_idx]
+    elif "flash-lite" in model:
         client_idx = await flash_lite_limiter.acquire_async()
         clients = clients[client_idx:] + clients[:client_idx]
     elif "flash" in model:

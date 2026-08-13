@@ -89,6 +89,19 @@ def redis_rate_limit_check(key: str, max_calls: int, window_seconds: int):
     Distributed sliding window via Redis sorted set.
     Returns (allowed: bool, wait_secs: float)
     Returns None if Redis is unavailable (signal to fallback).
+
+    Count-then-add ordering: the caller is counted but only added to the set
+    when there is headroom. Blocked callers never write a member, so they
+    cannot feed the set and starve themselves. (The previous zadd-first
+    ordering let every blocked poll grow the set while refreshing its TTL —
+    a self-sustaining starvation loop that hung pulse workers until Modal's
+    900s timeout killed them.)
+
+    Note: the read-then-write is not atomic — a burst of concurrent callers
+    can all pass the count check and slip through together. That is an
+    acceptable over-admission (the LLM provider's own 429 handling absorbs
+    the excess); the invariant that matters is that blocked callers never
+    grow the set.
     """
     client = get_redis()
     if client is None:
@@ -98,19 +111,19 @@ def redis_rate_limit_check(key: str, max_calls: int, window_seconds: int):
         now = time.time()
         cutoff = now - window_seconds
         
+        # 1) Prune + count WITHOUT adding ourselves.
         pipeline = client.pipeline()
-        pipeline.zadd(key, {str(now): now})
         pipeline.zremrangebyscore(key, 0, cutoff)
-        pipeline.expire(key, window_seconds)
         pipeline.zcard(key)
         pipeline.zrange(key, 0, 0, withscores=True)
         res = pipeline.exec()
         
-        # res looks like [1, 0, True, count, [('member', score)]]
-        if len(res) >= 5:
-            count = int(res[3])
-            if count > max_calls:
-                oldest = res[4]
+        if len(res) >= 3:
+            count = int(res[1])
+            if count >= max_calls:
+                # Window full — do NOT write a member. Report how long until
+                # the oldest member ages out so the caller can re-check.
+                oldest = res[2]
                 if oldest and len(oldest) > 0:
                     if isinstance(oldest[0], tuple) or isinstance(oldest[0], list):
                         score = float(oldest[0][1])
@@ -119,7 +132,12 @@ def redis_rate_limit_check(key: str, max_calls: int, window_seconds: int):
                     wait = score + window_seconds - now
                     return (False, max(wait, 0.0))
                 return (False, float(window_seconds))
-                
+        
+        # 2) Headroom available — only now add ourselves and refresh TTL.
+        pipeline = client.pipeline()
+        pipeline.zadd(key, {str(now): now})
+        pipeline.expire(key, window_seconds)
+        pipeline.exec()
         return (True, 0.0)
     except Exception as e:
         audit_log_sync("redis", "WARNING", f"rate_limit_check failed for {key}: {e}")

@@ -28,6 +28,7 @@ async def generate_content_with_fallback(
     is_classification: bool = False,
     require_json: bool = False,
     schema: Any = None,
+    limiter: Any = None,
     **kwargs
 ) -> LLMResponse:
     
@@ -108,14 +109,19 @@ async def generate_content_with_fallback(
                     elif isinstance(current_contents, str):
                         current_contents += hint_text
                         
-                # Rate limiter is handled inside the provider function (call_gemini)
+                # Rate limiter is handled inside the provider function (call_gemini).
+                # A workload-dedicated limiter override rides through only to the
+                # Gemini providers — call_openrouter ignores it via **kwargs.
+                provider_kwargs = dict(kwargs)
+                if limiter is not None and provider_name.startswith("gemini"):
+                    provider_kwargs["limiter"] = limiter
                 
                 text, function_calls, raw_response = await provider_fn(
                     model=model_name,
                     prompt=current_prompt,
                     contents=current_contents,
                     timeout_s=timeout_s,
-                    **kwargs
+                    **provider_kwargs
                 )
                 
                 parsed_schema = None

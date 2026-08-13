@@ -13,6 +13,7 @@ from core.services.google_service import get_cached_service
 from core.webhook.telegram import send_telegram
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
+from core.lib.rate_limiter import sentinel_flash_limiter
 from core.services.push_notification import send_push_notification
 from core.services.push_notification import push_data_content
 
@@ -227,7 +228,8 @@ Context:
                             prompt=prompt,
                             workload=WorkloadProfile.SYNTHESIS,
                             primary_model=os.getenv("GEMINI_FLASH_MODEL", SYNTHESIS_MODEL),
-                            config={"temperature": 0.2, "response_mime_type": "application/json"}
+                            config={"temperature": 0.2, "response_mime_type": "application/json"},
+                            limiter=sentinel_flash_limiter,
                         )
                         try:
                             data = ai_briefing.parse_json()
