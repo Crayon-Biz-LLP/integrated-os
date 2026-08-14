@@ -2942,6 +2942,127 @@ async def auto_decisions_undo_route(request: Request):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@app.post("/api/decisions/undo")
+async def decision_undo_route(request: Request):
+    """Undo ONE manual approve/reject decision by id (Layer 1+2 undo).
+
+    Covers the accidental-tap class that the auto-decisions undo never could:
+    a manual approval/rejection (auto_decided=False) is reversed — the
+    decision record is marked reversed, the underlying message/pending row is
+    re-pended, and for channel approvals whose plan executed actions, the
+    executed-action ledger (decisions.metadata.actions) is walked backwards
+    and each reversible action is compensated (reopened tasks, soft-deleted
+    created tasks/notes/events). Honest per action: anything that genuinely
+    can't be reversed (deleted events, suppressed instances) is reported in
+    ``actions_not_reversed`` rather than silently claimed.
+    """
+    require_api_auth(request)
+    try:
+        body = await request.json()
+        decision_id = body.get('decision_id')
+        if not decision_id:
+            raise HTTPException(status_code=400, detail="decision_id required")
+
+        from core.decisions import reverse_decision
+        from core.actions.models import Action
+        supabase = tenant_aware_client()
+
+        decision_res = supabase.table('decisions').select('*').eq('id', int(decision_id)).limit(1).execute()
+        decision = (decision_res.data or [None])[0]
+        if not decision:
+            return {"success": False, "message": f"Decision #{decision_id} not found."}
+        if decision.get('status') != 'active':
+            return {"success": False, "message": f"Decision #{decision_id} was already {decision.get('status')}."}
+        if decision.get('verified_at'):
+            return {"success": False, "message": "This decision was already verified and can't be undone."}
+        if decision.get('reversible') is False:
+            return {"success": False, "message": "This decision isn't reversible."}
+
+        entity_type = decision.get('entity_type')
+        entity_id = decision.get('entity_id')
+
+        # 1. Reverse the decision record.
+        reverse_decision(decision['id'], rationale="User undid manual decision via app undo")
+
+        # 2. Revert the underlying row back to pending so it reappears.
+        reverted_rows = 0
+        if entity_type == 'message' and entity_id:
+            try:
+                supabase.table('messages').update({
+                    'danny_decision': None, 'decided_at': None,
+                }).eq('id', int(entity_id)).execute()
+                reverted_rows += 1
+            except Exception as e:
+                print(f"Undo decision {decision_id}: revert message {entity_id} failed: {e}")
+        elif entity_type in ('graph_node', 'pending_node') and entity_id:
+            try:
+                node_id = int(entity_id) if str(entity_id).isdigit() else entity_id
+                supabase.table('pending_nodes').update({'status': 'pending'}).eq('id', node_id).execute()
+                reverted_rows += 1
+            except Exception as e:
+                print(f"Undo decision {decision_id}: revert node {entity_id} failed: {e}")
+        elif entity_type in ('graph_edge', 'pending_graph_edge') and entity_id:
+            try:
+                edge_id = int(entity_id) if str(entity_id).isdigit() else entity_id
+                supabase.table('pending_graph_edges').update({'status': 'pending'}).eq('id', edge_id).execute()
+                reverted_rows += 1
+            except Exception as e:
+                print(f"Undo decision {decision_id}: revert edge {entity_id} failed: {e}")
+
+        # 3. Walk the executed-action ledger backwards and reverse side effects.
+        #    Only channel approvals carry a ledger (their plan runs the
+        #    executor); graph rows have none, so re-pending is all that applies.
+        actions_reversed = []
+        actions_not_reversed = []
+        ledger = (decision.get('metadata') or {}).get('actions') or []
+        if ledger:
+            from core.actions.executor import compensate_action
+            for entry in reversed(ledger):
+                op = entry.get('operation')
+                tid = entry.get('target_id')
+                label = entry.get('title') or op
+                try:
+                    if op in ("close_task", "cancel_recurring", "suppress_instance",
+                              "modify_recurring", "reschedule", "update_metadata", "delete_event"):
+                        if tid is None:
+                            continue
+                        action = Action(operation=op, target_id=int(tid) if str(tid).isdigit() else tid)
+                    elif op in ("create_task", "create_note", "create_event"):
+                        # compensate_action stashes created ids under the
+                        # object-type key (e.g. create_task → _created_task_id).
+                        if tid is None:
+                            continue
+                        param_key = {
+                            "create_task": "_created_task_id",
+                            "create_note": "_created_note_id",
+                            "create_event": "_created_event_id",
+                        }[op]
+                        action = Action(operation=op, params={
+                            param_key: int(tid) if str(tid).isdigit() else tid,
+                        })
+                    else:
+                        continue
+                    await compensate_action(action, supabase)
+                    actions_reversed.append(label)
+                except Exception as e:
+                    print(f"Undo decision {decision_id}: compensate {op} ({tid}) failed: {e}")
+                    actions_not_reversed.append(label)
+
+        return {
+            "success": True,
+            "message": "Undone.",
+            "decision_id": decision['id'],
+            "reverted": reverted_rows,
+            "actions_reversed": actions_reversed,
+            "actions_not_reversed": actions_not_reversed,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Decision undo error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 # --- CALL PENDING ITEM DECISIONS (approve/reject from frontend) ---
 @app.post("/api/call-action")
 async def call_action_route(request: Request):

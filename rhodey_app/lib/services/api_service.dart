@@ -641,6 +641,17 @@ class ApiService {
     );
   }
 
+  /// Undo a single manual approve/reject by decision id.
+  /// Reverses the decision, re-pends the item, and reverses executed side
+  /// effects (reopens tasks etc.) when possible — the safety net for an
+  /// accidental tap.
+  Future<ApiResult<dynamic>> undoDecision(int decisionId) async {
+    return post(
+      '/api/decisions/undo',
+      body: {'decision_id': decisionId},
+    );
+  }
+
   /// Send or drop a pending email reply draft.
   Future<ApiResult<dynamic>> draftAction(int draftId, {required String action}) async {
     return post(

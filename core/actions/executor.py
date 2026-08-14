@@ -239,6 +239,10 @@ async def compensate_action(action: Action, supabase):
             current = supabase.table("tasks").select("status").eq("id", tid).limit(1).execute()
             if current.data and current.data[0]["status"] == "done":
                 _uts(task_id=tid, status="todo")
+                # update_task_status stamps completed_at on close but doesn't
+                # clear it on reopen — clear it so the reopened task isn't
+                # half-completed (undo must reverse the full side effect).
+                supabase.table("tasks").update({"completed_at": None}).eq("id", tid).execute()
                 audit_log_sync("executor", "INFO", f"Rolled back close_task {tid}")
 
         elif action.operation == "cancel_recurring":
@@ -371,8 +375,8 @@ async def execute_planned_actions(
         saved = await _save_fallback_note(text, chat_id, resolved_entity, source)
         if not suppress_telegram:
             if pre_failures:
-                details = "\\n".join(pre_failures)
-                await send_telegram(chat_id, f"⚠️ All actions blocked by validation:\\n{details}")
+                details = "\n".join(pre_failures)
+                await send_telegram(chat_id, f"⚠️ All actions blocked by validation:\n{details}")
             else:
                 if saved:
                     await send_telegram(chat_id, "📝 Logged as a note — no specific actions identified.")
@@ -869,9 +873,8 @@ async def execute_planned_actions(
 
         if not suppress_telegram:
             rollback_msg = f"↩️ Rolled back {len(completed_actions)} previously completed actions." if completed_actions else ""
-            error_details = "\\n".join(failed_tasks)
-            await send_telegram(chat_id, f"⚠️ **Partial Sync Failure**\\nSome actions failed. {rollback_msg}\
-\\nDetails: {error_details}")
+            error_details = "\n".join(failed_tasks)
+            await send_telegram(chat_id, f"⚠️ **Partial Sync Failure**\nSome actions failed. {rollback_msg}\n\nDetails: {error_details}")
     
     # ── Gap 1: After NOTE creation, check for new orgs in real-time ──
     if intent == "NOTE" and any(

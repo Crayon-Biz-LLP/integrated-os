@@ -640,6 +640,7 @@ class _InboxScreenState extends State<InboxScreen>
         }
         if (result.success) {
           _removeItem(item);
+          _offerUndo('Approved', result);
         } else if (mounted) {
           _showSnack(result.error ?? 'Failed to approve');
         }
@@ -698,7 +699,12 @@ class _InboxScreenState extends State<InboxScreen>
       }
     }
 
-    if (!result.success && mounted) {
+    if (!mounted) return;
+    if (result.success) {
+      // The item was already removed optimistically; offer the undo net so
+      // an accidental reject is a one-tap recovery, not a permanent loss.
+      _offerUndo('Rejected', result);
+    } else {
       _showSnack(result.error ?? '⚠️ Reject failed on server');
     }
   }
@@ -1755,6 +1761,41 @@ class _InboxScreenState extends State<InboxScreen>
         duration: const Duration(seconds: 2),
       ),
     );
+  }
+
+  /// Offer the undo net after a manual approve/reject. The decision_id comes
+  /// back on the channel action responses; graph/merge paths that don't
+  /// return one simply get no undo (their flows have their own confirmation).
+  void _offerUndo(String verb, ApiResult<dynamic> result) {
+    if (!mounted) return;
+    final data = result.data is Map ? result.data as Map : const {};
+    final decisionId = data['decision_id'];
+    if (decisionId is! int) return;
+    _showUndoSnack('$verb — undo if this was a mistake', decisionId);
+  }
+
+  void _showUndoSnack(String message, int decisionId) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message, style: const TextStyle(fontSize: 12)),
+        duration: const Duration(seconds: 10),
+        action: SnackBarAction(
+          label: 'Undo',
+          onPressed: () => _undoDecision(decisionId),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _undoDecision(int decisionId) async {
+    final r = await _api.undoDecision(decisionId);
+    if (!mounted) return;
+    if (r.success) {
+      _showSnack('↩️ Undone — item is back in your queue', isError: false);
+      _refreshSilently();
+    } else {
+      _showSnack(r.error ?? 'Undo failed', isError: true);
+    }
   }
 
   // ── Build ──

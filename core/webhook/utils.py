@@ -20,6 +20,27 @@ from core.lib.graph_rules import resolve_alias
 supabase = tenant_aware_client()
 
 
+def build_action_ledger(results) -> list:
+    """Extract the undo ledger from executor results (committed actions only).
+
+    Each committed ``ExecutionResult`` carries what the plan actually did and
+    the id needed to reverse it: for creates ``target_id`` is the created
+    row's id, for closures it's the target task/event id — exactly what
+    ``compensate_action`` needs. Failed/rolled-back/skipped actions are
+    excluded: nothing committed, nothing to reverse.
+    """
+    ledger = []
+    for r in results or []:
+        if getattr(r, "status", "") != "committed":
+            continue
+        ledger.append({
+            "operation": r.operation,
+            "target_id": str(r.target_id) if r.target_id is not None else None,
+            "title": r.title,
+        })
+    return ledger
+
+
 @contextmanager
 def webhook_tenant_scope():
     """(M3) webhook alias of the generic channel_tenant_scope() — kept so
@@ -99,6 +120,7 @@ async def _process_channel_pending_decision(channel: str, pending_id: int, decis
         except Exception:
             pass
         
+        ledger = []
         try:
             original_text = msg.get('body') or title
             actions = await plan_actions(
@@ -108,7 +130,13 @@ async def _process_channel_pending_decision(channel: str, pending_id: int, decis
                 entity=resolved_entity,
             )
             if actions:
-                await execute_planned_actions(actions, chat_id, text=original_text, source=channel, entity=resolved_entity)
+                results = await execute_planned_actions(actions, chat_id, text=original_text, source=channel, entity=resolved_entity)
+                # Undo ledger: every action that actually committed, with the
+                # id needed to reverse it (created ids for creates, target ids
+                # for closures — see executor.compensate_action). Persisted on
+                # the decision row so the undo endpoint can reverse side
+                # effects, not just the message's decided flag.
+                ledger = build_action_ledger(results)
             action_msg = "approved and processed"
         except Exception as plan_err:
             audit_log_sync("webhook", "ERROR", f"Failed to plan/execute {channel} approval: {plan_err}")
@@ -139,9 +167,12 @@ async def _process_channel_pending_decision(channel: str, pending_id: int, decis
         source=f'{channel}_decision_pulse'
     )
 
-    # Record a decision in the structured decisions table
+    # Record a decision in the structured decisions table. The returned id is
+    # passed back to the caller so the app can offer an undo for THIS decision;
+    # the executed-action ledger rides along in decisions.metadata.
+    decision_id = None
     try:
-        record_decision(
+        decision_row = record_decision(
             decision_type="channel_approval" if is_approved else "channel_rejection",
             title=title[:120],
             context=f"{channel} item #{pending_id}: {summary[:200] if summary else title[:200]}",
@@ -151,6 +182,9 @@ async def _process_channel_pending_decision(channel: str, pending_id: int, decis
             source=f"{channel}_decision_pulse",
             auto_decided=auto_decided,
         )
+        decision_id = decision_row.get('id') if decision_row else None
+        if decision_id and ledger:
+            supabase.table('decisions').update({'metadata': {'actions': ledger}}).eq('id', decision_id).execute()
     except Exception as dec_err:
         audit_log_sync("webhook", "WARNING", f"Failed to record channel decision: {dec_err}")
 
@@ -158,7 +192,12 @@ async def _process_channel_pending_decision(channel: str, pending_id: int, decis
     # briefing so the app catches up immediately.
     fire_briefing_refresh(source=f"{channel}_decision")
 
-    return {"success": True, "message": f"Task from {channel} {action_msg}.", "action": decision_val}
+    return {
+        "success": True,
+        "message": f"Task from {channel} {action_msg}.",
+        "action": decision_val,
+        "decision_id": decision_id,
+    }
 
 
 def is_already_in_tasks_table(title: str) -> dict:

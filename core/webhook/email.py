@@ -108,16 +108,21 @@ async def _process_email_pending_decision(pending_id: int, decision: str, supaba
         except Exception:
             pass
 
+        ledger = []
         try:
             from core.actions.planner import plan_actions
             from core.actions.executor import execute_planned_actions
+            from core.webhook.utils import build_action_ledger
             import os
             
             chat_id = int(os.getenv("TELEGRAM_CHAT_ID", "0"))
             original_text = row.get('message_text') or row.get('body') or title
             actions = await plan_actions(text=original_text, title=title, intent="TASK", entity=resolved_entity)
             if actions:
-                await execute_planned_actions(actions, chat_id, text=original_text, source="email", entity=resolved_entity)
+                results = await execute_planned_actions(actions, chat_id, text=original_text, source="email", entity=resolved_entity)
+                # Undo ledger (see core/webhook/utils.build_action_ledger) —
+                # persisted on the decision so undo can reverse side effects.
+                ledger = build_action_ledger(results)
         except Exception as plan_err:
             audit_log_sync("webhook", "ERROR", f"Failed to plan/execute email approval: {plan_err}")
             return {
@@ -144,8 +149,11 @@ async def _process_email_pending_decision(pending_id: int, decision: str, supaba
 
         # Structured decision record — closes the gap where email approvals
         # never hit the decisions table (so they're auditable + reversible).
+        # The returned id powers the app's per-item undo; the ledger rides
+        # along in decisions.metadata.
+        decision_id = None
         try:
-            record_decision(
+            decision_row = record_decision(
                 decision_type="email_approval",
                 title=f"Approved email task: {title[:120]}",
                 context=f"Email message #{pending_id} approved. {title[:200]}",
@@ -155,6 +163,9 @@ async def _process_email_pending_decision(pending_id: int, decision: str, supaba
                 source="email_decision",
                 auto_decided=auto_decided,
             )
+            decision_id = decision_row.get('id') if decision_row else None
+            if decision_id and ledger:
+                client.table('decisions').update({'metadata': {'actions': ledger}}).eq('id', decision_id).execute()
         except Exception as dec_err:
             audit_log_sync("webhook", "WARNING", f"Failed to record email approval decision: {dec_err}")
 
@@ -162,11 +173,12 @@ async def _process_email_pending_decision(pending_id: int, decision: str, supaba
             audit_log_sync("webhook", "INFO", f"Processed email task with possible_duplicate flag: {title}")
             return {
                 "success": True, "action": "approved",
-                "message": f"Task processed: {title}\n⚠️ Looks similar to '{guard['matched_title']}' — kept both."
+                "message": f"Task processed: {title}\n⚠️ Looks similar to '{guard['matched_title']}' — kept both.",
+                "decision_id": decision_id,
             }
 
         audit_log_sync("webhook", "INFO", f"Processed task via email approval: {title}")
-        return {"success": True, "action": "approved", "message": f"Task processed: {title}"}
+        return {"success": True, "action": "approved", "message": f"Task processed: {title}", "decision_id": decision_id}
 
     elif decision == 'reject':
         client.table('messages').update({'danny_decision': 'rejected'}).eq('id', row['id']).execute()
