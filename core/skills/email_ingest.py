@@ -326,6 +326,7 @@ def process_sent_email(msg_data: dict, gmail_service) -> tuple:
             "body": raw_plain[:20000],
             "received_at": received_at,
             "classification": "fyi",
+            "danny_decision": "responded",  # terminal — the user already answered; NEVER surfaces in pending/FYI feeds
             "processing_status": "completed",
             "expires_at": compute_expires_at(f"{subject} {raw_plain[:20000]}", received_at),
             "metadata": {

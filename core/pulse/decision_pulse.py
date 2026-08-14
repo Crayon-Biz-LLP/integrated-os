@@ -79,6 +79,7 @@ async def _process_decision_pulse_impl(auth_secret: str = None, trigger: str = "
             supabase.table('messages')\
                 .update({'danny_decision': 'expired'})\
                 .is_('danny_decision', 'null')\
+                .eq('direction', 'incoming')\
                 .eq('classification', 'actionable')\
                 .lt('created_at', cutoff)\
                 .execute()
@@ -94,6 +95,7 @@ async def _process_decision_pulse_impl(auth_secret: str = None, trigger: str = "
             supabase.table('messages')\
                 .update({'danny_decision': 'expired'})\
                 .is_('danny_decision', 'null')\
+                .eq('direction', 'incoming')\
                 .eq('classification', 'fyi')\
                 .in_('channel', PENDING_CHANNELS)\
                 .lt('created_at', fyi_cutoff)\
@@ -115,6 +117,7 @@ async def _process_decision_pulse_impl(auth_secret: str = None, trigger: str = "
         pending_res = supabase.table('messages')\
             .select('id, channel, classification, suggested_title, suggested_project, sender_name, metadata, subject')\
             .is_('danny_decision', 'null')\
+            .eq('direction', 'incoming')\
             .in_('channel', ['email', 'call', 'whatsapp', 'teams'])\
             .order('created_at', desc=False)\
             .limit(50)\

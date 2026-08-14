@@ -45,6 +45,7 @@ async def _process_email_pending_decision(pending_id: int, decision: str, supaba
         .eq('id', pending_id)
         .eq('channel', 'email')
         .is_('danny_decision', 'null')
+        .eq('direction', 'incoming')
     )
 
     if not row_res.data:

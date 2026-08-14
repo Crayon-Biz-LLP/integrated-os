@@ -166,10 +166,16 @@ def test_fetch_pending_channel_messages_filters_query():
     fake = MagicMock()
     fake.table.return_value = chain
     fetch_pending_channel_messages(fake)
-    joined = dict(calls)
-    assert joined["is_"] == ("danny_decision", "null")
-    assert joined["in_"] == ("channel", ["email", "whatsapp", "call", "teams"])
-    assert joined["eq"] == ("classification", "actionable")
+    # dict() collapses repeated keys — count eq calls explicitly instead.
+    eqs = [args for name, args in calls if name == "eq"]
+    assert (
+        "is_", ("danny_decision", "null")
+    ) in calls
+    assert ("in_", ("channel", ["email", "whatsapp", "call", "teams"])) in calls
+    # Outgoing rows (the user's own sends) must NEVER surface — the feed
+    # requires incoming direction even when a row forgot its terminal decision.
+    assert ("direction", "incoming") in eqs
+    assert ("classification", "actionable") in eqs
 
 
 # ── fetch_pending_drafts ──────────────────────────────────────────
@@ -239,3 +245,18 @@ def test_fetch_fyi_messages_fails_open():
     supabase = MagicMock()
     supabase.table.side_effect = RuntimeError("boom")
     assert fetch_fyi_messages(supabase) == []
+
+
+def test_fetch_fyi_messages_filters_outgoing():
+    # Regression: sent emails were surfacing as FYI because the FYI feed
+    # only filtered danny_decision IS NULL, not direction — outgoing rows
+    # with a missing decision leaked into the feed. The guard must be present.
+    calls = []
+    chain = _FakeChain([], calls)
+    fake = MagicMock()
+    fake.table.return_value = chain
+    fetch_fyi_messages(fake)
+    eqs = [args for name, args in calls if name == "eq"]
+    assert ("direction", "incoming") in eqs
+    assert ("classification", "fyi") in eqs
+    assert ("is_", ("danny_decision", "null")) in calls

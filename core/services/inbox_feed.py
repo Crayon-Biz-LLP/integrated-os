@@ -66,6 +66,7 @@ def fetch_pending_channel_messages(supabase, limit: int = 50) -> list[dict]:
                 "sender_name, created_at, received_at, metadata, message_id"
             )
             .is_("danny_decision", "null")
+            .eq("direction", "incoming")  # outgoing (user's own sends) never surfaces — terminal decision OR guard
             .in_("channel", PENDING_CHANNELS)
             .eq("classification", "actionable")
             .order("created_at", desc=True)
@@ -137,6 +138,7 @@ def fetch_fyi_messages(supabase, limit: int = 20) -> list[dict]:
                 "sender_name, summary, body, created_at, received_at"
             )
             .is_("danny_decision", "null")
+            .eq("direction", "incoming")  # outgoing (user's own sends) never surfaces — terminal decision OR guard
             .in_("channel", PENDING_CHANNELS)
             .eq("classification", "fyi")
             .order("created_at", desc=True)

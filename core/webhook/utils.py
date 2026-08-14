@@ -55,6 +55,7 @@ async def _process_channel_pending_decision(channel: str, pending_id: int, decis
         .eq('id', pending_id)\
         .eq('channel', channel)\
         .is_('danny_decision', 'null')\
+        .eq('direction', 'incoming')\
         .limit(1)\
         .maybe_single()\
         .execute()

@@ -2641,6 +2641,7 @@ async def email_action_batch_route(request: Request):
             pending_res = supabase.table('messages') \
                 .select('id') \
                 .is_('danny_decision', 'null') \
+                .eq('direction', 'incoming') \
                 .eq('channel', 'email') \
                 .eq('classification', 'actionable') \
                 .execute()
@@ -3098,6 +3099,7 @@ async def fyi_action_route(request: Request):
             .update({'danny_decision': 'acknowledged'})\
             .eq('id', int(item_id))\
             .is_('danny_decision', 'null')\
+            .eq('direction', 'incoming')\
             .eq('classification', 'fyi')\
             .execute()
         if msg_row:

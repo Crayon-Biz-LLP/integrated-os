@@ -503,6 +503,7 @@ async def ingest_outlook_messages(limit=25):
                     "body": body_content[:20000],
                     "received_at": msg.get("sentDateTime") or datetime.now(timezone.utc).isoformat(),
                     "classification": "fyi",
+                    "danny_decision": "responded",  # terminal — the user already answered; NEVER surfaces in pending/FYI feeds
                     "processing_status": "completed",
                     "metadata": {
                         "body_summary": body_preview[:2000]

@@ -17,6 +17,7 @@ async def is_already_in_email_queue(title: str) -> bool:
                 .eq('channel', 'email')\
                 .ilike('suggested_title', f'%{kw}%')\
                 .is_('danny_decision', 'null')\
+                .eq('direction', 'incoming')\
                 .limit(1)\
                 .execute()
             if result.data:

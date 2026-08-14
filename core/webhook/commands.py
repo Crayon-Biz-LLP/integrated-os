@@ -156,6 +156,7 @@ async def handle_status_command(chat_id: int):
             .select('id', count='exact')\
             .eq('channel', 'email')\
             .is_('danny_decision', 'null')\
+            .eq('direction', 'incoming')\
             .execute()
         pending_email_count = pending_email_res.count or 0
 
@@ -528,6 +529,7 @@ async def handle_command(text: str, chat_id: int):
                 .select('id, suggested_title, suggested_project, possible_duplicate, duplicate_of_title')\
                 .eq('channel', 'email')\
                 .is_('danny_decision', 'null')\
+                .eq('direction', 'incoming')\
                 .order('created_at', desc=False)\
                 .limit(10)\
                 .execute()

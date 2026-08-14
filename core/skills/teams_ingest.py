@@ -51,6 +51,28 @@ async def fetch_teams_chats(access_token: str, limit: int = 10):
     response.raise_for_status()
     return response.json().get("value", [])
 
+
+async def fetch_me(access_token: str) -> dict | None:
+    """The signed-in user's own identity (id + displayName) from Graph /me.
+
+    Used to detect the user's OWN sent messages so they route through
+    record_outgoing_message() instead of being classified and surfaced as
+    incoming FYI (the sent-message gap — same bug Beeper had). Returns None
+    on failure so the caller degrades to today's behavior (everything
+    treated as incoming) rather than crashing the tick.
+    """
+    headers = {"Authorization": f"Bearer {access_token}"}
+    try:
+        response = requests.get("https://graph.microsoft.com/v1.0/me",
+                                headers=headers, timeout=30)
+        response.raise_for_status()
+        data = response.json()
+        uid = data.get("id")
+        return {"id": uid, "displayName": data.get("displayName")} if uid else None
+    except Exception as e:
+        print(f"Failed to fetch /me identity: {e}")
+        return None
+
 async def fetch_chat_messages(access_token: str, chat_id: str, limit: int = 10):
     headers = {"Authorization": f"Bearer {access_token}"}
     url = f"https://graph.microsoft.com/v1.0/me/chats/{chat_id}/messages?$top={limit}&$orderby=createdDateTime desc"
@@ -81,6 +103,19 @@ async def download_attachment(access_token: str, attachment: dict) -> bytes:
     except Exception as e:
         print(f"Failed to download attachment {attachment.get('name')}: {e}")
         return None
+
+def is_own_message(sender_id: str, me: dict | None) -> bool:
+    """True when a message was sent by the signed-in user themselves.
+
+    Direction awareness: the user's OWN sent messages must route through
+    record_outgoing_message() (never surfaced, stale pending auto-resolves)
+    instead of being classified as incoming FYI — the sent-message gap
+    Beeper already fixed. `me` is the Graph /me identity {"id", ...};
+    None means identity is unknown → treat everything as incoming (today's
+    behavior) rather than mis-routing.
+    """
+    return bool(me and sender_id and me.get("id") and sender_id == me.get("id"))
+
 
 async def classify_teams_message(sender_name: str, message_text: str, attachments_text: str) -> dict:
     prompt = f"""
@@ -127,9 +162,16 @@ async def ingest_teams_messages(limit_chats=5, limit_messages=10):
         return {"error": "Token failed"}
         
     processed = 0
+    outgoing = 0
     ignored = 0
     skipped_duplicate = 0
-    
+
+    # Resolve the signed-in user's own identity ONCE per run — used to
+    # detect the user's OWN sent messages (direction awareness, the same
+    # fix Beeper got). Falls back to None → everything treated as incoming
+    # (today's behavior) rather than crashing the tick.
+    me = await fetch_me(access_token)
+
     try:
         chats = await fetch_teams_chats(access_token, limit=limit_chats)
     except requests.exceptions.HTTPError as e:
@@ -173,11 +215,44 @@ async def ingest_teams_messages(limit_chats=5, limit_messages=10):
                 
             sender_name = from_user.get("displayName", "Unknown")
             sender_id = from_user.get("id", "")
-            
+
             content = msg.get("body", {}).get("content", "")
             # Basic HTML stripping
             text_content = re.sub('<[^<]+?>', '', content).strip()
-            
+
+            # ── Direction awareness: the user's OWN sent messages ──
+            # Never classify your own sends as incoming FYI (the sent-
+            # message gap). Route them through record_outgoing_message()
+            # — stored as outgoing with a terminal danny_decision so they
+            # never surface for approval, and any stale pending items in
+            # the same chat auto-resolve (the user already answered in the
+            # conversation). Same treatment Beeper's route_message gives
+            # your WhatsApp sends.
+            if is_own_message(sender_id, me):
+                try:
+                    from core.lib.ingest import record_outgoing_message
+                    await record_outgoing_message(
+                        chat_id=chat_id,
+                        source='teams',
+                        body=text_content,
+                        sender_name=sender_name,
+                        received_at=msg.get("createdDateTime", datetime.now(timezone.utc).isoformat()),
+                        tracking_id=f"{chat_id}:{msg_id}",
+                        summary=text_content[:500],
+                        metadata={
+                            "teams_message_id": msg_id,
+                            "chat_id": chat_id,
+                            "chat_type": chat_type,
+                            "sender_name": sender_name,
+                            "sender_id": sender_id,
+                        },
+                    )
+                except Exception as e:
+                    print(f"Outgoing record failed for message {msg_id}: {e}")
+                outgoing += 1
+                print(f"📤 [outgoing] Teams msg from {sender_name}: {text_content[:50]}")
+                continue
+
             # If system message (e.g. added to chat)
             if msg.get("messageType") == "systemEventMessage":
                 ignored += 1
@@ -185,6 +260,14 @@ async def ingest_teams_messages(limit_chats=5, limit_messages=10):
                 
             if not text_content and not msg.get("attachments"):
                 ignored += 1
+                continue
+
+            # ── Sieve stage (intelligence parity with WhatsApp/Beeper) ──
+            from core.lib.message_sieve import classify_sieve
+            sieve = classify_sieve(text_content, sender_name=sender_name)
+            if sieve["noise"]:
+                ignored += 1
+                print(f"[sieve:{sieve['reason']}] Teams msg from {sender_name}: {text_content[:60]}")
                 continue
                 
             # Handle attachments
@@ -240,7 +323,7 @@ async def ingest_teams_messages(limit_chats=5, limit_messages=10):
             processed += 1
             print(f"✅ [{class_type}] Teams msg from {sender_name}: {classification.get('suggested_title') or text_content[:50]}")
             
-    return {"processed": processed, "ignored": ignored, "skipped_duplicate": skipped_duplicate}
+    return {"processed": processed, "outgoing": outgoing, "ignored": ignored, "skipped_duplicate": skipped_duplicate}
 
 async def main():
     print(f"Teams ingest started at {datetime.now(timezone(timedelta(hours=5, minutes=30)))}")

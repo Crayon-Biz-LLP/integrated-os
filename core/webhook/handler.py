@@ -377,7 +377,7 @@ async def process_callback_query(callback_query: dict):
             if target in ('emails', 'calls', 'whatsapp', 'teams'):
                 channel_map = {'emails': 'email', 'calls': 'call', 'whatsapp': 'whatsapp', 'teams': 'teams'}
                 channel = channel_map[target]
-                items_res = supabase.table('messages').select('id').eq('channel', channel).is_('danny_decision', 'null').eq('classification', 'actionable').execute()
+                items_res = supabase.table('messages').select('id').eq('channel', channel).is_('danny_decision', 'null').eq('direction', 'incoming').eq('classification', 'actionable').execute()
                 for item in (items_res.data or []):
                     if target == 'emails':
                         result = await process_email_pending_decision(item['id'], 'approve' if is_approve else 'reject')
