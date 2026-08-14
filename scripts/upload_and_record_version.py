@@ -181,7 +181,14 @@ def main():
     print(f"🔗 Public URL: {download_url}")
 
     # ── Step 4: Record version in core_config ────────────────────────────────
-    payload = json.dumps({
+    # db/78 made core_config.owner_id NOT NULL + unique (owner_id, key);
+    # writing without it violates the constraint and silently fails the
+    # record step (the bug that stuck app_version at 1037 while releases
+    # advanced to 1112). Resolve the active user id and scope the row.
+    from scripts.record_app_version import resolve_owner_id
+
+    owner_id = resolve_owner_id(supabase_url, service_role_key)
+    row = {
         "key": "app_version",
         "content": json.dumps({
             "version_code": int(version_code),
@@ -189,9 +196,13 @@ def main():
             "download_url": download_url,
             "release_notes": release_notes,
         }),
-    }).encode()
+    }
+    if owner_id:
+        row["owner_id"] = owner_id
+    payload = json.dumps(row).encode()
 
-    config_url = f"{supabase_url}/rest/v1/core_config?on_conflict=key"
+    conflict = "owner_id,key" if owner_id else "key"
+    config_url = f"{supabase_url}/rest/v1/core_config?on_conflict={conflict}"
     config_headers = {
         "apikey": service_role_key,
         "Authorization": f"Bearer {service_role_key}",

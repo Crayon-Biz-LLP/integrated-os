@@ -22,6 +22,30 @@ import urllib.error
 import sys
 
 
+def resolve_owner_id(supabase_url: str, service_role_key: str) -> str | None:
+    """The tenant (active user) id for core_config rows.
+
+    db/78 made core_config.owner_id NOT NULL and changed its uniqueness to
+    (owner_id, key). Writes without owner_id now violate the constraint and
+    SILENTLY fail the CI record step — that exact bug kept app_version stuck
+    at build 1037 while GitHub releases advanced to 1112 (the app couldn't
+    update for a month). Resolve the active user (oldest first, mirroring
+    resolve_channel_tenant); None → pre-db/78 legacy unscoped write.
+    """
+    try:
+        url = (f"{supabase_url}/rest/v1/users?select=id&status=eq.active"
+               "&order=created_at.asc&limit=1")
+        req = urllib.request.Request(url, headers={
+            "apikey": service_role_key,
+            "Authorization": f"Bearer {service_role_key}",
+        })
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            rows = json.loads(resp.read().decode())
+        return rows[0]["id"] if rows else None
+    except Exception:
+        return None
+
+
 def main():
     supabase_url = os.environ.get("SUPABASE_URL")
     service_role_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
@@ -45,7 +69,8 @@ def main():
         print(f"❌ Missing required env vars: {', '.join(missing)}")
         sys.exit(1)
 
-    payload = json.dumps({
+    owner_id = resolve_owner_id(supabase_url, service_role_key)
+    row = {
         "key": "app_version",
         "content": json.dumps({
             "version_code": int(version_code),
@@ -53,10 +78,15 @@ def main():
             "download_url": download_url,
             "release_notes": release_notes,
         }),
-    }).encode()
+    }
+    if owner_id:
+        row["owner_id"] = owner_id
+    payload = json.dumps(row).encode()
 
-    # Use on_conflict=key to trigger upsert via the unique constraint on core_config.key
-    url = f"{supabase_url}/rest/v1/core_config?on_conflict=key"
+    # on_conflict must name the real unique constraint: (owner_id, key) in
+    # tenant mode, legacy (key) pre-db/78.
+    conflict = "owner_id,key" if owner_id else "key"
+    url = f"{supabase_url}/rest/v1/core_config?on_conflict={conflict}"
     headers = {
         "apikey": service_role_key,
         "Authorization": f"Bearer {service_role_key}",
