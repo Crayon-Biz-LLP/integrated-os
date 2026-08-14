@@ -43,7 +43,7 @@ An AI-powered Personal Operating System — an Executive Command Center for one 
 |------|---------------|
 | [16-memory-knowledge-graph.md](16-memory-knowledge-graph.md) | Memory system, hybrid search, knowledge graph |
 | [17-canonical-brain-synthesis.md](17-canonical-brain-synthesis.md) | Canonical pages, brain synthesis, entity mapping from journal |
-| [28-clarification-loop-guards.md](28-clarification-loop-guards.md) | Entity grounding guards, URL quarantine, clarification loop |
+| [28-clarification-loop-guards.md](28-clarification-loop-guards.md) | Entity grounding guards, URL quarantine (clarification question loop retired — plans/73: queue-native HITL + silent expiry gate + briefing check-in) |
 | [29-conversation-threads-and-workflows.md](29-conversation-threads-and-workflows.md) | Persistent threads, workflow state engine, cross-turn context (current, implemented) |
 | [60-thread-and-memory-architecture.md](60-thread-and-memory-architecture.md) | **Thread & memory redesign (PROPOSED)** — tiered memory model, topic-scoped sessions, transcript demotion, close-extraction |
 | [30-context-registry-truth-boundary.md](30-context-registry-truth-boundary.md) | Context registry (entity-grounded retrieval, 6 strategies) + truth boundary (claim validation) |

@@ -9,7 +9,6 @@ from core.lib.audit_logger import audit_log_sync
 from core.lib.telemetry import emit_observation
 from core.services.briefing_refresh import fire_briefing_refresh
 from core.lib.graph_rules import find_similar_node, resolve_alias, canonicalize_relationship, normalize_label_display, get_canonical_id, normalize_label, NOISE_LABELS, insert_pending_edge, make_memory_preview
-from core.clarifier import evaluate_node, evaluate_edge, store_and_send_clarification
 from core.decisions import record_decision
 from core.lib.node_tables import resolve_merge_proposal
 
@@ -558,10 +557,6 @@ Format:
             if not s_label or not t_label or not rel:
                 continue
                 
-            # PHASE 2 HOOK
-            from core.clarifier import evaluate_edge
-            evaluate_edge(e, batch_mode=True)
-                
             if s_label == t_label:
                 continue
                 
@@ -597,7 +592,7 @@ async def process_graph_pending_decision(pending_id: int, decision: str, context
         raw_type = pending_item.get('node_type', 'concept')
         status = pending_item.get('status', 'pending')
 
-        if status not in ('pending', 'awaiting_details', 'awaiting_clarification', 'flagged', 'merge_proposed') and decision != 'unreject':
+        if status not in ('pending', 'awaiting_details', 'flagged', 'merge_proposed') and decision != 'unreject':
             return {"success": False, "action": "already_processed", "message": "Already processed."}
 
         # ── Unreject ──
@@ -1424,6 +1419,75 @@ async def fetch_graph_task_context(people: list, active_tasks: list) -> str:
         audit_log_sync("pulse", "WARNING", f"⚠️ Graph task context fetch failed (non-critical): {e}")
         return ""
 
+def enrich_pending_edges_with_conflicts(rows: list) -> list:
+    """Attach an existing conflicting relationship to each pending edge row.
+
+    Replaces the retired clarifier's edge_contradiction question (plans/73):
+    instead of asking "which is right?", the Quick Confirmation edge card shows
+    "⚠️ conflicts with existing KNOWS edge" so the user decides in context.
+
+    For each pending edge (source_label → relationship → target_label), find
+    the live graph_edges between the same node pair and record a different,
+    non-MENTIONS relationship as `conflict_with`. Fail-open: any query problem
+    returns the rows unchanged (a hint problem must never break the feed).
+    """
+    if not rows:
+        return rows
+    try:
+        labels = []
+        seen_labels = set()
+        for r in rows:
+            for k in ("source_label", "target_label"):
+                lbl = (r.get(k) or "").strip()
+                if lbl and lbl.lower() not in seen_labels:
+                    seen_labels.add(lbl.lower())
+                    labels.append(lbl)
+        if not labels:
+            return rows
+
+        by_label = {}
+        for i in range(0, len(labels), 50):
+            chunk = labels[i:i + 50]
+            n_res = supabase.table("graph_nodes") \
+                .select("id, label") \
+                .in_("label", chunk) \
+                .eq("is_current", True) \
+                .limit(200) \
+                .execute()
+            for n in (n_res.data or []):
+                by_label.setdefault((n.get("label") or "").strip().lower(), n.get("id"))
+
+        node_ids = [i for i in by_label.values() if i]
+        pair_rels = {}  # (src_id, tgt_id) -> {relationship}
+        for i in range(0, len(node_ids), 50):
+            chunk = node_ids[i:i + 50]
+            e_res = supabase.table("graph_edges") \
+                .select("source_node_id, target_node_id, relationship") \
+                .in_("source_node_id", chunk) \
+                .eq("is_current", True) \
+                .limit(500) \
+                .execute()
+            for e in (e_res.data or []):
+                rel = (e.get("relationship") or "").upper()
+                if rel == "MENTIONS":
+                    continue
+                key = (e.get("source_node_id"), e.get("target_node_id"))
+                pair_rels.setdefault(key, set()).add(rel)
+
+        for r in rows:
+            s_id = by_label.get((r.get("source_label") or "").strip().lower())
+            t_id = by_label.get((r.get("target_label") or "").strip().lower())
+            if not s_id or not t_id:
+                continue
+            rel = (r.get("relationship") or "").upper()
+            conflicts = {x for x in pair_rels.get((s_id, t_id), set()) if x != rel}
+            if conflicts:
+                r["conflict_with"] = ", ".join(sorted(conflicts))
+    except Exception as e:
+        audit_log_sync("graph_pipeline", "WARNING", f"Edge conflict enrichment failed: {e}")
+    return rows
+
+
 def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_type: str, source_content: str = ""):
     """
     Unified extraction insertion pipeline.
@@ -1571,16 +1635,6 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
         source_info = {"source_text": f"{source_type}:{source_id}", "flag_reason": val.get("reason", "")}
         node_id = persist_label(route, res, source_info)
         
-        # 4b. Clarifier: evaluate new nodes for disambiguation
-        if route == "pending" and node_id:
-            try:
-                clar = evaluate_node(res, batch_mode=True)
-                if clar:
-                    # Fire-and-forget: send clarification via Telegram
-                    asyncio.ensure_future(store_and_send_clarification(clar, "pending_nodes", str(node_id)))
-            except Exception as clar_err:
-                audit_log_sync("graph_pipeline", "WARNING", f"Clarifier evaluate_node failed: {clar_err}")
-        
         if node_id:
             c_lbl = res["label"]
             node_id_map[c_lbl] = node_id
@@ -1707,7 +1761,7 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
             except Exception:
                 pass
         
-        edge_result = insert_pending_edge(
+        insert_pending_edge(
             s_c, 
             t_c, 
             rel, 
@@ -1719,21 +1773,7 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
             }
         )
         
-        # 6b. Clarifier: evaluate new pending edges for contradictions
-        if edge_result.get("status") == "inserted":
-            try:
-                edge_clar = evaluate_edge({
-                    "source_label": s_c,
-                    "target_label": t_c,
-                    "relationship": rel,
-                    "source_type": s_res.get("node_type", "concept"),
-                    "target_type": t_res.get("node_type", "concept"),
-                    "confidence": 0.5,  # Default confidence for LLM-extracted edges
-                }, batch_mode=True)
-                if edge_clar:
-                    asyncio.ensure_future(store_and_send_clarification(edge_clar, "pending_graph_edges", str(edge_result.get("id", ""))))
-            except Exception as edge_clar_err:
-                audit_log_sync("graph_pipeline", "WARNING", f"Clarifier evaluate_edge failed: {edge_clar_err}")
+
 
     # 7. Layer 2: Deterministic pattern backstop for NEW persons -> orgs
     if source_content:

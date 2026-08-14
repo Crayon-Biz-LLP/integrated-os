@@ -39,7 +39,7 @@
 │  16 formal state machines │ DB-backed state                     │
 │  Temporal lineage (DB triggers)                                 │
 │  pending_enrichment_jobs │ pending_retrieval_index_jobs          │
-│  pending_graph_clarifications (survives cold restarts)           │
+│  pending_graph_edges (HITL + silent expiry gate)                 │
 │  pending_nodes / merge_proposals (split from legacy table)       │
 ├──────────────────────────────────────────────────────────────────┤
 │                      INTEGRATION LAYER                           │
@@ -311,7 +311,7 @@ Nightly cron generates **canonical pages** — holistic organization-level summa
 | `core/pulse/context.py` | Context hydration (tasks, calendar, canonical) |
 | `core/skills/brain_synth_v2.py` | Canonical page generation |
 | `core/lib/graph_rules.py` | `VALID_EDGE_MATRIX`, label/normalization helpers |
-| `core/pulse/clarifier.py` | Clarifier Phase 2 — 85%+ auto-merge, edge contradiction detection |
+| `core/pulse/clarifier.py` | Retired no-op hooks (plans/73) — graph questions removed; contradiction hint moved to `graph.py::enrich_pending_edges_with_conflicts()` |
 
 ---
 
@@ -393,8 +393,6 @@ Every table has documented valid status transitions in `core/lib/state_machines.
 
 | What | Table | Type |
 |---|---|---|
-| Clarification dialogs | `pending_graph_clarifications` | Session state |
-| Active sessions | `pending_graph_clarifications` (type='session') | Session state |
 | Enrichment jobs | `pending_enrichment_jobs` | Queue |
 | Index jobs | `pending_retrieval_index_jobs` | Queue |
 | Node approvals | `pending_nodes` | HITL |
@@ -527,3 +525,4 @@ docs_service = get_docs_service(creds)  # For Notebook LM sync
 | Jul 18-19 | 60 | Hybrid document extraction (PyMuPDF, docx, xlsx, pptx) |
 | Jul 19-20 | 61 | Parallelization, streaming, voice overhaul, G1-G10 gap fixes, 15-query UAT |
 | Jul 20-21 | 62 | Hardened thread layer — person routing, eager summaries, all-exchange embeddings, cross-thread awareness, auto-archive |
+| Aug 14 | 73 | Clarifier question flow retired — queue-native graph HITL, silent low-confidence expiry gate (`pending → expired`), contradiction card hint, briefing check-in line (plans/73) |

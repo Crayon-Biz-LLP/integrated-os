@@ -442,12 +442,12 @@ def tenant_rpc(name: str, params: dict | None = None, inject_owner: bool = True)
     return get_supabase().rpc(name, payload)
 
 
-# RPCs that operate on NO tenant data and must stay global: pure sequence
-# helpers (next_clarification_shortcode), admin/SQL pass-through (run_sql).
-# Everything else is assumed tenant-data-scoped: the facade fails closed
-# (injects owner_id — the Postgres signature gains the param in db/80) so a
-# forgotten scope is a loud error, not a silent cross-tenant read.
-_GLOBAL_RPCS = {"next_clarification_shortcode", "run_sql"}
+# RPCs that operate on NO tenant data and must stay global: admin/SQL
+# pass-through (run_sql). Everything else is assumed tenant-data-scoped: the
+# facade fails closed (injects owner_id — the Postgres signature gains the
+# param in db/80) so a forgotten scope is a loud error, not a silent
+# cross-tenant read.
+_GLOBAL_RPCS = {"run_sql"}
 
 # RPCs whose owner param is NOT literally `owner_id`. These functions write
 # rows into tables that have an owner_id column, so a param named owner_id

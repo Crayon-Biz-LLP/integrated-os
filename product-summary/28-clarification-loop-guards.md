@@ -132,65 +132,32 @@ Deletes `graph_nodes` entries for transitional task nodes (`metadata->>source = 
 
 ---
 
-## Clarification Loop Architecture (Phase 1 Skeleton)
+## Clarification Loop — Retired (plans/73)
 
-**File**: `core/clarifier.py`
+> **Superseded 2026-08-14 by `plans/73-clarifier-rework-queue-native-graph-hitel.md`.**
+> The graph clarification question flow is retired. The app is the primary
+> surface (vision `00-vision-and-mindset.md`); asking the user to QA every
+> low-confidence extraction via Telegram was inverted labor — the user doing
+> Rhodey's work — and the dispatch was structurally late (30-min heartbeat,
+> batched ≤5).
 
-### 6-Function Interface
+### What replaced it
 
-| Function | Signature | Phase 1 Behavior | Phase 2 Behavior |
-|----------|-----------|-----------------|-----------------|
-| `evaluate_node` | `(node_data) → dict \| None` | Returns `None` (silent) | Returns confidence + shortcode for low-confidence |
-| `evaluate_edge` | `(edge_data) → dict \| None` | Returns `None` (silent) | Returns confidence + shortcode for low-confidence |
-| `build_batch` | `(items, batch_size=5) → list` | Passthrough (returns items) | Groups items by confidence tier |
-| `handle_response` | `(shortcode, answer) → dict` | Looks up clarifier_feedback, updates pending table | Same + hybrid parsing + edge resolution |
-| `next_shortcode` | `() → str` | RPC to `clarification_seq` | Same |
-| `dedupe_batch` | `(items) → list` | Passthrough | Dedup by source + label |
+| Old mechanism | Replacement |
+|---|---|
+| `evaluate_node`/`evaluate_edge` question generation | Retired no-op hooks in `core/clarifier.py` (signatures kept for `backfill_graph`) |
+| `awaiting_clarification` status flip (hid items from the queue) | Removed — pending nodes/edges stay in Quick Confirmation as ordinary HITL cards (the architecture's documented edge flow) |
+| `clarification_feedback` + shortcode answers + `POST /api/clarification` | Removed — no separate answer surface |
+| Sentinel 🧠 batch dispatch + weekly "unanswered clarifications" line | Removed |
+| Edge-contradiction question | `graph.py::enrich_pending_edges_with_conflicts()` — renders as a "⚠️ conflicts with existing …" hint on the queue edge card |
+| Per-edge "is this correct?" interrogation | Silent gate: single-source LLM edges start at `confidence 0.55`; corroboration (re-mention) raises it; stale low-confidence edges expire via `decision_pulse` (state machine `pending → expired`); the pulse briefing appends one daily check-in line listing newly-tracked unconfirmed items |
+| Learning loop | Queue approvals + Entities corrections (rename/type/delete) emit observations (`emit_observation`) — the clarifier answer path never did |
 
-### Database Schema
+### Migration
 
-**`pending_graph_nodes` additions:**
-- `confidence` (float4) — extraction confidence score
-- `clarification_status` (text, default 'none') — tracking state
-- `eval_context` (jsonb) — LLM reasoning for evaluation
-- `shortcode` (text, unique) — global sequential `c{id}`
-- `evaluated_at` (timestamptz) — when evaluation occurred
-
-**`pending_graph_edges` additions:** Same 5 columns.
-
-**`clarification_feedback` table:**
-- `id` (uuid PK)
-- `shortcode` (text unique) — `c{number}`
-- `question_type` (text) — `node_grounding`, `edge_validation`
-- `question` (text) — the question sent to Telegram
-- `answer` (text, nullable) — Danny's response
-- `response_type` (text, nullable) — `approved`, `rejected`, `context`
-- `source_table` (text) — which pending table
-- `source_id` (uuid) — which row in that table
-- `created_at`, `expires_at`, `resolved_at`
-
-**Global sequence:** `clarification_seq` START 1 — ensures collision-free sequential shortcodes across all parallel extraction paths.
-
-### Detection Hooks (Phase 2 Ready)
-
-One-liner `evaluate_node()` / `evaluate_edge()` calls placed in all extraction sites:
-
-- `entity_extractor.py` — before node/edge routing
-- `backfill_graph.py` `get_or_create_node()` — before node creation
-- `backfill_graph.py` `upsert_nodes()` — before batch insert
-- `graph.py` `_infer_additional_edges()` — before pending insert
-
-In Phase 1, all return `None` (silent). Phase 2 will activate them for low-confidence extractions.
-
-### Inbound Handler
-
-- `POST /api/clarification` — API endpoint for frontend/Telegram responses
-- `c{number}` regex in `core/webhook/handler.py` — intercepts Telegram replies matching `c{number} context`
-- Calls `handle_response()` which looks up the shortcode in `clarification_feedback`, updates the pending record, and returns acknowledgment
-
-### Batching (Phase 2 Ready)
-
-Sentinel 5-min cron (`core/pulse/sentinel.py`) includes a piggyback block that queries unanswered `clarification_feedback` records and dispatches them to Telegram in Phase 2.
+`db/98_retire_clarifier_question_flow.sql` reverts legacy `awaiting_clarification` rows to
+`pending` (so they reappear in the queue), resolves open `clarification_feedback` rows, and
+removes the status from the `pending_nodes` CHECK constraint.
 
 ---
 
@@ -224,4 +191,6 @@ The `created_at` column was added to `graph_nodes` via `ALTER TABLE` to enable t
 Auto-detected practices (via LLM-based pattern matching) create nodes + ASSOCIATED_WITH edges bypassing all guards. Deferred post-Phase 2 — will add confidence gate + pending routing alongside Phase 4 correction learning build-out (30+ corrections threshold).
 
 ### Phase 4 (Learning)
-Build correction-learning from `clarification_feedback` after 30+ entries accumulate. Auto-defers until then.
+Superseded by the observation wiring on queue decisions and Entities corrections
+(`emit_observation`) — `clarification_feedback` is retired, so the 30+ entries
+threshold no longer applies.

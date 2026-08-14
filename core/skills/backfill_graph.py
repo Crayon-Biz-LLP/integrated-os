@@ -385,10 +385,6 @@ def get_or_create_node(label: str, node_type: str, graph_entities: dict, created
     if label in created_nodes:
         return created_nodes[label]
         
-    # PHASE 2 HOOK
-    from core.clarifier import evaluate_node
-    evaluate_node({"label": label, "type": node_type})
-    
     # Check if already in graph_entities (DB cache)
     if label in graph_entities:
         node_id = graph_entities[label]["id"]
@@ -456,10 +452,6 @@ def upsert_nodes(nodes: list, graph_entities: dict, memory_id: str):
             label = resolve_alias(label)
             node["label"] = label
             
-        # PHASE 2 HOOK
-        from core.clarifier import evaluate_node
-        evaluate_node(node)
-        
         existing = graph_entities.get(label, {})
         existing_id = existing.get("id")
         existing_type = existing.get("type", "concept")

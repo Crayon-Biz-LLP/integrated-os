@@ -314,15 +314,6 @@ Context:
                                 sweep_lines.append(f"  • {t['title']} ({days_old}d old)")
                             except Exception:
                                 sweep_lines.append(f"  • {t.get('title', 'Untitled')}")
-                    # Unresolved clarifications
-                    clar_res = supabase.table('clarification_feedback') \
-                        .select('id, question_text, created_at') \
-                        .is_('resolved_at', 'null') \
-                        .gt('expires_at', now.isoformat()) \
-                        .limit(5) \
-                        .execute()
-                    if clar_res.data:
-                        sweep_lines.append(f"❓ {len(clar_res.data)} unanswered clarification(s)")
                     # Pending graph nodes
                     pg_res = supabase.table('pending_nodes') \
                         .select('id, label, type') \
@@ -377,29 +368,6 @@ Context:
         except Exception as e:
             audit_log_sync("sentinel", "ERROR", f"Post-event capture error: {e}")
 
-        # --- PIGGYBACK: Dispatch unanswered clarifications ---
-        try:
-            clarifications_res = supabase.table('clarification_feedback') \
-                .select('*') \
-                .is_('resolved_at', 'null') \
-                .is_('sent_at', 'null') \
-                .gt('expires_at', datetime.now(timezone.utc).isoformat()) \
-                .limit(5) \
-                .execute()
-                
-            if clarifications_res.data:
-                from core.clarifier import build_batch
-                batch_msg = build_batch(clarifications_res.data, max_items=5)
-                if batch_msg:
-                    success = await send_telegram(telegram_chat_id, batch_msg)
-                    if success:
-                        c_ids = [c['id'] for c in clarifications_res.data]
-                        supabase.table('clarification_feedback').update({
-                            "sent_at": datetime.now(timezone.utc).isoformat()
-                        }).in_('id', c_ids).execute()
-                        audit_log_sync("sentinel", "INFO", f"Dispatched {len(c_ids)} clarifications")
-        except Exception as e:
-            audit_log_sync("sentinel", "ERROR", f"Clarification dispatch error: {e}")
 
         # --- PIGGYBACK: Classifier feedback ingestion ---
         try:

@@ -145,18 +145,19 @@ PENDING_NODES_STATUSES = {
     "approved",             # Approved — graph node + DB record created
     "rejected",             # Rejected
     "awaiting_details",     # Waiting for user context (person role etc.)
-    "awaiting_clarification",  # Awaiting disambiguation from clarifier (e.g. duplicate detection)
-    "flagged",              # Ungrounded — needs clarification
+    "flagged",              # Ungrounded — surfaced for HITL approval
     "merged",               # Merged into another node
     "merge_proposed",       # find_similar_node found a match — proposed merge pending user action
 }
 
+# awaiting_clarification was removed (plans/73): the clarifier question flow
+# is retired, so pending items stay in the Quick Confirmation queue as
+# ordinary HITL cards instead of being parked behind a Telegram question.
 PENDING_NODES_TRANSITIONS = {
-    "pending":              {"approved", "rejected", "awaiting_details", "awaiting_clarification", "flagged", "merge_proposed"},
+    "pending":              {"approved", "rejected", "awaiting_details", "flagged", "merge_proposed"},
     "approved":             set(),  # terminal
     "rejected":             set(),  # terminal
     "awaiting_details":     {"pending", "approved", "rejected"},
-    "awaiting_clarification": {"pending", "approved", "rejected"},
     "flagged":              {"pending", "approved", "rejected"},
     "merged":               set(),  # terminal
     "merge_proposed":       {"approved", "rejected", "merged"},
@@ -192,12 +193,14 @@ PENDING_GRAPH_EDGES_STATUSES = {
     "pending",     # Awaiting HITL approval
     "approved",    # Approved — edge copied to graph_edges
     "rejected",    # Rejected
+    "expired",     # Silent gate (plans/73): stale, low-confidence, never-acted-on
 }
 
 PENDING_GRAPH_EDGES_TRANSITIONS = {
-    "pending":  {"approved", "rejected"},
+    "pending":  {"approved", "rejected", "expired"},
     "approved": set(),  # terminal
     "rejected": set(),  # terminal
+    "expired":  set(),  # terminal
 }
 
 

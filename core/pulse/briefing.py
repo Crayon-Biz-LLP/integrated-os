@@ -1265,6 +1265,33 @@ async def _process_pulse_impl(auth_secret: str = None, request_id: str = None, t
             except Exception as e:
                 audit_log_sync("pulse", "WARNING", f"Transparency report failed: {e}")
 
+        # ── Newly-tracked, unconfirmed connections (plans/73) ──
+        # One gentle check-in line replacing the retired "things to clarify"
+        # questions: list recently-tracked low-confidence pending edges so the
+        # user can correct in passing instead of being interrogated per item.
+        # Empty when nothing is unconfirmed — "all clear" stays a feature.
+        try:
+            unconfirmed_cutoff = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+            uc_res = supabase.table('pending_graph_edges') \
+                .select('source_label, target_label, relationship') \
+                .eq('status', 'pending') \
+                .lt('confidence', 0.7) \
+                .gte('created_at', unconfirmed_cutoff) \
+                .order('created_at', desc=True) \
+                .limit(3) \
+                .execute()
+            if uc_res.data:
+                uc_items = [
+                    f"{r['source_label']} {r['relationship']} {r['target_label']}"
+                    for r in uc_res.data
+                ]
+                briefing_text += ("\n\nHeads up — I've started tracking: "
+                                  + ", ".join(uc_items)
+                                  + ". Tell me if I've got any wrong.")
+                audit_log_sync("pulse", "INFO", "Appended unconfirmed-tracking check-in to briefing")
+        except Exception as e:
+            audit_log_sync("pulse", "WARNING", f"Unconfirmed-tracking check-in failed: {e}")
+
         # ═══════════════════════════════════════
         # WRITE PHASE (all side effects happen here)
         # ═══════════════════════════════════════

@@ -37,10 +37,6 @@ def test_backfill_suspicious_concept_routes_to_pending(monkeypatch):
     monkeypatch.setattr("core.skills.backfill_graph.supabase", MockSupabase())
     monkeypatch.setattr("core.lib.graph_rules.supabase", MockSupabase())
 
-    # We mock out evaluate_node so it doesn't throw errors
-    def mock_evaluate_node(*args, **kwargs): pass
-    monkeypatch.setattr("core.clarifier.evaluate_node", mock_evaluate_node)
-
     # Calling with a fused concept-like label
     get_or_create_node("This is an extremely long name that should be flagged", "concept", {}, {}, "memory_123")
     

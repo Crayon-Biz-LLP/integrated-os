@@ -1155,15 +1155,30 @@ def insert_pending_edge(source_label: str, target_label: str, relationship: str,
         audit_log_sync("graph_pipeline", "WARNING", f"Live graph dedup check failed: {e}")
     
     try:
-        existing = supabase.table("pending_graph_edges").select("id, source_text").ilike("source_label", s_lower).ilike("target_label", t_lower).ilike("relationship", r_lower).execute()
+        existing = supabase.table("pending_graph_edges").select("id, source_text, confidence").ilike("source_label", s_lower).ilike("target_label", t_lower).ilike("relationship", r_lower).execute()
         if existing.data:
             row = existing.data[0]
             current_sources = [s.strip() for s in (row.get('source_text') or '').split(',') if s.strip()]
             new_source = source_info.get('source_text', '')
+            update = {}
             if new_source and new_source not in current_sources:
                 current_sources.append(new_source)
-                updated_source_text = ", ".join(current_sources)
-                supabase.table("pending_graph_edges").update({"source_text": updated_source_text}).eq("id", row['id']).execute()
+                update["source_text"] = ", ".join(current_sources)
+            # Corroboration (plans/73): a re-mentioned pair gains confidence, so
+            # a connection seen across multiple sources rises above the silent
+            # gate's expiry threshold while single-mention noise does not.
+            existing_conf = row.get('confidence')
+            if existing_conf is None:
+                bumped = 0.55
+            else:
+                try:
+                    bumped = min(0.95, float(existing_conf) + 0.2)
+                except (TypeError, ValueError):
+                    bumped = 0.55
+            if bumped != existing_conf:
+                update["confidence"] = bumped
+            if update:
+                supabase.table("pending_graph_edges").update(update).eq("id", row['id']).execute()
             return {"status": "deduped", "id": row['id']}
     except Exception as e:
         audit_log_sync("graph_pipeline", "WARNING", f"Dedup check failed: {e}")
@@ -1174,6 +1189,9 @@ def insert_pending_edge(source_label: str, target_label: str, relationship: str,
             "target_label": target_label,
             "relationship": rel,
             "status": "pending",
+            # Single-source LLM-extracted edge — low default confidence; only
+            # corroboration (re-mention) or HITL approval raises it.
+            "confidence": 0.55,
             "source_text": source_info.get("source_text", ""),
             "source_table": source_info.get("source_table", ""),
             "source_type": s_type,

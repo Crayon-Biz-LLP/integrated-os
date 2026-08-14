@@ -9,7 +9,6 @@ from core.services.db import maybe_single_safe, run_tenant_fanout, tenant_aware_
 from core.llm.constants import CLASSIFICATION_MODEL  # noqa: E402
 from core.llm.compat import call_llm_with_fallback_sync  # noqa: E402
 from core.skills.backfill_graph import synthesize_content  # noqa: E402
-from core.clarifier import evaluate_node  # noqa: E402
 from core.lib.graph_rules import normalize_label  # noqa: E402
 
 supabase = tenant_aware_client()
@@ -155,39 +154,23 @@ def run_batch_sweep():
                     "justification": node.get("justification", ""),
                 }
                 
-                clarification = evaluate_node(node, batch_mode=True)
-                if clarification:
-                    try:
-                        supabase.table("pending_nodes").insert({
-                            "label": label,
-                            "type": "concept",
-                            "status": "flagged",
-                            "source_text": f"memories:{mem_id}",
-                            "epistemic_status": node.get("epistemic", "inferred"),
-                            "eval_context": eval_ctx
-                        }).execute()
-                        print(f"    Flagged concept: {label} (Similarity alert)")
-                    except Exception as e:
-                        if hasattr(e, "code") and e.code == "23505":
-                            print(f"    Concept already flagged: {label}")
-                        else:
-                            print(f"    Failed to flag concept {label}: {e}")
-                else:
-                    try:
-                        supabase.table("pending_nodes").insert({
-                            "label": label,
-                            "type": "concept",
-                            "status": "pending",
-                            "source_text": f"memories:{mem_id}",
-                            "epistemic_status": node.get("epistemic", "inferred"),
-                            "eval_context": eval_ctx
-                        }).execute()
-                        print(f"    Queued concept: {label}")
-                    except Exception as e:
-                        if hasattr(e, "code") and e.code == "23505":
-                            print(f"    Concept already queued: {label}")
-                        else:
-                            print(f"    Failed to queue concept {label}: {e}")
+                # Clarifier hook retired (plans/73) — concepts queue as ordinary
+                # HITL cards; there is no "flagged for clarification" tier anymore.
+                try:
+                    supabase.table("pending_nodes").insert({
+                        "label": label,
+                        "type": "concept",
+                        "status": "pending",
+                        "source_text": f"memories:{mem_id}",
+                        "epistemic_status": node.get("epistemic", "inferred"),
+                        "eval_context": eval_ctx
+                    }).execute()
+                    print(f"    Queued concept: {label}")
+                except Exception as e:
+                    if hasattr(e, "code") and e.code == "23505":
+                        print(f"    Concept already queued: {label}")
+                    else:
+                        print(f"    Failed to queue concept {label}: {e}")
                         
             # Insert edges
             from core.lib.graph_rules import insert_pending_edge

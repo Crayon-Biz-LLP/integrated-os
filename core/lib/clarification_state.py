@@ -168,30 +168,3 @@ def set_session_state(chat_id: int, actions: list,
 def clear_session(chat_id: int) -> bool:
     """Remove the active NLP correction session for a chat."""
     return resolve_clarification(chat_id, pending_type="session")
-
-
-def cleanup_expired_clarifications() -> int:
-    """Mark all expired clarifications as 'expired' via the DB RPC (or direct update).
-
-    Returns number of rows cleaned up (or -1 if RPC not found).
-    """
-    supabase = tenant_aware_client()
-    try:
-        # Try the RPC first
-        res = supabase.rpc("cleanup_expired_clarifications").execute()
-        return res.data if isinstance(res.data, int) else -1
-    except Exception:
-        pass
-    # Fallback: manual update
-    try:
-        now = datetime.now(timezone.utc).isoformat()
-        res = supabase.table("pending_graph_clarifications") \
-            .update({"status": "expired", "resolved_at": now}) \
-            .eq("status", "active") \
-            .lt("expires_at", now) \
-            .execute()
-        return len(res.data or [])
-    except Exception as e:
-        audit_log_sync("clarification_state", "WARNING",
-                       f"Failed to cleanup expired clarifications: {e}")
-        return 0

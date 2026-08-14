@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import '../models/decision_item.dart';
 import '../services/api_service.dart';
-import '../services/persona.dart';
 import '../services/inbox_cache.dart';
+import '../services/notification_service.dart';
+import '../services/persona.dart';
 import '../theme/app_theme.dart';
 import '../utils/route_observer.dart';
 import '../widgets/decision_card.dart';
@@ -121,6 +122,17 @@ class _InboxScreenState extends State<InboxScreen>
   /// True while batch-selection mode is active (select → approve/reject).
   bool _selectionMode = false;
 
+  /// True while a background batch is in flight. Guards against starting a
+  /// second batch and swaps the action bar to a non-blocking chip until the
+  /// server accepts the job.
+  bool _batchInFlight = false;
+
+  /// The [NotificationService.onPushReceived] handler set before this screen
+  /// mounted, plus the wrapper this screen installs. Saved/restored so the
+  /// shell's own handler keeps working while the Inbox is on screen.
+  void Function(Map<String, dynamic> data)? _prevOnPushReceived;
+  void Function(Map<String, dynamic> data)? _onPushReceivedWrapper;
+
   /// Selected decision ids (DecisionItem.id — the stable card id). Only
   /// selectable types (everything except clarifications) can be selected.
   final Set<String> _selectedIds = {};
@@ -140,6 +152,18 @@ class _InboxScreenState extends State<InboxScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _pushContent = (widget.pushData?['content'] as String?)?.trim() ?? '';
+    // Chain on top of any existing handler (e.g. the home shell's): while the
+    // Inbox is mounted, a background-batch completion push triggers a silent
+    // reload so the queue reconciles the moment Rhodey finishes the job.
+    _prevOnPushReceived = NotificationService.onPushReceived;
+    _onPushReceivedWrapper = (data) {
+      _prevOnPushReceived?.call(data);
+      final type = data['type'];
+      if ((type == 'batch_done' || type == 'batch_failed') && mounted) {
+        _refreshSilently();
+      }
+    };
+    NotificationService.onPushReceived = _onPushReceivedWrapper;
     _loadDecisions();
     _loadAutoDecisionCount();
   }
@@ -155,6 +179,11 @@ class _InboxScreenState extends State<InboxScreen>
   void dispose() {
     routeObserver.unsubscribe(this);
     WidgetsBinding.instance.removeObserver(this);
+    // Restore the previous handler so the shell keeps receiving pushes after
+    // the Inbox unmounts.
+    if (NotificationService.onPushReceived == _onPushReceivedWrapper) {
+      NotificationService.onPushReceived = _prevOnPushReceived;
+    }
     super.dispose();
   }
 
@@ -1344,90 +1373,121 @@ class _InboxScreenState extends State<InboxScreen>
     final confirm = await _showBatchConfirm(message);
     if (!confirm || !mounted) return;
 
-    // Route by type: graph batch routes accept ids+action; channel batch
-    // routes require explicit ids; merges use the per-item merge endpoints.
-    final byType = <DecisionType, List<int>>{};
-    for (final d in selected) {
-      final apiId = int.tryParse(d.metadata['api_id'] as String? ?? '');
-      if (apiId != null) byType.putIfAbsent(d.type, () => []).add(apiId);
-    }
+    // Route by type: graph + channel batches run in the BACKGROUND — the tap
+    // returns in milliseconds, the items leave the queue optimistically, and
+    // Rhodey pushes the final counts when done. Merges have no batch route,
+    // so they stay per-item and awaited.
+    final batchTypes = {
+      DecisionType.edge,
+      DecisionType.person,
+      DecisionType.email,
+      DecisionType.whatsapp,
+      DecisionType.call,
+      DecisionType.teams,
+    };
+    final batchItems =
+        selected.where((d) => batchTypes.contains(d.type)).toList();
+    final mergeItems =
+        selected.where((d) => d.type == DecisionType.merge).toList();
 
-    var processed = 0;
-    var failed = 0;
-    
-    setState(() => _loading = true);
+    if (batchItems.isNotEmpty) {
+      final byType = <DecisionType, List<int>>{};
+      for (final d in batchItems) {
+        final apiId = int.tryParse(d.metadata['api_id'] as String? ?? '');
+        if (apiId != null) byType.putIfAbsent(d.type, () => []).add(apiId);
+      }
 
-    void tally(ApiResult<dynamic> r) {
-      if (r.success) {
-        final data = r.data is Map ? r.data as Map : {};
-        final p = data['processed'];
-        final f = data['failed'];
-        processed += (p is int) ? p : 1;
-        failed += (f is int) ? f : 0;
-      } else {
-        failed += 1;
+      setState(() => _batchInFlight = true);
+
+      // Optimistic: drop the in-flight items now so the list stays usable.
+      // The completion push reconciles; anything that fails reloads back.
+      final inFlightApiIds = byType.values.expand((v) => v).toSet();
+      setState(() {
+        _items.removeWhere((d) {
+          final apiId = int.tryParse(d.metadata['api_id'] as String? ?? '');
+          return apiId != null && inFlightApiIds.contains(apiId);
+        });
+      });
+
+      var outstanding = byType.length;
+      for (final entry in byType.entries) {
+        final ids = entry.value;
+        final Future<ApiResult<dynamic>> req;
+        switch (entry.key) {
+          case DecisionType.edge:
+            req = _api.post(
+              '/api/graph-edge-action/batch',
+              body: {'ids': ids, 'action': action, 'background': true},
+              timeout: const Duration(seconds: 30),
+              maxRetries: 0,
+            );
+            break;
+          case DecisionType.person:
+            req = _api.post(
+              '/api/graph-node-action/batch',
+              body: {'ids': ids, 'action': action, 'background': true},
+              timeout: const Duration(seconds: 30),
+              maxRetries: 0,
+            );
+            break;
+          default:
+            req = _api.batchChannelAction(
+              entry.key.name,
+              ids,
+              action: action,
+              background: true,
+            );
+            break;
+        }
+        // Fire and forget: the accepted response lands in milliseconds; the
+        // real status arrives as the completion push.
+        req.then((r) {
+          outstanding -= 1;
+          if (!mounted) return;
+          if (!r.success) {
+            _showSnack(r.error ?? 'Failed to start $verb batch',
+                isError: true);
+            _refreshSilently();
+          }
+          if (outstanding <= 0) setState(() => _batchInFlight = false);
+        }).catchError((_) {
+          if (mounted) setState(() => _batchInFlight = false);
+        });
       }
     }
 
-    for (final entry in byType.entries) {
-      final ids = entry.value;
-      switch (entry.key) {
-        case DecisionType.edge:
-          tally(
-            await _api.post(
-              '/api/graph-edge-action/batch',
-              body: {'ids': ids, 'action': action},
-              // Same batch contract as batchChannelAction: the server
-              // parallelizes per-item LLM pipelines, so allow up to 120s;
-              // never auto-retry a mutation batch (re-POSTing re-processes
-              // decided items and doubles LLM cost).
-              timeout: const Duration(seconds: 120),
-              maxRetries: 0,
-            ),
-          );
-          break;
-        case DecisionType.person:
-          tally(
-            await _api.post(
-              '/api/graph-node-action/batch',
-              body: {'ids': ids, 'action': action},
-              timeout: const Duration(seconds: 120),
-              maxRetries: 0,
-            ),
-          );
-          break;
-        case DecisionType.email:
-        case DecisionType.whatsapp:
-        case DecisionType.call:
-        case DecisionType.teams:
-          tally(
-            await _api.batchChannelAction(entry.key.name, ids, action: action),
-          );
-          break;
-        case DecisionType.merge:
-          for (final id in ids) {
-            tally(
-              action == 'approve'
-                  ? await _api.acceptMerge(id)
-                  : await _api.rejectMerge(id),
-            );
-          }
-          break;
-        case DecisionType.clarification:
-          break;
+    // Merges: per-item, awaited, removed on success (no batch route exists).
+    var mergeProcessed = 0;
+    var mergeFailed = 0;
+    for (final d in mergeItems) {
+      final apiId = int.tryParse(d.metadata['api_id'] as String? ?? '');
+      if (apiId == null) continue;
+      final r = action == 'approve'
+          ? await _api.acceptMerge(apiId)
+          : await _api.rejectMerge(apiId);
+      if (!mounted) return;
+      if (r.success) {
+        mergeProcessed += 1;
+        _removeItem(d);
+      } else {
+        mergeFailed += 1;
       }
     }
 
     if (!mounted) return;
     _selectionMode = false;
     _selectedIds.clear();
-    _loadDecisions();
-    _showSnack(
-      failed == 0
-          ? '✅ $verb ${processed + failed} item(s)'
-          : '⚠️ $verb $processed, $failed failed',
-      isError: failed > 0,
-    );
+    if (mergeItems.isNotEmpty) {
+      _showSnack(
+        mergeFailed == 0
+            ? '✅ $verb $mergeProcessed merge(s)'
+            : '⚠️ $verb $mergeProcessed, $mergeFailed failed',
+        isError: mergeFailed > 0,
+      );
+    }
+    // No reload here — the background job hasn't committed yet, so a fetch
+    // would resurrect the just-removed items while the server is still
+    // processing. The completion push (batch_done/batch_failed) reconciles.
   }
 
   /// Batch send or drop the selected email drafts (Drafts filter).
@@ -1467,37 +1527,40 @@ class _InboxScreenState extends State<InboxScreen>
   /// Batch acknowledge (Got it) the selected FYI items (FYI filter).
   Future<void> _batchFyi() async {
     if (_selectedFyiIds.isEmpty) return;
+    if (_batchInFlight) {
+      _showSnack('A batch is already processing…');
+      return;
+    }
     final confirm = await _showBatchConfirm(
       'Got it — acknowledge ${_selectedFyiIds.length} selected FYI item(s)?',
     );
     if (!confirm || !mounted) return;
 
-    var processed = 0;
-    var failed = 0;
-    
-    setState(() => _loading = true);
+    setState(() => _batchInFlight = true);
 
-    final result = await _api.batchFyiAction(_selectedFyiIds.toList());
-    if (result.success) {
-      final data = result.data is Map ? result.data as Map : {};
-      final p = data['processed'];
-      final f = data['failed'];
-      processed = (p is int) ? p : 1;
-      failed = (f is int) ? f : 0;
-    } else {
-      failed = _selectedFyiIds.length;
-    }
-    
-    if (!mounted) return;
+    // Optimistic: drop the selected FYI items now. The completion push
+    // reconciles; anything that fails reloads back.
+    final selected = _selectedFyiIds.toList();
+    setState(() {
+      _fyi.removeWhere((f) => selected.contains(f['id']));
+    });
+
+    _api.batchFyiAction(selected, background: true).then((r) {
+      if (!mounted) return;
+      if (!r.success) {
+        _showSnack(r.error ?? 'Failed to start Got it batch', isError: true);
+        _refreshSilently();
+      }
+      setState(() => _batchInFlight = false);
+    }).catchError((_) {
+      if (mounted) setState(() => _batchInFlight = false);
+    });
+
     _selectionMode = false;
     _selectedFyiIds.clear();
-    _loadDecisions();
-    _showSnack(
-      failed == 0
-          ? '✅ Got it — $processed item(s)'
-          : '⚠️ Acknowledged $processed, $failed failed',
-      isError: failed > 0,
-    );
+    // No reload here — the job hasn't committed yet, so a fetch would bring
+    // the just-removed items back while the server is still processing. The
+    // completion push (batch_done/batch_failed) reconciles.
   }
 
   /// Horizontal chip row that filters the whole queue. A chip appears only
@@ -1615,10 +1678,23 @@ class _InboxScreenState extends State<InboxScreen>
                   color: AppTheme.red,
                 ),
               ] else if (isFyi) ...[
+                if (_batchInFlight)
+                  _ChipButton(
+                    label: 'Processing…',
+                    onTap: null,
+                    color: AppTheme.accent,
+                  )
+                else
+                  _ChipButton(
+                    label: '✅ Got it',
+                    onTap: n == 0 ? null : _batchFyi,
+                    color: AppTheme.green,
+                  ),
+              ] else if (_batchInFlight) ...[
                 _ChipButton(
-                  label: '✅ Got it',
-                  onTap: n == 0 ? null : _batchFyi,
-                  color: AppTheme.green,
+                  label: 'Processing…',
+                  onTap: null,
+                  color: AppTheme.accent,
                 ),
               ] else ...[
                 _ChipButton(

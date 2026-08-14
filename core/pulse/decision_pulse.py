@@ -113,6 +113,25 @@ async def _process_decision_pulse_impl(auth_secret: str = None, trigger: str = "
         except Exception as e:
             audit_log_sync("decision_pulse", "WARNING", f"Failed to revert awaiting_details: {e}")
 
+        # Silent gate (plans/73): expire low-confidence, stale, never-acted-on
+        # pending edges so extraction noise doesn't rot in the queue. With the
+        # clarifier question flow retired, single-source LLM edges start at
+        # confidence 0.55 (insert_pending_edge) and only corroboration
+        # (re-mention from a new source) raises them; anything still unactioned
+        # past the window and under the gate is noise, not a real connection.
+        try:
+            from core.services.inbox_feed import FYI_MAX_AGE_DAYS
+            edge_cutoff = (datetime.now(timezone.utc) - timedelta(days=FYI_MAX_AGE_DAYS)).isoformat()
+            supabase.table('pending_graph_edges')\
+                .update({'status': 'expired'})\
+                .eq('status', 'pending')\
+                .lt('confidence', 0.7)\
+                .lt('created_at', edge_cutoff)\
+                .execute()
+        except Exception as e:
+            audit_log_sync("decision_pulse", "WARNING",
+                           f"Failed to expire stale low-confidence pending edges: {e}")
+
         # Fetch all pending messages
         pending_res = supabase.table('messages')\
             .select('id, channel, classification, suggested_title, suggested_project, sender_name, metadata, subject')\

@@ -47,7 +47,7 @@ SCOPED_RPCS = [
     "match_raw_dumps", "search_phrase_nodes", "claim_pending_enrichment_job",
     "get_most_connected_nodes", "find_serendipity_paths", "detect_drift",
     "expire_stale_graph_edges", "archive_terminal_pending_edges",
-    "batch_whatsapp_message", "cleanup_expired_clarifications",
+    "batch_whatsapp_message",
 ]
 
 
@@ -63,6 +63,6 @@ def test_scoped_rpcs_carry_owner_param(tenants):
 
 def test_global_rpcs_not_owner_filtered(tenants):
     """Admin/global RPCs must NOT carry an owner param (carve-out)."""
-    for rpc in ["next_clarification_shortcode", "run_sql"]:
+    for rpc in ["run_sql"]:
         sig = psql(f"select pg_get_function_arguments(oid) from pg_proc where proname = '{rpc}' limit 1")
         assert "owner_id" not in sig and "p_owner" not in sig, f"{rpc} unexpectedly owner-filtered"

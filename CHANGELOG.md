@@ -5,6 +5,39 @@ Updated whenever something is removed or fundamentally changes.
 
 ---
 
+## 2026-08-14 — Clarifier Question Flow Retired (plans/73)
+
+### Removed: graph clarification questions
+
+**Root cause:** `evaluate_node`/`evaluate_edge` were called with `batch_mode=True` at
+extraction, so every LLM-extracted edge generated a user-facing "I am unsure if …"
+question that was dispatched only on the 30-min sentinel heartbeat (≤5 per batch).
+The user was doing the extraction pipeline's QA — inverted labor per the vision
+(`00-vision-and-mindset.md`) — and the questions arrived late, out of context, with
+no app surface (edges flipped to `awaiting_clarification` vanished from the queue).
+
+**Removed:** question generation (`core/clarifier.py` — now no-op hooks),
+`store_and_send_clarification`, `build_batch`, `handle_response`, `next_shortcode`,
+the sentinel dispatch piggyback, the weekly "unanswered clarifications" sweep line,
+`POST /api/clarification`, the `c{shortcode}` reply path in `core/webhook/handler.py`,
+and the app's `submitClarification`.
+
+**Replaced with (queue-native HITL):**
+- Pending nodes/edges stay in Quick Confirmation as ordinary HITL cards.
+- `graph.py::enrich_pending_edges_with_conflicts()` — contradiction hint on the
+  edge card instead of a "which is correct?" question.
+- Silent gate: single-source edges start at `confidence 0.55`;
+  corroboration (re-mention) raises it; stale low-confidence edges expire via
+  `decision_pulse` (formal state-machine transition `pending → expired`).
+- The pulse briefing appends one daily check-in line listing newly-tracked
+  unconfirmed items.
+
+**Migration:** `db/98_retire_clarifier_question_flow.sql` reverts legacy
+`awaiting_clarification` rows to `pending`, resolves open `clarification_feedback`
+rows, and drops the status from the `pending_nodes` CHECK constraint.
+
+---
+
 ## 2026-07-28 — Learning Loop Fixes: Classifier Ingestion, Verification, Null Guard
 
 ### Fixed: Classifier corrections pipeline (broken architectural assumption)

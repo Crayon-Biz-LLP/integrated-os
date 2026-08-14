@@ -7,6 +7,7 @@ import httpx
 import json
 import uuid
 import asyncio
+import contextvars
 from urllib.parse import urlencode, quote
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
@@ -31,7 +32,7 @@ from core.services.briefing_refresh import (
     fire_briefing_refresh,
     trigger_briefing_refresh,
 )
-from core.pulse.graph import process_pending_edge_decision
+from core.pulse.graph import process_pending_edge_decision, enrich_pending_edges_with_conflicts
 from api.briefing import _snooze_ok, _notes_ok
 from core.pulse.sentinel import process_sentinel
 from core.pulse import (
@@ -53,6 +54,7 @@ from core.services.db import (
     get_tenant, set_tenant, resolve_telegram_chat_id, resolve_user_by_api_key,
     tenant_aware_client, tenant_scope,
 )
+from core.services.push_notification import send_push_notification
 from core.services.inbox_feed import (
     fetch_pending_channel_messages, fetch_pending_drafts, fetch_fyi_messages,
 )
@@ -272,11 +274,9 @@ async def pulse_cron_route(request: Request):
     failed = []
     for uid in due:
         try:
-            modal.Function.from_name("rhodey-os", "brief_tenant").spawn({
-                "uid": uid,
-                "auth_secret": cron_secret,
-                "trigger": "cron",
-            })
+            await modal.Function.from_name("rhodey-os", "brief_tenant").spawn.aio(
+                uid=uid, auth_secret=cron_secret, trigger="cron"
+            )
             spawned.append(uid)
         except Exception as e:
             audit_log_sync("pulse", "WARNING", f"brief_tenant spawn failed for {uid}: {e}")
@@ -609,7 +609,7 @@ async def home_feed_route(request: Request):
                 if _snooze_ok(supabase, 'pending_graph_edges'):
                     q = q.or_('snoozed_until.is.null,snoozed_until.lt.now')
                 res = await exec_query(q.order('created_at', desc=True).limit(100))
-                return res.data or []
+                return enrich_pending_edges_with_conflicts(res.data or [])
             except Exception:
                 return []
 
@@ -2622,34 +2622,127 @@ async def email_action_route(request: Request):
 
 async def _run_batch_concurrently(
     ids: list, worker, concurrency: int = 5,
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     """Run a per-item decision worker over ids with bounded concurrency.
 
-    The old batch loops awaited every item serially — for approves each item
-    runs the full LLM planner+executor pipeline, so "Approve all" on a long
-    queue was N × 3 sequential LLM calls (minutes, and the app's 10s timeout
-    died first). Bounding at `concurrency` keeps the pipelines running in
-    parallel while capping simultaneous provider calls so we don't trip
-    Gemini/OpenRouter rate limits. Fail-closed per item: an exception counts
-    that item as failed, everything else proceeds.
+    Two jobs: actually parallelize, and report truthfully.
 
-    Safe under the tenant facade: the handler's tenant scope is a
-    contextvar, which asyncio.gather child tasks inherit; each per-item
-    decision function additionally enters its own scope internally.
+    1. Parallelize. The workers are async functions, but they call the
+       synchronous supabase `.execute()` directly (not `exec_query`), which
+       blocks the event loop. `asyncio.gather` of such workers is therefore
+       strictly serial: a 100-item FYI batch ran ~2.7s/item for ~270s and
+       blew the app's 120s timeout, so every item was reported failed while
+       the backend kept grinding no-op updates. Each item now runs on its own
+       thread and event loop (`asyncio.to_thread` + `asyncio.run`), so up to
+       `concurrency` items genuinely run in parallel; the semaphore caps
+       concurrent provider calls so we don't trip Gemini/OpenRouter rate
+       limits. Fail-closed per item: an exception counts that item as failed,
+       everything else proceeds.
+
+       The handler's tenant scope is a contextvar, and threads do NOT inherit
+       the caller's contextvars — so we capture the context here and re-enter
+       it inside each worker thread, or every worker's `tenant_aware_client()`
+       would silently lose the tenant.
+
+    2. Classify. A worker returns a dict like {"success": True} or
+       {"success": False, "action": "already_decided"}. An item that was
+       already decided is not a failure — it's skipped, so the app stops
+       reporting "N failed" for items that merely changed already. Workers
+       signal "already done" inconsistently (action key for email/graph,
+       message text for channels), so both are checked.
     """
+    _SKIP_ACTIONS = {
+        "already_decided", "already_processed", "not_found",
+        "duplicate", "not_rejected",
+    }
     sem = asyncio.Semaphore(concurrency)
+
+    def _classify(result) -> str:
+        if not isinstance(result, dict) or result.get("success") is not False:
+            return "processed"
+        message = (result.get("message") or "").lower()
+        if (
+            result.get("action") in _SKIP_ACTIONS
+            or "already" in message
+            or "not found" in message
+        ):
+            return "skipped"
+        return "failed"
 
     async def _guarded(item_id):
         async with sem:
             try:
-                await worker(item_id)
-                return True
+                # A Context object can be entered by only one thread at a
+                # time, so each item gets its own copy (fresh objects from
+                # concurrent entries of a shared copy would collide).
+                ctx = contextvars.copy_context()
+                result = await asyncio.to_thread(
+                    lambda: ctx.run(lambda: asyncio.run(worker(item_id)))
+                )
+                return _classify(result)
             except Exception:
-                return False
+                return "failed"
 
     results = await asyncio.gather(*(_guarded(i) for i in ids))
-    processed = sum(1 for r in results if r)
-    return processed, len(results) - processed
+    return (
+        results.count("processed"),
+        results.count("failed"),
+        results.count("skipped"),
+    )
+
+
+async def _run_batch_job(kind, ids, action, worker, bulk=False):
+    """Fire a batch action in the background; notify via push when done.
+
+    Returns the job_id immediately; the work runs in a background task so the
+    caller (the app) frees the user instantly instead of staring at a spinner
+    for the whole batch. On completion a push notification carries the honest
+    counts, so the status reaches the user even if they've left the screen or
+    backgrounded the app. Fail-closed: a job error still notifies, so a batch
+    can't silently vanish.
+
+    worker is either a per-item callable (bulk=False, run through
+    _run_batch_concurrently) or a single async callable invoked once as
+    worker(ids) returning (processed, failed, skipped) (bulk=True, e.g. the
+    FYI batch's single atomic UPDATE).
+    """
+    job_id = uuid.uuid4().hex[:12]
+    asyncio.create_task(
+        _execute_batch_job(job_id, kind, ids, action, worker, bulk=bulk))
+    return job_id
+
+
+async def _execute_batch_job(job_id, kind, ids, action, worker, bulk=False):
+    try:
+        if bulk:
+            processed, failed, skipped = await worker(list(ids))
+        else:
+            processed, failed, skipped = await _run_batch_concurrently(ids, worker)
+        audit_log_sync(
+            kind, "INFO",
+            f"Batch {action} (job {job_id}): {processed} processed, "
+            f"{skipped} skipped, {failed} failed",
+        )
+        await send_push_notification(
+            title=f"Rhodey: {kind} {action} finished",
+            body=f"{processed} done · {skipped} already done · {failed} failed",
+            data={
+                "type": "batch_done",
+                "kind": kind,
+                "action": action,
+                "processed": str(processed),
+                "skipped": str(skipped),
+                "failed": str(failed),
+            },
+        )
+    except Exception as e:
+        print(f"Batch job {job_id} ({kind} {action}) failed: {e}")
+        audit_log_sync(kind, "ERROR", f"Batch {action} (job {job_id}) failed: {e}")
+        await send_push_notification(
+            title=f"Rhodey: {kind} {action} failed",
+            body="Something went wrong processing the batch. Try again.",
+            data={"type": "batch_failed", "kind": kind, "action": action},
+        )
 
 
 @app.post("/api/email-action/batch")
@@ -2679,13 +2772,20 @@ async def email_action_batch_route(request: Request):
                 .execute()
             ids = [r['id'] for r in (pending_res.data or [])]
             if not ids:
-                return {"success": True, "processed": 0, "failed": 0}
+                return {"success": True, "processed": 0, "skipped": 0, "failed": 0}
 
-        processed, failed = await _run_batch_concurrently(
+        if body.get('background'):
+            job_id = await _run_batch_job(
+                'email', ids, action,
+                lambda pid: process_email_pending_decision(int(pid), action),
+            )
+            return {"accepted": True, "job_id": job_id, "total": len(ids)}
+
+        processed, failed, skipped = await _run_batch_concurrently(
             ids,
             lambda pid: process_email_pending_decision(int(pid), action),
         )
-        return {"success": True, "processed": processed, "failed": failed}
+        return {"success": True, "processed": processed, "skipped": skipped, "failed": failed}
     except HTTPException:
         raise
     except Exception as e:
@@ -2882,11 +2982,17 @@ async def call_action_batch_route(request: Request):
         action = body.get('action', '')
         if not ids or action not in ('approve', 'reject'):
             raise HTTPException(status_code=400, detail="ids and action required")
-        processed, failed = await _run_batch_concurrently(
+        if body.get('background'):
+            job_id = await _run_batch_job(
+                'call', ids, action,
+                lambda pid: process_channel_pending_decision('call', int(pid), action),
+            )
+            return {"accepted": True, "job_id": job_id, "total": len(ids)}
+        processed, failed, skipped = await _run_batch_concurrently(
             ids,
             lambda pid: process_channel_pending_decision('call', int(pid), action),
         )
-        return {"success": True, "processed": processed, "failed": failed}
+        return {"success": True, "processed": processed, "skipped": skipped, "failed": failed}
     except HTTPException:
         raise
     except Exception as e:
@@ -2934,11 +3040,17 @@ async def whatsapp_action_batch_route(request: Request):
         action = body.get('action', '')
         if not ids or action not in ('approve', 'reject'):
             raise HTTPException(status_code=400, detail="ids and action required")
-        processed, failed = await _run_batch_concurrently(
+        if body.get('background'):
+            job_id = await _run_batch_job(
+                'whatsapp', ids, action,
+                lambda pid: process_channel_pending_decision('whatsapp', int(pid), action),
+            )
+            return {"accepted": True, "job_id": job_id, "total": len(ids)}
+        processed, failed, skipped = await _run_batch_concurrently(
             ids,
             lambda pid: process_channel_pending_decision('whatsapp', int(pid), action),
         )
-        return {"success": True, "processed": processed, "failed": failed}
+        return {"success": True, "processed": processed, "skipped": skipped, "failed": failed}
     except HTTPException:
         raise
     except Exception as e:
@@ -2986,11 +3098,17 @@ async def teams_action_batch_route(request: Request):
         action = body.get('action', '')
         if not ids or action not in ('approve', 'reject'):
             raise HTTPException(status_code=400, detail="ids and action required")
-        processed, failed = await _run_batch_concurrently(
+        if body.get('background'):
+            job_id = await _run_batch_job(
+                'teams', ids, action,
+                lambda pid: process_channel_pending_decision('teams', int(pid), action),
+            )
+            return {"accepted": True, "job_id": job_id, "total": len(ids)}
+        processed, failed, skipped = await _run_batch_concurrently(
             ids,
             lambda pid: process_channel_pending_decision('teams', int(pid), action),
         )
-        return {"success": True, "processed": processed, "failed": failed}
+        return {"success": True, "processed": processed, "skipped": skipped, "failed": failed}
     except HTTPException:
         raise
     except Exception as e:
@@ -3147,49 +3265,99 @@ async def fyi_action_route(request: Request):
 
 @app.post("/api/fyi-action/batch")
 async def fyi_action_batch_route(request: Request):
-    """Batch acknowledge FYI items. One call, server processes all."""
+    """Batch acknowledge FYI items. One bulk UPDATE, not N per-item calls.
+
+    The old loop ran each item's update through a sync `.execute()` serially
+    on one event loop (~2.7s/item → 100 items ≈ 270s), blowing the app's
+    120s timeout while reporting every item as failed. Worse, it logged "FYI
+    item N acknowledged" for every id sent even when the update matched ZERO
+    rows (the app was re-sending already-acked ids). A single conditional
+    UPDATE is atomic and idempotent (the danny_decision IS NULL guard means
+    re-sends can't double-ack), and PostgREST returns the rows it actually
+    changed — so processed/skipped are honest.
+
+    background=true runs the same bulk work in a background job and pushes
+    the result — the app fires it and forgets, like the other batch actions.
+    """
     require_api_auth(request)
     try:
         body = await request.json()
         ids = body.get('ids', [])
         if not ids:
-            return {"success": True, "processed": 0, "failed": 0}
+            return {"success": True, "processed": 0, "skipped": 0, "failed": 0}
 
-        async def _ack(item_id):
-            supabase = tenant_aware_client()
-            msg_row = None
-            try:
-                row = supabase.table('messages').select('id, channel, suggested_title, subject, sender_name, summary, suggested_project, metadata').eq('id', int(item_id)).limit(1).execute()
-                if row.data:
-                    msg_row = row.data[0]
-            except Exception:
-                pass
-            
-            supabase.table('messages').update({'danny_decision': 'acknowledged'}).eq('id', int(item_id)).is_('danny_decision', 'null').eq('direction', 'incoming').eq('classification', 'fyi').execute()
+        id_ints = [int(i) for i in ids]
 
-            if msg_row:
-                try:
-                    features = build_decision_features(msg_row, msg_row.get('channel') or 'email')
-                except Exception:
-                    features = {}
-                await emit_observation(
-                    subsystem='fyi_pipeline',
-                    event_type='engagement',
-                    outcome='confirmed',
-                    predicted='fyi',
-                    actual='acknowledged',
-                    features=features,
-                    source='fyi_action',
-                )
-            audit_log_sync("fyi_action", "INFO", f"FYI item {item_id} acknowledged from app Inbox (batch)")
+        if body.get('background'):
+            async def _run_bulk(ids_list):
+                processed, skipped = await _acknowledge_fyi_bulk(ids_list)
+                return processed, 0, skipped
 
-        processed, failed = await _run_batch_concurrently(ids, _ack)
-        return {"success": True, "processed": processed, "failed": failed}
+            job_id = await _run_batch_job(
+                'fyi', id_ints, 'acknowledge', _run_bulk, bulk=True)
+            return {"accepted": True, "job_id": job_id, "total": len(id_ints)}
+
+        processed, skipped = await _acknowledge_fyi_bulk(id_ints)
+        return {"success": True, "processed": processed, "skipped": skipped, "failed": 0}
     except HTTPException:
         raise
     except Exception as e:
         print(f"FYI batch action error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+async def _acknowledge_fyi_bulk(id_ints):
+    """Atomic bulk-ack FYI items. Returns (processed, skipped).
+
+    Shared by the sync and background batch paths. One conditional UPDATE
+    (danny_decision IS NULL guard) so re-sends can't double-ack; the rows
+    PostgREST actually changed are the honest processed count. Fires one
+    engagement observation per acknowledged row in the background —
+    best-effort by design, the learning loop must never gate an ack.
+    """
+    supabase = tenant_aware_client()
+    res = await exec_query(
+        supabase.table('messages')
+        .update({'danny_decision': 'acknowledged'})
+        .in_('id', id_ints)
+        .is_('danny_decision', 'null')
+        .eq('direction', 'incoming')
+        .eq('classification', 'fyi')
+    )
+    updated = res.data or []
+    processed = len(updated)
+    skipped = len(id_ints) - processed
+
+    audit_log_sync(
+        "fyi_action", "INFO",
+        f"FYI batch: acknowledged {processed} of {len(id_ints)} "
+        f"({skipped} already decided)",
+    )
+
+    if updated:
+        async def _emit_observations():
+            for row in updated:
+                try:
+                    features = build_decision_features(
+                        row, row.get('channel') or 'email')
+                except Exception:
+                    features = {}
+                try:
+                    await emit_observation(
+                        subsystem='fyi_pipeline',
+                        event_type='engagement',
+                        outcome='confirmed',
+                        predicted='fyi',
+                        actual='acknowledged',
+                        features=features,
+                        source='fyi_action',
+                    )
+                except Exception:
+                    pass
+
+        asyncio.create_task(_emit_observations())
+
+    return processed, skipped
 
 
 
@@ -3256,13 +3424,20 @@ async def graph_edge_action_batch_route(request: Request):
                 .execute()
             ids = [r['id'] for r in (pending_res.data or [])]
             if not ids:
-                return {"success": True, "processed": 0, "failed": 0}
+                return {"success": True, "processed": 0, "skipped": 0, "failed": 0}
 
-        processed, failed = await _run_batch_concurrently(
+        if body.get('background'):
+            job_id = await _run_batch_job(
+                'graph edge', ids, action,
+                lambda pid: process_pending_edge_decision(pending_id=int(pid), decision=action),
+            )
+            return {"accepted": True, "job_id": job_id, "total": len(ids)}
+
+        processed, failed, skipped = await _run_batch_concurrently(
             ids,
             lambda pid: process_pending_edge_decision(pending_id=int(pid), decision=action),
         )
-        return {"success": True, "processed": processed, "failed": failed}
+        return {"success": True, "processed": processed, "skipped": skipped, "failed": failed}
     except HTTPException:
         raise
     except Exception:
@@ -3270,28 +3445,6 @@ async def graph_edge_action_batch_route(request: Request):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Internal server error")
 
-
-@app.post("/api/clarification")
-async def clarification_action_route(request: Request):
-    """Handle clarification responses."""
-    require_api_auth(request)
-    try:
-        body = await request.json()
-        shortcode = body.get("shortcode")
-        answer = body.get("answer")
-        
-        if not shortcode or not answer:
-            raise HTTPException(status_code=400, detail="Missing shortcode or answer")
-            
-        from core.clarifier import handle_response
-        result = handle_response(shortcode, answer)
-        return result
-    except HTTPException:
-        raise
-    except Exception as e:
-        import logging
-        logging.error(f"Clarification API error: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
 
 @app.post("/api/graph-merge-action")
 async def graph_merge_action_route(request: Request):
@@ -3379,14 +3532,21 @@ async def graph_node_action_batch_route(request: Request):
             pending_res = pending_q.execute()
             ids = [r['id'] for r in (pending_res.data or [])]
             if not ids:
-                return {"success": True, "processed": 0, "failed": 0}
+                return {"success": True, "processed": 0, "skipped": 0, "failed": 0}
 
         from core.pulse.graph import process_graph_pending_decision
-        processed, failed = await _run_batch_concurrently(
+        if body.get('background'):
+            job_id = await _run_batch_job(
+                'graph node', ids, action,
+                lambda pid: process_graph_pending_decision(int(pid), action),
+            )
+            return {"accepted": True, "job_id": job_id, "total": len(ids)}
+
+        processed, failed, skipped = await _run_batch_concurrently(
             ids,
             lambda pid: process_graph_pending_decision(int(pid), action),
         )
-        return {"success": True, "processed": processed, "failed": failed}
+        return {"success": True, "processed": processed, "skipped": skipped, "failed": failed}
     except HTTPException:
         raise
     except Exception:
@@ -4503,7 +4663,7 @@ async def pending_graph_edges_route(request: Request):
         if _snooze_ok(supabase, 'pending_graph_edges'):
             res = res.or_('snoozed_until.is.null,snoozed_until.lt.now')
         res = res.order('created_at', desc=True).limit(100).execute()
-        return {"data": res.data or []}
+        return {"data": enrich_pending_edges_with_conflicts(res.data or [])}
     except Exception:
         import traceback
         traceback.print_exc()
@@ -4534,7 +4694,7 @@ async def inbox_route(request: Request):
             try:
                 q = supabase.table('pending_nodes') \
                     .select('id, label, type:node_type, status, source_text, created_at, eval_context') \
-                    .in_('status', ['pending', 'flagged', 'awaiting_details', 'awaiting_clarification'])
+                    .in_('status', ['pending', 'flagged', 'awaiting_details'])
                 if _snooze_ok(supabase, 'pending_nodes'):
                     q = q.or_('snoozed_until.is.null,snoozed_until.lt.now')
                 res = await exec_query(q.order('created_at', desc=True).limit(100))
@@ -4550,7 +4710,7 @@ async def inbox_route(request: Request):
                 if _snooze_ok(supabase, 'pending_graph_edges'):
                     q = q.or_('snoozed_until.is.null,snoozed_until.lt.now')
                 res = await exec_query(q.order('created_at', desc=True).limit(100))
-                return res.data or []
+                return enrich_pending_edges_with_conflicts(res.data or [])
             except Exception:
                 return []
 

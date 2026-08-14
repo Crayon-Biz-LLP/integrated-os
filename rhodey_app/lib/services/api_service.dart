@@ -685,12 +685,16 @@ class ApiService {
     String channel,
     List<int> ids, {
     String action = 'approve',
+    bool background = false,
   }) async {
     if (ids.isEmpty) return ApiResult.ok({'processed': 0, 'failed': 0});
+    // background batches return {accepted, job_id} instantly and report the
+    // final counts via a completion push — so a short timeout is fine (and
+    // never auto-retry a mutation batch; re-POSTing double-processes).
     return post(
       '/api/$channel-action/batch',
-      body: {'ids': ids, 'action': action},
-      timeout: const Duration(seconds: 120),
+      body: {'ids': ids, 'action': action, if (background) 'background': true},
+      timeout: Duration(seconds: background ? 30 : 120),
       maxRetries: 0,
     );
   }
@@ -704,24 +708,16 @@ class ApiService {
   }
 
   /// Batch acknowledge FYI items.
-  Future<ApiResult<dynamic>> batchFyiAction(List<int> ids) async {
+  Future<ApiResult<dynamic>> batchFyiAction(
+    List<int> ids, {
+    bool background = false,
+  }) async {
     if (ids.isEmpty) return ApiResult.ok({'processed': 0, 'failed': 0});
     return post(
       '/api/fyi-action/batch',
-      body: {'ids': ids},
-      timeout: const Duration(seconds: 120),
+      body: {'ids': ids, if (background) 'background': true},
+      timeout: Duration(seconds: background ? 30 : 120),
       maxRetries: 0,
-    );
-  }
-
-  /// Submit a clarification answer via /api/clarification.
-  Future<ApiResult<dynamic>> submitClarification(
-    String shortcode,
-    String answer,
-  ) async {
-    return post(
-      '/api/clarification',
-      body: {'shortcode': shortcode, 'answer': answer},
     );
   }
 
@@ -788,7 +784,14 @@ class ApiService {
   /// when the endpoint is unavailable so callers fall back to the legacy
   /// per-endpoint path.
   Future<ApiResult<InboxBundle>> getInboxBundle() async {
-    final result = await get('/api/inbox');
+    // The default 10s GET timeout dies on a cold Modal container (measured
+    // ~29s cold). /api/inbox fans out to four pending-source queries, so give
+    // it 45s — the app already falls back to the legacy per-endpoint path on
+    // failure, and a stale-once view beats a failed view.
+    final result = await get(
+      '/api/inbox',
+      timeout: const Duration(seconds: 45),
+    );
     if (!result.success || result.data is! Map) {
       return ApiResult.fail(result.error ?? 'Inbox bundle unavailable');
     }
@@ -853,18 +856,16 @@ class ApiService {
 
       String title = label;
       String? description;
-      // Awaiting-details / awaiting-clarification nodes are surfaced so the
+      // Awaiting-details nodes (the person-context flow) are surfaced so the
       // user can approve (accept with context) or reject — the Inbox shows
-      // them with the CLARIFICATION badge.
+      // them with the CLARIFICATION badge. (awaiting_clarification is retired
+      // — plans/73.)
       String source = 'graph_node';
-      final awaiting = status == 'awaiting_details' ||
-          status == 'awaiting_clarification';
+      final awaiting = status == 'awaiting_details';
       if (awaiting) {
         source = 'clarification';
         title = label;
-        description = status == 'awaiting_clarification'
-            ? 'Awaiting your input — approve to accept, or reject'
-            : 'Needs context — approve to accept, or reject';
+        description = 'Needs context — approve to accept, or reject';
       } else if (nodeType == 'concept' && ctx != null) {
         final linked = ctx['linked_entity'] as String?;
         if (linked != null) {
@@ -898,12 +899,19 @@ class ApiService {
       final rel = edge['relationship'] as String? ?? 'relates_to';
       final conf = (edge['confidence'] as num?)?.toDouble();
       final ctx = edge['context'] as String?;
+      // Server-side contradiction hint (plans/73): the retired clarifier's
+      // "which is correct?" question now renders as a warning line on the
+      // card so the user decides in context. `conflict_with` carries the
+      // existing relationship(s) for the same node pair.
+      final conflict = edge['conflict_with'] as String?;
 
       return PendingDecision(
         id: edge['id'].toString(),
         source: 'graph_edge',
         title: '$src → $rel → $tgt',
-        description: ctx ?? 'Pending edge',
+        description: conflict != null
+            ? '⚠️ Conflicts with existing $conflict edge'
+            : (ctx ?? 'Pending edge'),
         confidence: conf,
         raw: edge,
       );
