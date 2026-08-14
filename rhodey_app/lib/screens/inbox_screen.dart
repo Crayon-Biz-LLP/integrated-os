@@ -1371,6 +1371,12 @@ class _InboxScreenState extends State<InboxScreen>
             await _api.post(
               '/api/graph-edge-action/batch',
               body: {'ids': ids, 'action': action},
+              // Same batch contract as batchChannelAction: the server
+              // parallelizes per-item LLM pipelines, so allow up to 120s;
+              // never auto-retry a mutation batch (re-POSTing re-processes
+              // decided items and doubles LLM cost).
+              timeout: const Duration(seconds: 120),
+              maxRetries: 0,
             ),
           );
           break;
@@ -1379,6 +1385,8 @@ class _InboxScreenState extends State<InboxScreen>
             await _api.post(
               '/api/graph-node-action/batch',
               body: {'ids': ids, 'action': action},
+              timeout: const Duration(seconds: 120),
+              maxRetries: 0,
             ),
           );
           break;

@@ -2620,6 +2620,38 @@ async def email_action_route(request: Request):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+async def _run_batch_concurrently(
+    ids: list, worker, concurrency: int = 5,
+) -> tuple[int, int]:
+    """Run a per-item decision worker over ids with bounded concurrency.
+
+    The old batch loops awaited every item serially — for approves each item
+    runs the full LLM planner+executor pipeline, so "Approve all" on a long
+    queue was N × 3 sequential LLM calls (minutes, and the app's 10s timeout
+    died first). Bounding at `concurrency` keeps the pipelines running in
+    parallel while capping simultaneous provider calls so we don't trip
+    Gemini/OpenRouter rate limits. Fail-closed per item: an exception counts
+    that item as failed, everything else proceeds.
+
+    Safe under the tenant facade: the handler's tenant scope is a
+    contextvar, which asyncio.gather child tasks inherit; each per-item
+    decision function additionally enters its own scope internally.
+    """
+    sem = asyncio.Semaphore(concurrency)
+
+    async def _guarded(item_id):
+        async with sem:
+            try:
+                await worker(item_id)
+                return True
+            except Exception:
+                return False
+
+    results = await asyncio.gather(*(_guarded(i) for i in ids))
+    processed = sum(1 for r in results if r)
+    return processed, len(results) - processed
+
+
 @app.post("/api/email-action/batch")
 async def email_action_batch_route(request: Request):
     """Batch approve/reject email items. One call, server processes all.
@@ -2649,14 +2681,10 @@ async def email_action_batch_route(request: Request):
             if not ids:
                 return {"success": True, "processed": 0, "failed": 0}
 
-        processed, failed = 0, 0
-        for i in range(0, len(ids), 100):
-            for pending_id in ids[i:i+100]:
-                try:
-                    await process_email_pending_decision(int(pending_id), action)
-                    processed += 1
-                except Exception:
-                    failed += 1
+        processed, failed = await _run_batch_concurrently(
+            ids,
+            lambda pid: process_email_pending_decision(int(pid), action),
+        )
         return {"success": True, "processed": processed, "failed": failed}
     except HTTPException:
         raise
@@ -2854,14 +2882,10 @@ async def call_action_batch_route(request: Request):
         action = body.get('action', '')
         if not ids or action not in ('approve', 'reject'):
             raise HTTPException(status_code=400, detail="ids and action required")
-        processed, failed = 0, 0
-        for i in range(0, len(ids), 100):
-            for pending_id in ids[i:i+100]:
-                try:
-                    await process_channel_pending_decision('call', int(pending_id), action)
-                    processed += 1
-                except Exception:
-                    failed += 1
+        processed, failed = await _run_batch_concurrently(
+            ids,
+            lambda pid: process_channel_pending_decision('call', int(pid), action),
+        )
         return {"success": True, "processed": processed, "failed": failed}
     except HTTPException:
         raise
@@ -2910,14 +2934,10 @@ async def whatsapp_action_batch_route(request: Request):
         action = body.get('action', '')
         if not ids or action not in ('approve', 'reject'):
             raise HTTPException(status_code=400, detail="ids and action required")
-        processed, failed = 0, 0
-        for i in range(0, len(ids), 100):
-            for pending_id in ids[i:i+100]:
-                try:
-                    await process_channel_pending_decision('whatsapp', int(pending_id), action)
-                    processed += 1
-                except Exception:
-                    failed += 1
+        processed, failed = await _run_batch_concurrently(
+            ids,
+            lambda pid: process_channel_pending_decision('whatsapp', int(pid), action),
+        )
         return {"success": True, "processed": processed, "failed": failed}
     except HTTPException:
         raise
@@ -2966,14 +2986,10 @@ async def teams_action_batch_route(request: Request):
         action = body.get('action', '')
         if not ids or action not in ('approve', 'reject'):
             raise HTTPException(status_code=400, detail="ids and action required")
-        processed, failed = 0, 0
-        for i in range(0, len(ids), 100):
-            for pending_id in ids[i:i+100]:
-                try:
-                    await process_channel_pending_decision('teams', int(pending_id), action)
-                    processed += 1
-                except Exception:
-                    failed += 1
+        processed, failed = await _run_batch_concurrently(
+            ids,
+            lambda pid: process_channel_pending_decision('teams', int(pid), action),
+        )
         return {"success": True, "processed": processed, "failed": failed}
     except HTTPException:
         raise
@@ -3194,14 +3210,10 @@ async def graph_edge_action_batch_route(request: Request):
             if not ids:
                 return {"success": True, "processed": 0, "failed": 0}
 
-        processed, failed = 0, 0
-        for i in range(0, len(ids), 100):
-            for pending_id in ids[i:i+100]:
-                try:
-                    await process_pending_edge_decision(pending_id=int(pending_id), decision=action)
-                    processed += 1
-                except Exception:
-                    failed += 1
+        processed, failed = await _run_batch_concurrently(
+            ids,
+            lambda pid: process_pending_edge_decision(pending_id=int(pid), decision=action),
+        )
         return {"success": True, "processed": processed, "failed": failed}
     except HTTPException:
         raise
@@ -3322,14 +3334,10 @@ async def graph_node_action_batch_route(request: Request):
                 return {"success": True, "processed": 0, "failed": 0}
 
         from core.pulse.graph import process_graph_pending_decision
-        processed, failed = 0, 0
-        for i in range(0, len(ids), 100):
-            for pending_id in ids[i:i+100]:
-                try:
-                    await process_graph_pending_decision(int(pending_id), action)
-                    processed += 1
-                except Exception:
-                    failed += 1
+        processed, failed = await _run_batch_concurrently(
+            ids,
+            lambda pid: process_graph_pending_decision(int(pid), action),
+        )
         return {"success": True, "processed": processed, "failed": failed}
     except HTTPException:
         raise

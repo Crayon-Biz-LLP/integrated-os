@@ -676,6 +676,11 @@ class ApiService {
   /// Batch approve/reject channel items (email/whatsapp/call/teams) by id.
   /// The channel batch routes require explicit ids (unlike the graph batch
   /// routes which approve-all when ids are omitted).
+  ///
+  /// Timeout is long (120s) because the server processes items in parallel
+  /// but each approve runs the full LLM planner+executor pipeline; retries
+  /// are DISABLED (maxRetries: 0) because re-POSTing a batch would
+  /// re-process already-decided items and double the LLM cost.
   Future<ApiResult<dynamic>> batchChannelAction(
     String channel,
     List<int> ids, {
@@ -685,6 +690,8 @@ class ApiService {
     return post(
       '/api/$channel-action/batch',
       body: {'ids': ids, 'action': action},
+      timeout: const Duration(seconds: 120),
+      maxRetries: 0,
     );
   }
 
