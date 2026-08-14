@@ -50,23 +50,23 @@ async def process_channel_pending_decision(channel: str, pending_id: int, decisi
 
 async def _process_channel_pending_decision(channel: str, pending_id: int, decision: str, auto_decided: bool = False, rejection_context: str = None) -> dict:
     """Inner implementation (M3: tenant scope applied by the public wrapper)."""
-    row_res = supabase.table('messages')\
-        .select('*')\
-        .eq('id', pending_id)\
-        .eq('channel', channel)\
-        .is_('danny_decision', 'null')\
-        .eq('direction', 'incoming')\
-        .limit(1)\
-        .maybe_single()\
-        .execute()
+    from core.services.db import maybe_single_safe
+    row_res = maybe_single_safe(
+        supabase.table('messages')
+        .select('*')
+        .eq('id', pending_id)
+        .eq('channel', channel)
+        .is_('danny_decision', 'null')
+        .eq('direction', 'incoming')
+    )
 
-    if not row_res.data:
-        decided = supabase.table('messages')\
-            .select('id, danny_decision')\
-            .eq('id', pending_id)\
-            .maybe_single()\
-            .execute()
-        if decided.data and decided.data.get('danny_decision'):
+    if not row_res or not getattr(row_res, 'data', None):
+        decided = maybe_single_safe(
+            supabase.table('messages')
+            .select('id, danny_decision')
+            .eq('id', pending_id)
+        )
+        if decided and getattr(decided, 'data', None) and decided.data.get('danny_decision'):
             return {"success": False, "message": f"This {channel} item was already {decided.data['danny_decision']}.", "action": None}
         return {"success": False, "message": f"Pending {channel} item {pending_id} not found.", "action": None}
 

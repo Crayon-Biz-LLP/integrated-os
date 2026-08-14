@@ -703,6 +703,17 @@ class ApiService {
     );
   }
 
+  /// Batch acknowledge FYI items.
+  Future<ApiResult<dynamic>> batchFyiAction(List<int> ids) async {
+    if (ids.isEmpty) return ApiResult.ok({'processed': 0, 'failed': 0});
+    return post(
+      '/api/fyi-action/batch',
+      body: {'ids': ids},
+      timeout: const Duration(seconds: 120),
+      maxRetries: 0,
+    );
+  }
+
   /// Submit a clarification answer via /api/clarification.
   Future<ApiResult<dynamic>> submitClarification(
     String shortcode,

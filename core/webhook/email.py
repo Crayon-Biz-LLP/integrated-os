@@ -48,7 +48,7 @@ async def _process_email_pending_decision(pending_id: int, decision: str, supaba
         .eq('direction', 'incoming')
     )
 
-    if not row_res.data:
+    if not row_res or not getattr(row_res, 'data', None):
         decided = maybe_single_safe(
             client.table('messages')
             .select('id, danny_decision')
@@ -56,7 +56,7 @@ async def _process_email_pending_decision(pending_id: int, decision: str, supaba
             .eq('channel', 'email')
             .not_.is_('danny_decision', 'null')
         )
-        if decided and decided.data:
+        if decided and getattr(decided, 'data', None):
             return {
                 "success": False, "action": "already_decided",
                 "message": f"[{pending_id}] was already {decided.data['danny_decision']}."

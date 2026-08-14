@@ -1354,10 +1354,16 @@ class _InboxScreenState extends State<InboxScreen>
 
     var processed = 0;
     var failed = 0;
+    
+    setState(() => _loading = true);
+
     void tally(ApiResult<dynamic> r) {
       if (r.success) {
-        final n = (r.data is Map) ? (r.data as Map)['processed'] : null;
-        processed += (n is int) ? n : 1;
+        final data = r.data is Map ? r.data as Map : {};
+        final p = data['processed'];
+        final f = data['failed'];
+        processed += (p is int) ? p : 1;
+        failed += (f is int) ? f : 0;
       } else {
         failed += 1;
       }
@@ -1435,6 +1441,9 @@ class _InboxScreenState extends State<InboxScreen>
 
     var processed = 0;
     var failed = 0;
+    
+    setState(() => _loading = true);
+    
     for (final id in _selectedDraftIds.toList()) {
       final result = await _api.draftAction(id, action: action);
       if (result.success) {
@@ -1465,14 +1474,20 @@ class _InboxScreenState extends State<InboxScreen>
 
     var processed = 0;
     var failed = 0;
-    for (final id in _selectedFyiIds.toList()) {
-      final result = await _api.acknowledgeFyi(id);
-      if (result.success) {
-        processed += 1;
-      } else {
-        failed += 1;
-      }
+    
+    setState(() => _loading = true);
+
+    final result = await _api.batchFyiAction(_selectedFyiIds.toList());
+    if (result.success) {
+      final data = result.data is Map ? result.data as Map : {};
+      final p = data['processed'];
+      final f = data['failed'];
+      processed = (p is int) ? p : 1;
+      failed = (f is int) ? f : 0;
+    } else {
+      failed = _selectedFyiIds.length;
     }
+    
     if (!mounted) return;
     _selectionMode = false;
     _selectedFyiIds.clear();

@@ -3145,6 +3145,54 @@ async def fyi_action_route(request: Request):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@app.post("/api/fyi-action/batch")
+async def fyi_action_batch_route(request: Request):
+    """Batch acknowledge FYI items. One call, server processes all."""
+    require_api_auth(request)
+    try:
+        body = await request.json()
+        ids = body.get('ids', [])
+        if not ids:
+            return {"success": True, "processed": 0, "failed": 0}
+
+        async def _ack(item_id):
+            supabase = tenant_aware_client()
+            msg_row = None
+            try:
+                row = supabase.table('messages').select('id, channel, suggested_title, subject, sender_name, summary, suggested_project, metadata').eq('id', int(item_id)).limit(1).execute()
+                if row.data:
+                    msg_row = row.data[0]
+            except Exception:
+                pass
+            
+            supabase.table('messages').update({'danny_decision': 'acknowledged'}).eq('id', int(item_id)).is_('danny_decision', 'null').eq('direction', 'incoming').eq('classification', 'fyi').execute()
+
+            if msg_row:
+                try:
+                    features = build_decision_features(msg_row, msg_row.get('channel') or 'email')
+                except Exception:
+                    features = {}
+                await emit_observation(
+                    subsystem='fyi_pipeline',
+                    event_type='engagement',
+                    outcome='confirmed',
+                    predicted='fyi',
+                    actual='acknowledged',
+                    features=features,
+                    source='fyi_action',
+                )
+            audit_log_sync("fyi_action", "INFO", f"FYI item {item_id} acknowledged from app Inbox (batch)")
+
+        processed, failed = await _run_batch_concurrently(ids, _ack)
+        return {"success": True, "processed": processed, "failed": failed}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"FYI batch action error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+
 # --- WHATSAPP INGEST (Receives MacroDroid webhook) ---
 
 # --- GRAPH EDGE DECISIONS (approve/reject/edit from frontend) ---
@@ -4550,7 +4598,7 @@ async def inbox_route(request: Request):
         # Undecided FYI items — the Inbox's "For your info" section.
         async def _fyi():
             try:
-                return await asyncio.to_thread(fetch_fyi_messages, supabase, 20)
+                return await asyncio.to_thread(fetch_fyi_messages, supabase, 100)
             except Exception:
                 return []
 
