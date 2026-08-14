@@ -118,8 +118,9 @@ async def create_task_direct(
 
         task_id = res.data[0]['id']
 
-        # Calendar sync if reminder_at is set
-        if reminder_at:
+        # Calendar sync only for explicit times or recurring
+        has_explicit_time = reminder_at and ('T' in str(reminder_at) or ':' in str(reminder_at))
+        if reminder_at and (has_explicit_time or recurrence):
             try:
                 from core.services.google_service import check_conflict
                 formatted = format_rfc3339(reminder_at)
@@ -139,7 +140,7 @@ async def create_task_direct(
 
         # Google Tasks sync — persist returned ID for downstream completion sync
         try:
-            g_task_id = sync_to_google(get_tasks_service(), title=title, task_id=None, status="needsAction", due_at=deadline or reminder_at)
+            g_task_id = sync_to_google(get_tasks_service(), title=title, task_id=None, status="needsAction", due_at=deadline or reminder_at, explicit_time=has_explicit_time)
             if g_task_id:
                 supabase.table('tasks').update({'google_task_id': g_task_id}).eq('id', task_id).execute()
         except Exception as gt_e:
@@ -373,18 +374,21 @@ def update_task_status(task_id: int, status: str = "done", duration_mins: int = 
         g_id = td.get('google_task_id')
         e_id = td.get('google_event_id')
         
+        has_explicit_time = reminder_at and ('T' in str(reminder_at) or ':' in str(reminder_at))
+        is_recurring = recurrence or td.get('recurrence')
+        
         if status in ['done', 'cancelled'] and e_id:
             delete_calendar_event(e_id)
             e_id = None
-        elif new_reminder:
-            e_id = sync_to_calendar(td['title'], new_reminder, event_id=e_id, duration_mins=duration_mins, priority=td.get('priority', 'important'), recurrence=recurrence or td.get('recurrence'))
+        elif new_reminder and (has_explicit_time or is_recurring):
+            e_id = sync_to_calendar(td['title'], new_reminder, event_id=e_id, duration_mins=duration_mins, priority=td.get('priority', 'important'), recurrence=is_recurring)
         elif e_id:
             delete_calendar_event(e_id)
             e_id = None
 
         if g_id:
             try:
-                sync_to_google(get_tasks_service(), title=td['title'], task_id=g_id, status=status, due_at=new_reminder)
+                sync_to_google(get_tasks_service(), title=td['title'], task_id=g_id, status=status, due_at=new_reminder, explicit_time=has_explicit_time)
             except Exception as e:
                 audit_log_sync("tools", "ERROR", f"Google Tasks sync failed: {e}")
 

@@ -669,10 +669,12 @@ async def _process_pulse_impl(auth_secret: str = None, request_id: str = None, t
         horizon_cutoff = now + timedelta(days=2)
 
         for t in active_tasks:
-            raw_reminder = t.get('reminder_at')
+            raw_reminder = t.get('reminder_at') or t.get('deadline')
             if raw_reminder:
                 try:
                     clean_reminder = str(raw_reminder).replace(' ', 'T').replace('Z', '+00:00')
+                    if len(clean_reminder) == 10:
+                        clean_reminder += "T00:00:00+00:00"
                     task_date = datetime.fromisoformat(clean_reminder)
                     if task_date.tzinfo is None:
                         task_date = task_date.replace(tzinfo=ist_offset)

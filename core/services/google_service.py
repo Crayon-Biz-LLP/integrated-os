@@ -318,7 +318,10 @@ def sync_to_google(service, title=None, due_at=None, task_id=None, status='todo'
         except Exception:
             return None
 
-    rfc_date = format_rfc3339(due_at)
+    if due_at and not explicit_time and len(str(due_at)) <= 10:
+        rfc_date = f"{due_at}T00:00:00.000Z"
+    else:
+        rfc_date = format_rfc3339(due_at)
 
     # Time-Visibility Title Hack — prefix with 🕒 HH:MM when explicit time is set
     if explicit_time and rfc_date and 'T' in str(rfc_date):

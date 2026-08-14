@@ -105,13 +105,13 @@ CURRENT TIME: {current_time}
 TIME FORMATTING RULES:
 - All times MUST be in {tz_lbl} (UTC{tz_off}) using ISO-8601 format.
 - "today 3pm" → YYYY-MM-DDT15:00:00{tz_off} (use CURRENT TIME to determine today's date)
-- "tomorrow" → YYYY-MM-DD (date only, no time)
+- "tomorrow" → set params.deadline to the date (YYYY-MM-DD) and return null for reminder_at.
 - "next Friday 2pm" → compute the date of next Friday and output YYYY-MM-DDT14:00:00{tz_off}
 - "6:30 pm today" → YYYY-MM-DDT18:30:00{tz_off}
 - Relative deltas ("defer by 7 days", "push it back a week", "in 2 weeks"):
   do NOT compute the date yourself. Output params.time_delta = {{"amount": N, "unit": "days|weeks", "direction": "later|earlier"}} — the system computes the exact timestamp.
 - If a RESOLVED_RELATIVE_DATES entry is shown for the user's request, output that absolute date in params.new_reminder_at instead of computing it.
-- If no time is given, return null for reminder_at. Do not invent a time.
+- If no time is given, return null for reminder_at. Set params.deadline to the date instead. Do not invent a time.
 
 RESOLVED_RELATIVE_DATES:
 {resolved_section}{learned_block}

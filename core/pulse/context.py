@@ -489,14 +489,16 @@ class ContextProvider:
         
         for t in tasks:
             is_urgent = t.get('priority') == 'urgent'
-            reminder = t.get('reminder_at')
+            reminder = t.get('reminder_at') or t.get('deadline')
             
             # Check overdue or due today/tomorrow
             is_due_soon = False
             if reminder:
-                if reminder < now_iso:
+                # Pad date-only string for safe string comparison
+                cmp_rem = f"{reminder}T00:00:00+00:00" if len(str(reminder)) == 10 else reminder
+                if cmp_rem < now_iso:
                     is_due_soon = True # overdue
-                elif reminder < tomorrow_iso:
+                elif cmp_rem < tomorrow_iso:
                     is_due_soon = True # due today
             
             if is_org_routing_enabled():
@@ -508,10 +510,12 @@ class ContextProvider:
                 o_name = ""
                 formatted = f"[INBOX] {t.get('title')} ({t.get('priority')}) [ID:{t.get('id')}]"
             
-            # Horizon guard: skip non-urgent tasks with reminder_at > 2 days out
+            # Horizon guard: skip non-urgent tasks with reminder_at/deadline > 2 days out
             if not is_urgent and not is_due_soon and reminder:
                 try:
                     clean_reminder = str(reminder).replace(' ', 'T').replace('Z', '+00:00')
+                    if len(clean_reminder) == 10:
+                        clean_reminder += "T00:00:00+00:00"
                     reminder_dt = datetime.fromisoformat(clean_reminder)
                     if reminder_dt.tzinfo is None:
                         reminder_dt = reminder_dt.replace(tzinfo=timezone.utc)
@@ -702,7 +706,7 @@ class ContextProvider:
             seven_days_ago = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
             
             # Pending
-            p_res = supabase.table('messages').select('id, channel, suggested_title, sender_name, has_memory_value').in_('channel', ['email', 'call', 'whatsapp']).is_('danny_decision', 'null').order('created_at', desc=True).limit(50).execute()
+            p_res = supabase.table('messages').select('id, channel, suggested_title, sender_name, has_memory_value').in_('channel', ['email', 'call', 'whatsapp']).is_('danny_decision', 'null').eq('direction', 'incoming').order('created_at', desc=True).limit(50).execute()
             if p_res.data:
                 for t in p_res.data:
                     if t['channel'] == 'whatsapp' and t.get('has_memory_value'):
