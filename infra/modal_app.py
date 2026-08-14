@@ -161,15 +161,17 @@ def brief_tenant(uid: str, auth_secret: str | None = None, trigger: str = "cron"
 
 
 # ── Beeper Bridge (Phase B1): sync the Matrix stream every 60s ───────
-# Zero-hardware capture path (B1 CONFIRMED): the stored Matrix token
-# authenticates against the PUBLIC homeserver matrix.beeper.com, so this
-# scheduled function is the bridge-agent — no Mac, no tunnel. Each tick
-# advances the per-tenant sync cursor and records the user's own sends
-# through record_outgoing_message(), which fires the auto-resolve rule
-# (stale pending decisions in a replied-to chat stop being surfaced).
+# PAUSED (Aug 13): the scheduled tick is removed. The VPS Desktop bridge
+# (core/skills/beeper_desktop.py, cron every 5 min on the always-on Oracle
+# box) is now the primary capture path — it reads the Desktop API token from
+# the VPS .env, not the Modal secret, and it works with the Mac off. The
+# legacy Matrix token here is dead, and two pollers would double the LLM
+# cost. The function stays defined so it can be invoked manually if ever
+# needed, but it no longer auto-fires. To re-enable, restore:
+#     schedule=modal.Period(seconds=60),
 @app.function(
     secrets=secrets,
-    schedule=modal.Period(seconds=60),
+    # PAUSED: schedule=modal.Period(seconds=60),
     # Headroom for the FIRST tick: an initial /sync over 3,391 rooms is a
     # large payload; subsequent incremental syncs are tiny. 300s covers the
     # cold-start full sync comfortably.

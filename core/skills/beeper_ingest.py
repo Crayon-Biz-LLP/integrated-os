@@ -83,8 +83,15 @@ def resolve_beeper_token(uid: str | None = None) -> str | None:
                 .maybe_single()
                 .execute()
             )
-            if res.data and res.data.get("refresh_token"):
-                return str(res.data["refresh_token"]).strip() or None
+            # maybe_single() returns None (not an empty result) when no row
+            # matches — guard before .data so a missing token is a clean None,
+            # not an AttributeError that audits a WARNING every 60s per tenant
+            # and masks the real state (the bridge was logging this noise since
+            # deploy while the actual failure — no valid Matrix token — stayed
+            # invisible). Real errors (network/RLS) still warn.
+            data = res.data if res else None
+            if data and data.get("refresh_token"):
+                return str(data["refresh_token"]).strip() or None
         except Exception as e:
             audit_log_sync("beeper", "WARNING", f"token lookup failed for {uid}: {e}")
     token = os.getenv("BEEPER_MATRIX_TOKEN")
@@ -258,7 +265,14 @@ def _cursor_key(uid: str | None) -> str:
 
 
 def _load_cursor(supabase, uid: str | None) -> str | None:
+    """Load the persisted sync cursor ('since') from core_config.
+
+    core_config.content is a TEXT column (JSON string, not a dict) — the
+    old isinstance(content, dict) check was always False, so the cursor
+    never loaded and /sync always started from scratch each tick.
+    """
     try:
+        import json
         res = (
             supabase.table("core_config")
             .select("content")
@@ -268,8 +282,15 @@ def _load_cursor(supabase, uid: str | None) -> str | None:
             .execute()
         )
         data = res.data
-        if data and isinstance(data.get("content"), dict):
-            return data["content"].get("since")
+        if not data:
+            return None
+        content = data.get("content")
+        if isinstance(content, dict):
+            return content.get("since")
+        if isinstance(content, str) and content.strip():
+            parsed = json.loads(content)
+            if isinstance(parsed, dict):
+                return parsed.get("since")
     except Exception:
         pass
     return None
@@ -277,10 +298,14 @@ def _load_cursor(supabase, uid: str | None) -> str | None:
 
 def _save_cursor(supabase, uid: str | None, since: str) -> None:
     try:
+        # .execute() is mandatory — supabase-py builds requests lazily; a
+        # bare core_config_upsert(...) is a silent no-op. Regression: the
+        # bridge never persisted cursors because this was missing (zero
+        # beeper_sync_cursor rows in core_config ever).
         core_config_upsert(supabase, {
             "key": _cursor_key(uid),
             "content": {"since": since, "updated_at": datetime.now(timezone.utc).isoformat()},
-        })
+        }).execute()
     except Exception as e:
         audit_log_sync("beeper", "WARNING", f"cursor save failed: {e}")
 
@@ -305,8 +330,12 @@ def load_room_map(supabase, uid: str | None) -> dict:
     Shared with the send path (beeper_send) so the inverse lookup
     (chat_key/phone → room_id) reads the exact same persisted map the
     bridge writes.
+
+    core_config.content is a TEXT column (JSON string) — parse it like
+    _load_cursor does.
     """
     try:
+        import json
         res = (
             supabase.table("core_config")
             .select("content")
@@ -316,8 +345,14 @@ def load_room_map(supabase, uid: str | None) -> dict:
             .execute()
         )
         data = res.data
-        if data and isinstance(data.get("content"), dict):
-            return dict(data["content"])
+        if not data:
+            return {}
+        content = data.get("content")
+        if isinstance(content, dict):
+            return dict(content)
+        if isinstance(content, str) and content.strip():
+            parsed = json.loads(content)
+            return dict(parsed) if isinstance(parsed, dict) else {}
     except Exception:
         pass
     return {}
@@ -325,10 +360,11 @@ def load_room_map(supabase, uid: str | None) -> dict:
 
 def save_room_map(supabase, uid: str | None, room_map: dict) -> None:
     try:
+        # .execute() mandatory (lazy builder — see _save_cursor).
         core_config_upsert(supabase, {
             "key": room_map_key(uid),
             "content": room_map,
-        })
+        }).execute()
     except Exception as e:
         audit_log_sync("beeper", "WARNING", f"room map save failed: {e}")
 

@@ -241,6 +241,39 @@ def test_resolve_beeper_token_none_when_absent():
         assert resolve_beeper_token("u1") is None
 
 
+def test_resolve_beeper_token_no_row_is_clean_none_no_warning():
+    """Regression: supabase-py's maybe_single().execute() returns None ITSELF
+    (not an empty result) when no row matches. Pre-fix this crashed on .data
+    and audited a WARNING every 60s per tenant — the exact audit spam that
+    masked the beeper outage (bridge skipped every tick since deploy while
+    the logs filled with 'token lookup failed'). Must be a clean None with no
+    warning so a missing token resolves quietly to the env fallback."""
+    fake = MagicMock()
+    fake.table.return_value.select.return_value.eq.return_value.eq.return_value.limit.return_value.maybe_single.return_value.execute.return_value = None
+    warned = []
+    with patch("core.skills.beeper_ingest.tenant_aware_client", return_value=fake), \
+         patch("core.skills.beeper_ingest.audit_log_sync",
+               side_effect=lambda *a, **k: warned.append(a)), \
+         patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("BEEPER_MATRIX_TOKEN", None)
+        assert resolve_beeper_token("u1") is None
+    assert warned == [], f"no-row lookup must not audit warnings, got {warned}"
+
+
+def test_resolve_beeper_token_no_row_falls_back_to_env():
+    """Same real-world no-row shape: clean fallback to BEEPER_MATRIX_TOKEN
+    with no crash and no warning (env is the production token source)."""
+    fake = MagicMock()
+    fake.table.return_value.select.return_value.eq.return_value.eq.return_value.limit.return_value.maybe_single.return_value.execute.return_value = None
+    warned = []
+    with patch("core.skills.beeper_ingest.tenant_aware_client", return_value=fake), \
+         patch("core.skills.beeper_ingest.audit_log_sync",
+               side_effect=lambda *a, **k: warned.append(a)), \
+         patch.dict(os.environ, {"BEEPER_MATRIX_TOKEN": "envtok"}, clear=False):
+        assert resolve_beeper_token("u1") == "envtok"
+    assert warned == []
+
+
 # ── process_sync_tick (incremental-sync identity persistence) ──────────
 
 def _wa_room_state(phone="919176322898", name=None):

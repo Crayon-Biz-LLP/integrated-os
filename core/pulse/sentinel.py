@@ -796,6 +796,73 @@ Context:
         except Exception as ge_err:
             audit_log_sync("sentinel", "WARNING", f"Graph integrity sweep error (non-critical): {ge_err}")
 
+        # --- PIGGYBACK: VPS Beeper capture liveness ---
+        # The VPS Desktop bridge is the SINGLE capture path (Mac launchd
+        # agent + Modal Matrix bridge are retired). If its cron tick stops
+        # landing, WhatsApp capture goes dark silently — so the Sentinel
+        # (runs on Modal every 5 min, fully independent of the VPS) checks
+        # the bridge's heartbeat and raises a Telegram alert. Throttled by
+        # an audit-log dedup marker so it alerts at most once per window,
+        # not every cycle.
+        try:
+            from datetime import datetime as _dt, timezone as _tz
+            hb_res = supabase.table('core_config') \
+                .select('content, updated_at') \
+                .eq('key', 'beeper_desktop_last_tick') \
+                .limit(1) \
+                .maybe_single() \
+                .execute()
+            hb = hb_res.data if hb_res else None
+            hb_content = (hb or {}).get('content') or {}
+            # core_config.content is a TEXT column — comes back as a JSON
+            # string, not a dict (the same trap that broke cursor loads).
+            import json as _json
+            if isinstance(hb_content, str) and hb_content.strip():
+                try:
+                    hb_content = _json.loads(hb_content)
+                except (TypeError, ValueError):
+                    hb_content = {}
+            hb_raw = hb_content.get('tick_ts') if isinstance(hb_content, dict) else None
+            hb_dt = None
+            if hb_raw:
+                try:
+                    hb_dt = _dt.fromisoformat(hb_raw.replace('Z', '+00:00'))
+                except (TypeError, ValueError):
+                    hb_dt = None
+            now_dt = _dt.now(_tz.utc)
+            stale_min = 15  # 3 missed 5-min ticks
+            if hb_dt and (now_dt - hb_dt).total_seconds() > stale_min * 60:
+                marker = "vps_capture_stale"
+                recent_alert = supabase.table('audit_logs') \
+                    .select('id') \
+                    .eq('service', 'sentinel') \
+                    .ilike('message', f'%{marker}%') \
+                    .gte('created_at', (now_dt - timedelta(minutes=60)).isoformat()) \
+                    .limit(1) \
+                    .execute()
+                if not recent_alert.data:
+                    last_tick = hb_raw or "never"
+                    errs = hb_content.get('errors', '?') if isinstance(hb_content, dict) else '?'
+                    alert_msg = ("🟠 *WhatsApp capture may be down*\n\n"
+                                 "The VPS Beeper bridge hasn't ticked in over "
+                                 f"{stale_min} minutes.\nLast tick: {last_tick}\n"
+                                 f"Last errors: {errs}\n\n"
+                                 "Check the VPS (Beeper Desktop + cron) — capture "
+                                 "is paused until it recovers.")
+                    success = await send_telegram(telegram_chat_id, alert_msg)
+                    audit_log_sync("sentinel", "WARNING",
+                                   f"{marker}: VPS bridge stale >{stale_min}m (last {last_tick}, "
+                                   f"alert sent={success})")
+            elif hb_dt is None and not hb:
+                # No heartbeat row at all yet — cold start on the VPS may
+                # still be mid-first-tick, so don't alarm. Log once for
+                # observability only.
+                audit_log_sync("sentinel", "INFO",
+                               "vps_capture: no heartbeat row yet (first tick pending)")
+        except Exception as vps_err:
+            audit_log_sync("sentinel", "WARNING",
+                           f"VPS liveness check error (non-critical): {vps_err}")
+
         await complete_pulse_run(supabase, run_id, status="completed",
             metadata={"alerted": alerted_count})
         audit_log_sync("sentinel", "INFO",
