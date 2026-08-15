@@ -575,32 +575,50 @@ class _BriefingInlineCardState extends State<_BriefingInlineCard> {
     return '${months[ts.month - 1]} ${ts.day}';
   }
 
-  /// Section labels the Pulse briefing engine actually emits. Restricting the
-  /// header match to this vocabulary prevents a short bullet like "🔴 Call
-  /// Bob" from being misclassified as a section header.
-  static const _sectionLabels = {'work', 'home', 'ideas', 'schedule', 'vault'};
+  /// Section labels the Pulse briefing engine actually emits. Mirror of the
+  /// server's authoritative vocabulary — `core/pulse/briefing.py`
+  /// `_BARE_SECTION_NAMES` plus the M9.3 board skeleton
+  /// (`core/services/briefing_sections.py`): Schedule · Done · Work · Home ·
+  /// Church · Ideas · Stale Loops. Restricting the vocabulary (plus the
+  /// bold-wrapped fallback below) prevents a short bullet like "🔴 Call Bob"
+  /// from being misclassified as a section header.
+  static const _sectionLabels = {
+    'home', 'work', 'church', 'ideas', 'schedule', 'done',
+    'stale', 'stale loops', 'backlog', 'weekend recon', 'urgent', 'important', 'vault',
+  };
+
+  /// True when the whole trimmed line is `**bold**`-wrapped. The pulse prompt
+  /// mandates `**bold**` for section breaks and nothing else, so a fully bold
+  /// line is a section header even when the label isn't in [_sectionLabels]
+  /// (e.g. a creative "**Priority Watch**") — splitting beats fusing it into
+  /// the intro paragraph as a run-on.
+  static final RegExp _wholeLineBold = RegExp(r'^\*\*.+\*\*$');
 
   /// Parse the briefing body into (header, bulletLines) section groups.
-  /// Section headers look like "🚀 Work", "🏠 Home", "💡 Ideas" — or, since
-  /// the Aug-10 pulse change, bold markdown like "**Work**". A line that is
-  /// exactly a known label (optionally **bold**-wrapped, optionally emoji
-  /// prefixed) is a section header; anything else under one is a bullet.
+  ///
+  /// A section header is one of:
+  ///  - a line that is entirely `**bold**`-wrapped (e.g. "**Work**"),
+  ///  - a known [_sectionLabels] label, optionally `**`-wrapped and/or emoji
+  ///    prefixed ("🚀 Work", "**Done**", "⛪ Church", bare "Home").
+  /// Anything else under a header is a bullet. The raw line is kept so the
+  /// renderer paints bold headers bold — markers are stripped only for
+  /// matching.
   List<_BriefingSection> _sections() {
     final sections = <_BriefingSection>[];
     _BriefingSection? current;
     for (final line in widget.fullText.split('\n')) {
       final t = line.trim();
       if (t.isEmpty) continue;
-      // Header: emoji (non-ASCII char) + one of the known section labels,
-      // or a bare/`**`-wrapped label line. Strip `*` markers for matching
-      // only — the raw line is kept so the renderer paints the label bold.
-      var candidate =
-          t.replaceAll(RegExp(r'^\*+'), '').replaceAll(RegExp(r'\*+$'), '').trim();
+      // Strip all `**` markers for matching only — handles "**Work**",
+      // "🚀 **Work**" and "🏠 **Home**" alike. Bullets keep their "- "
+      // prefix so they never match the emoji-header pattern below.
+      final candidate = t.replaceAll('**', '').trim();
       final headerMatch =
           RegExp(r'^([^\x00-\x7F]{1,4})\s+([A-Za-z][A-Za-z ]{0,20})$')
               .firstMatch(candidate);
       final label = headerMatch?.group(2) ?? candidate;
-      if (_sectionLabels.contains(label.trim().toLowerCase())) {
+      if (_wholeLineBold.hasMatch(t) ||
+          _sectionLabels.contains(label.trim().toLowerCase())) {
         current = _BriefingSection(t, []);
         sections.add(current);
         continue;
@@ -614,6 +632,11 @@ class _BriefingInlineCardState extends State<_BriefingInlineCard> {
 
   /// Intro paragraph — everything between the title line and the first
   /// section header (e.g. "The signal's quiet on the update front...").
+  ///
+  /// Bullet-prefixed and fully bold-wrapped lines are section artifacts, not
+  /// narrative — if one shows up before the first recognised header (an
+  /// unrecognised section), stop collecting so the intro never fuses headers
+  /// and bullets into a run-on paragraph.
   String _intro() {
     final lines = widget.fullText.split('\n')
         .map((l) => l.trim())
@@ -625,10 +648,17 @@ class _BriefingInlineCardState extends State<_BriefingInlineCard> {
     final buf = <String>[];
     for (final line in lines) {
       if (line == firstHeader) break;
+      if (line.startsWith('-') ||
+          line.startsWith('•') ||
+          _wholeLineBold.hasMatch(line)) {
+        break;
+      }
       buf.add(line);
     }
-    // Skip the title line itself.
-    return buf.skip(1).join(' ');
+    // Skip the title line itself. Keep the opening's own line breaks (one
+    // per line) instead of fusing a multi-line opening into a run-on
+    // paragraph — Telegram shows the opening paragraphs on separate lines.
+    return buf.skip(1).join('\n');
   }
 
   @override
@@ -701,7 +731,9 @@ class _BriefingInlineCardState extends State<_BriefingInlineCard> {
             if (sections.isNotEmpty) ...[
               if (intro.isNotEmpty)
                 Padding(
-                  padding: const EdgeInsets.only(bottom: 4),
+                  // Air between the opening and the first section — closer to
+                  // Telegram's blank-line rhythm than the old 4px squeeze.
+                  padding: const EdgeInsets.only(bottom: 8),
                   child: Text.rich(
                     TextSpan(
                       style: AppTheme.body.copyWith(
@@ -721,10 +753,12 @@ class _BriefingInlineCardState extends State<_BriefingInlineCard> {
                     children: markdownBoldSpans(section.header),
                   ),
                 ),
-                const SizedBox(height: 2),
+                const SizedBox(height: 4),
                 for (final item in section.items)
                   Padding(
-                    padding: const EdgeInsets.only(bottom: 2),
+                    padding: const EdgeInsets.only(bottom: 4),
+                    // No maxLines cap: bullets render in full like Telegram —
+                    // a long task title is never cut off mid-thought.
                     child: Text.rich(
                       TextSpan(
                         style: AppTheme.body.copyWith(
@@ -732,11 +766,11 @@ class _BriefingInlineCardState extends State<_BriefingInlineCard> {
                         ),
                         children: markdownBoldSpans(item),
                       ),
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
-                const SizedBox(height: 4),
+                // Section-to-section gap — reads as the blank line Telegram
+                // puts between sections.
+                const SizedBox(height: 10),
               ],
             ] else
               Text.rich(

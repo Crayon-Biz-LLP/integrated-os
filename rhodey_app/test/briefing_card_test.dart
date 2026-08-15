@@ -154,6 +154,70 @@ void main() {
         reason: 'emoji headers must be recognised so intro stays the intro');
   });
 
+  testWidgets('**Done** headers split into their own section — never fused '
+      'into the intro paragraph', (tester) async {
+    // Real briefing (Aug-13 raw_dumps): the engine emits **Done** sections,
+    // which the old vocabulary ({work,home,ideas,schedule,vault}) missed —
+    // the header AND its bullet were joined into the opening paragraph as a
+    // run-on ("…moving. Done - 💼 [UAT] …"), so the user saw no line break
+    // or spacing where Telegram had a clean section.
+    const withDone = 'Afternoon check.\n'
+        'System load is heavy right now with urgent items queued up.\n'
+        '\n'
+        '**Done**\n'
+        '- 💼 [UAT] Weekly sync 912f8d [INBOX]\n'
+        '\n'
+        '**Work**\n'
+        '- 💼 Call Mark [INBOX]';
+    await tester.pumpWidget(_host(const CardData(
+      type: CardType.briefing,
+      title: 'Afternoon check.',
+      fullText: withDone,
+    )));
+
+    // The Done bullet lives in its own block — never fused into the intro.
+    final introTexts = tester
+        .widgetList<RichText>(find.byType(RichText))
+        .map((rt) => rt.text.toPlainText())
+        .where((t) => t.contains('System load is heavy'))
+        .toList();
+    expect(introTexts, hasLength(1),
+        reason: 'intro must stay the pure opening narrative');
+    expect(introTexts.single.contains('Weekly sync'), isFalse,
+        reason: 'the Done bullet must NOT be joined into the intro paragraph');
+    expect(
+      find.textContaining('Weekly sync', findRichText: true),
+      findsOneWidget,
+      reason: 'the Done bullet must render exactly once, as its own line',
+    );
+    // Done and Work both render as bold headers.
+    final richTexts = tester.widgetList<RichText>(find.byType(RichText));
+    expect(
+      richTexts.any((rt) => _hasSpan(rt.text, 'Done', bold: true)),
+      isTrue,
+      reason: '**Done** must paint as a bold "Done" header',
+    );
+  });
+
+  testWidgets('emoji + bold headers ("🚀 **Work**") still group into sections', (
+    tester,
+  ) async {
+    await tester.pumpWidget(_host(const CardData(
+      type: CardType.briefing,
+      title: 'Morning',
+      fullText: 'Morning\nA quick line.\n\n'
+          '🚀 **Work**\n- Call the client\n🏠 **Home**\n- Buy groceries',
+    )));
+
+    expect(find.textContaining('Call the client', findRichText: true),
+        findsOneWidget);
+    expect(find.textContaining('Buy groceries', findRichText: true),
+        findsOneWidget);
+    expect(find.textContaining('A quick line.', findRichText: true),
+        findsOneWidget,
+        reason: '🚀 **Work** must be recognised as a header so the intro stays the intro');
+  });
+
   testWidgets('plain-text briefing (no section headers) renders once too', (
     tester,
   ) async {
