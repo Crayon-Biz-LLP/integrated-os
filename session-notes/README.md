@@ -34,4 +34,5 @@ These are **not** product documentation — they are dev history. For product do
 | [70-thread-lifecycle-redesign.md](70-thread-lifecycle-redesign.md) | Aug 5 | Thread lifecycle redesign — transcript demoted to input log |
 | [72-persona-l3-knowledge.md](72-persona-l3-knowledge.md) | Aug 9 | M18c — persona is Layer-3 knowledge (ContextProvider accessors) |
 | [74-aug10-14-wave.md](74-aug10-14-wave.md) | Aug 10–14 | Security audit, action hardening, beeper cutover, quick confirmations, direction-awareness, per-item undo |
+| [75-first-comprehensive-test-run.md](75-first-comprehensive-test-run.md) | Aug 15 | First full-suite run: results, 4 bugs/flakes + root causes, isolation fixes (marker prefixes, chat band), LLM flakiness notes |
 | [73-test-suite-session.md](73-test-suite-session.md) | Aug 15 | Comprehensive test suite build + ledger X1–X5 + bugs caught |

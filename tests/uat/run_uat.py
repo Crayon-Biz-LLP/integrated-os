@@ -341,7 +341,11 @@ async def scenario_2_entity_resolution(seed: dict) -> UatResult:
     r = UatResult("Entity resolution (org from text)", tier=1)
     _reset_sends()
 
-    text = f"{PREFIX} Remind me to follow up with Amita from TestOrg Beta next week"
+    # Entity name carries the [UAT] marker so the resolved/created graph node
+    # is tagged and swept by clean-slate + leak guard (bare names are
+    # invisible to the marker sweeps and accumulate across runs — the S2
+    # flake class).
+    text = f"{PREFIX} Remind me to follow up with Amita from {PREFIX} TestOrg Beta next week"
     await simulate_telegram(text)
 
     tasks = supabase.table('tasks').select('id, title, organization_id') \
@@ -568,7 +572,7 @@ async def scenario_8_query_with_hidden_action(seed: dict) -> UatResult:
     r = UatResult("QUERY with hidden action", tier=2)
     _reset_sends()
 
-    text = f"{PREFIX} Check with Amita about TestOrg Alpha - need to send the contract"
+    text = f"{PREFIX} Check with Amita about {PREFIX} TestOrg Alpha - need to send the contract"
     await simulate_telegram(text)
 
     r.details['telegram_sent'] = bool(_captured_sends)
@@ -660,7 +664,7 @@ async def scenario_10_task_with_entity_linker(seed: dict) -> UatResult:
 
     result = await create_task_direct(
         title=f"{PREFIX} Review pricing strategy",
-        organization_name="TestOrg Beta",  # Entity resolver should resolve this
+        organization_name=f"{PREFIX} TestOrg Beta",  # marker-prefixed so any created node is swept
         priority="normal",
     )
 

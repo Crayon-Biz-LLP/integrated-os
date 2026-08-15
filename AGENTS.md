@@ -26,6 +26,21 @@ Known anti-patterns (dashboard trap, hedged screen, lie buttons, passive vault,
 static stage, chatbot passivity, surfacing without learning) are listed in the
 vision document — if a change resembles one, it needs rethinking.
 
+## ⚠️ User Operating Rule (Non-Negotiable)
+
+The user has set a strict operating rule for this project:
+
+1. **Do only what the user asks for** — nothing more, no matter how
+   obviously helpful or "clearly next" an action seems.
+2. **Check with the user before proceeding with any fix** — present the
+   plan and the implementation approach, and get explicit approval BEFORE
+   making code changes or taking actions.
+3. **Do not proceed otherwise.** If a task implies follow-on work the user
+   didn't ask for, stop and ask instead of doing it.
+
+When in doubt: stop and ask. A question costs seconds; an unrequested
+change costs trust.
+
 ## Project Overview
 FastAPI-based executive command system deployed on Modal (Python 3.11+). Multi-tenant by design (`owner_id` scoping, OTP/Google sign-in). Processes Telegram/email/Teams/WhatsApp (Beeper) into tasks, syncs with Google Calendar/Tasks, sends AI-generated briefings, and runs a Flutter app (rhodey_app) with a decisions ledger + learning loop. Full verified reference: `product-summary/`.
 

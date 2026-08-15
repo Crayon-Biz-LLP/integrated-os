@@ -4,7 +4,20 @@ import uuid
 from unittest.mock import patch, AsyncMock
 from core.services.db import tenant_aware_client
 from core.webhook.handler import process_webhook
+from tests.fixtures.run_isolation import run_chat_id
 pytestmark = pytest.mark.ingest
+
+# Per-test chat ids come from the X4 per-run band (run_chat_id), NOT the
+# owner chat (TELEGRAM_CHAT_ID): rows land in the isolated band the
+# clean-slate + leak guard sweep, and no two tests share chat state across
+# runs (the test_s6 flake class — owner-chat rows are invisible to the
+# marker sweeps). The webhook auth gate is satisfied by patching
+# TELEGRAM_CHAT_ID per call (the test_s7 pattern).
+_CHAT_ID_COUNTER = iter(range(1, 200))
+
+
+def _chat_id() -> int:
+    return run_chat_id(next(_CHAT_ID_COUNTER))
 
 
 skip_unless_live_db = pytest.mark.skipif(
@@ -122,11 +135,12 @@ def mock_side_effects_only():
 @skip_unless_live_db
 @pytest.mark.asyncio
 async def test_s1_url_then_person_query_no_summary(spy_classifier, mock_webhook_side_effects):
-    chat_id = int(os.environ.get("TELEGRAM_CHAT_ID", "111111111"))
+    chat_id = _chat_id()
     pairs = [{"user": {"content": "https://github.com/solvstrat/pricing"}, "bot": {"content": "Repository link logged for the project vault. Now go be a dad."}}]
     mock_webhook_side_effects['session'].return_value = ("fake_session_1", pairs, None)
     update = {"update_id": int(uuid.uuid4().int % 1000000000), "message": {"chat": {"id": chat_id}, "text": "Who is Binu?"}}
-    res = await process_webhook(update)
+    with patch.dict(os.environ, {"TELEGRAM_CHAT_ID": str(chat_id)}):
+        res = await process_webhook(update)
     assert res.get("success") is True, f"Failed: {res}"
     history = spy_classifier['args']['conversation_history']
     assert 'Repository link logged' not in history
@@ -140,11 +154,12 @@ async def test_s1_url_then_person_query_no_summary(spy_classifier, mock_webhook_
 async def test_s2_url_then_person_query_summary_excluded(spy_classifier, mock_webhook_side_effects):
     """Direction B: thread summaries are never fed to prompts — only the last
     user turn(s). Aged transcript must not reach the classifier."""
-    chat_id = int(os.environ.get("TELEGRAM_CHAT_ID", "111111111"))
+    chat_id = _chat_id()
     pairs = [{"user": {"content": "https://github.com/solvstrat/pricing"}, "bot": {"content": "Repository link logged for the project vault. Now go be a dad."}}]
     mock_webhook_side_effects['session'].return_value = ("fake_session_2", pairs, None)
     update = {"update_id": int(uuid.uuid4().int % 1000000000), "message": {"chat": {"id": chat_id}, "text": "Who is Binu?"}}
-    await process_webhook(update)
+    with patch.dict(os.environ, {"TELEGRAM_CHAT_ID": str(chat_id)}):
+        await process_webhook(update)
     history = spy_classifier['args']['conversation_history']
     assert 'THREAD SUMMARY' not in history
     assert 'User shared a repository link' not in history
@@ -156,10 +171,11 @@ async def test_s2_url_then_person_query_summary_excluded(spy_classifier, mock_we
 @skip_unless_live_db
 @pytest.mark.asyncio
 async def test_s3_empty_history_no_crash(spy_classifier, mock_webhook_side_effects):
-    chat_id = int(os.environ.get("TELEGRAM_CHAT_ID", "111111111"))
+    chat_id = _chat_id()
     mock_webhook_side_effects['session'].return_value = ("fake_session_3", [], None)
     update = {"update_id": int(uuid.uuid4().int % 1000000000), "message": {"chat": {"id": chat_id}, "text": "Who is Binu?"}}
-    await process_webhook(update)
+    with patch.dict(os.environ, {"TELEGRAM_CHAT_ID": str(chat_id)}):
+        await process_webhook(update)
     history = spy_classifier['args']['conversation_history']
     assert history == ""
     assert spy_classifier['result']['intent'] in ['QUERY', 'CLARIFICATION_NEEDED']
@@ -167,23 +183,25 @@ async def test_s3_empty_history_no_crash(spy_classifier, mock_webhook_side_effec
 @skip_unless_live_db
 @pytest.mark.asyncio
 async def test_s4_entity_anchor_in_context(spy_classifier, mock_webhook_side_effects):
-    chat_id = int(os.environ.get("TELEGRAM_CHAT_ID", "111111111"))
+    chat_id = _chat_id()
     pairs = [{"user": {"content": "Update Binu to Pastor"}, "bot": {"content": "Role update logged for Binu."}}]
     anchor = {"name": "Binu", "type": "person"}
     mock_webhook_side_effects['session'].return_value = ("fake_session_4", pairs, anchor)
     update = {"update_id": int(uuid.uuid4().int % 1000000000), "message": {"chat": {"id": chat_id}, "text": "What about his email?"}}
-    await process_webhook(update)
+    with patch.dict(os.environ, {"TELEGRAM_CHAT_ID": str(chat_id)}):
+        await process_webhook(update)
     history = spy_classifier['args']['conversation_history']
     assert 'ACTIVE ENTITY: Binu (person)' in history
 
 @skip_unless_live_db
 @pytest.mark.asyncio
 async def test_s5_continuation_preserves_previous_turn(spy_classifier, mock_webhook_side_effects):
-    chat_id = int(os.environ.get("TELEGRAM_CHAT_ID", "111111111"))
+    chat_id = _chat_id()
     pairs = [{"user": {"content": "Add Equisoft meeting Mon"}, "bot": {"content": "Meeting added for Equisoft on Monday."}}]
     mock_webhook_side_effects['session'].return_value = ("fake_session_5", pairs, None)
     update = {"update_id": int(uuid.uuid4().int % 1000000000), "message": {"chat": {"id": chat_id}, "text": "What about that meeting?"}}
-    await process_webhook(update)
+    with patch.dict(os.environ, {"TELEGRAM_CHAT_ID": str(chat_id)}):
+        await process_webhook(update)
     history = spy_classifier['args']['conversation_history']
     assert 'PRECEDING TURN' in history
     assert 'Add Equisoft meeting Mon' in history
@@ -191,14 +209,15 @@ async def test_s5_continuation_preserves_previous_turn(spy_classifier, mock_webh
 @skip_unless_live_db
 @pytest.mark.asyncio
 async def test_s6_bot_receipts_stripped_from_context(spy_classifier, mock_webhook_side_effects):
-    chat_id = int(os.environ.get("TELEGRAM_CHAT_ID", "111111111"))
+    chat_id = _chat_id()
     pairs = [
         {"user": {"content": "Record meeting notes"}, "bot": {"content": "Meeting notes logged. Now go be a dad."}},
         {"user": {"content": "Check Qhord timeline"}, "bot": {"content": "Timeline check logged. Now go be a dad."}}
     ]
     mock_webhook_side_effects['session'].return_value = ("fake_session_6", pairs, None)
     update = {"update_id": int(uuid.uuid4().int % 1000000000), "message": {"chat": {"id": chat_id}, "text": "Who is Vasanth?"}}
-    await process_webhook(update)
+    with patch.dict(os.environ, {"TELEGRAM_CHAT_ID": str(chat_id)}):
+        await process_webhook(update)
     history = spy_classifier['args']['conversation_history']
     assert 'Rhodey:' not in history
     assert 'go be a dad' not in history
@@ -209,7 +228,7 @@ async def test_s6_bot_receipts_stripped_from_context(spy_classifier, mock_webhoo
 @skip_unless_live_db
 @pytest.mark.asyncio
 async def test_s7_resolve_thread_integration(seeded_thread, spy_classifier, mock_side_effects_only):
-    chat_id = int(uuid.uuid4().int % 100000)
+    chat_id = _chat_id()
     pairs = [
         {"user": {"content": "[SIM_TEST] Record meeting notes"}},
         {"bot": {"content": "Meeting notes logged. Now go be a dad."}},

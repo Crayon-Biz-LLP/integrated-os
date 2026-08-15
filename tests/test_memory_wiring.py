@@ -8,7 +8,7 @@ class TestMemoryWiring:
     @pytest.mark.asyncio
     @patch("core.pulse.memory.get_embedding", new_callable=AsyncMock)
     @patch("core.pulse.memory.supabase")
-    @patch("core.retrieval.pipeline.schedule_index_memory", new_callable=AsyncMock)
+    @patch("core.retrieval.pipeline.schedule_index_memory", new_callable=MagicMock)
     async def test_write_outcome_memory_enqueues_indexing(
         self, mock_schedule, mock_supabase, mock_get_embedding
     ):
