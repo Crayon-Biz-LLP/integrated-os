@@ -39,9 +39,44 @@ def _find_bin(name: str) -> str | None:
     return None
 
 
+def _pg_sharedir() -> str | None:
+    """Postgres sharedir (extension control files live there), if resolvable."""
+    pg_config = _find_bin("pg_config")
+    if not pg_config:
+        return None
+    try:
+        out = subprocess.run(
+            [pg_config, "--sharedir"], capture_output=True, text=True, timeout=15
+        )
+        if out.returncode == 0:
+            return out.stdout.strip() or None
+    except Exception:
+        pass
+    return None
+
+
+def _vector_extension_available() -> bool:
+    """True when the pgvector 'vector.control' file exists on this system.
+
+    The migration chain does CREATE EXTENSION vector (pgvector) at db/01, so
+    replaying requires the extension installed at the OS level (apt
+    postgresql-<ver>-pgvector). Checking for the control file — instead of
+    just the postgres binaries — is what keeps this test a clean SKIP on
+    runners that have initdb/pg_ctl but not pgvector (the original CI
+    failure: "extension \"vector\" is not available").
+    """
+    sharedir = _pg_sharedir()
+    if not sharedir:
+        return False
+    return (Path(sharedir) / "extension" / "vector.control").exists()
+
+
 pytestmark = pytest.mark.skipif(
-    not (_find_bin("initdb") and _find_bin("pg_ctl")),
-    reason="postgres binaries (initdb/pg_ctl) unavailable — replay skipped",
+    not (_find_bin("initdb") and _find_bin("pg_ctl") and _vector_extension_available()),
+    reason=(
+        "postgres binaries (initdb/pg_ctl) or the pgvector extension unavailable "
+        "— replay skipped (install postgresql-<ver>-pgvector to run)"
+    ),
 )
 
 

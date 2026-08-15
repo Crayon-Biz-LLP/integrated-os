@@ -20,4 +20,5 @@ pre-commit==4.6.0
 pytest==9.0.3
 pytest-asyncio==1.4.0
 pytest-cov==6.0.0
+pytest-env==1.6.0
 freezegun==1.5.1

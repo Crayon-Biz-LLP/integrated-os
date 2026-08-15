@@ -46,10 +46,13 @@ jobs:
       - name: Flutter pub get
         run: cd rhodey_app && flutter pub get
 
+      # Fast tier is DB-free by invariant (plans/75 §2.1) — deliberately NO
+      # Supabase secrets here. pytest-env forces dummy localhost:8000 creds
+      # from pytest.ini, so the live-DB probes fail and the sim/clusters
+      # integration suites SKIP instead of running against the shared project.
+      # The residue gate (L0) falls back to its committed static supplement
+      # when the DB is unreachable. The deep live suite is nightly-only.
       - name: Fast tier — L0 + L1 + L2-mock + app (no DB)
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
         run: python scripts/run_tests.py fast
 
       - name: Lint — Frontend (Next.js)

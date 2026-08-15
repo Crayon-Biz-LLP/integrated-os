@@ -32,21 +32,38 @@ _MOCK_DB.table.return_value = _MOCK_TABLE
 
 import importlib  # noqa: E402
 import core.services.db as _db_mod  # noqa: E402
-_db_mod._supabase = _MOCK_DB
-
-# Reload utils.py so supabase = get_supabase() uses the mock
 import core.webhook.utils as _utils_mod  # noqa: E402
-_utils_mod.supabase = _MOCK_DB
-# Full reload to catch any module-level get_supabase() calls
-importlib.reload(_utils_mod)
-
-# Reload handler.py so its from core.webhook.utils import supabase picks up the mock
 import core.webhook.handler as _handler_mod  # noqa: E402
-_handler_mod.supabase = _MOCK_DB
-importlib.reload(_handler_mod)
 
-# Re-import from the reloaded handler
+# Import process_webhook at module level: the fixture below reloads handler.py
+# in the SAME module dict, so this bound function reads the mocked globals at
+# call time — no re-import needed after the reload.
 from core.webhook.handler import process_webhook  # noqa: E402
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _mock_supabase_singleton():
+    """Mock the DB singleton ONLY for this module's tests, then restore it.
+
+    The original version mutated core.services.db._supabase at IMPORT time.
+    pytest imports every test module during collection — before ANY test runs
+    — so that poisoned the singleton for the whole session: clusters/sim live
+    suites (collected before this unit module) silently talked to a MagicMock
+    (the "Invalid transition '<MagicMock>'" failures). Moving the mutation
+    into a module-scoped autouse fixture bounds it to this module: setup
+    installs the mock, teardown restores the real client and re-loads the
+    modules that captured it.
+    """
+    orig = _db_mod._supabase
+    _db_mod._supabase = _MOCK_DB
+    _utils_mod.supabase = _MOCK_DB
+    importlib.reload(_utils_mod)
+    _handler_mod.supabase = _MOCK_DB
+    importlib.reload(_handler_mod)
+    yield
+    _db_mod._supabase = orig
+    importlib.reload(_utils_mod)
+    importlib.reload(_handler_mod)
 
 
 @pytest.fixture(autouse=True)

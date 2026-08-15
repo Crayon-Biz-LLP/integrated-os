@@ -24,6 +24,15 @@ jobs:
       - name: Install Dependencies
         run: pip install -r requirements.txt
 
+      # test_migrations_replay.py replays the whole db/ chain on a throwaway
+      # local cluster; the chain does CREATE EXTENSION vector (pgvector), so
+      # the runner needs the extension installed (fast tier skips it cleanly
+      # via the extension-aware guard — this is the nightly home of the test).
+      - name: Install pgvector (migration replay)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-16-pgvector
+
       # Deep tier via the unified runner. The env-contract guard (plan §16)
       # refuses to start unless the Test tenant resolves and secrets are
       # real — the shared project IS production, so this never runs blind.

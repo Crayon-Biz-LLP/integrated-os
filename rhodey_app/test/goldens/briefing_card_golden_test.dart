@@ -22,9 +22,22 @@ import 'package:rhodey_app/theme/app_theme.dart';
 import 'package:rhodey_app/widgets/rich_card_content.dart';
 
 /// The exact Aug-10 briefing shape that broke: `**bold**` section headers,
-/// bullets, emoji — rendered in a phone-sized surface.
+/// bullets — rendered in a phone-sized surface.
+///
+/// Emoji determinism: the cards hardcode emoji glyphs (task icon 📋, the
+/// briefing time chip ☀️). The test engine resolves emoji via the host's
+/// emoji font (Noto Color Emoji on Linux CI, nothing equivalent exposed on
+/// macOS), which made goldens platform-dependent. The surface below forces
+/// `FlutterTest` (Ahem) as the explicit font fallback, so every emoji
+/// renders as a deterministic solid block on ALL platforms. Keep golden
+/// fixtures ASCII-only — text set through explicit AppTheme styles (e.g. the
+/// card title) cannot be pinned from outside the widget.
+
+// ASCII-only by contract (see the emoji-determinism note): a title ☀️ would
+// render through an explicit AppTheme style that the surface fallback cannot
+// pin. The time chip still shows ☀️ (widget-hardcoded, inherited style).
 const _briefing =
-    '☀️ Morning check-in\n'
+    'Morning check-in\n'
     'A quick line about today.\n'
     '\n'
     '**Work**\n'
@@ -41,10 +54,15 @@ Widget _surface(Widget child) {
   return MaterialApp(
     theme: AppTheme.themeData,
     home: Scaffold(
-      body: SizedBox(
-        width: 360,
-        height: 640,
-        child: SingleChildScrollView(child: child),
+      body: DefaultTextStyle(
+        // Pin every emoji glyph to the test's Ahem font (solid blocks) so the
+        // golden is byte-identical on macOS and Linux CI — see the note above.
+        style: const TextStyle(fontFamilyFallback: ['FlutterTest']),
+        child: SizedBox(
+          width: 360,
+          height: 640,
+          child: SingleChildScrollView(child: child),
+        ),
       ),
     ),
   );
@@ -59,7 +77,7 @@ void main() {
         RichCardContent(
           cardData: const CardData(
             type: CardType.briefing,
-            title: '☀️ Morning check-in',
+            title: 'Morning check-in',
             fullText: _briefing,
           ),
         ),
