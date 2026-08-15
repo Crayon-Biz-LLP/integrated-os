@@ -97,6 +97,11 @@ async def _process_channel_pending_decision(channel: str, pending_id: int, decis
     title = msg.get('suggested_title') or msg.get('body', '')[:60]
     summary = msg.get('summary', '') or msg.get('metadata', {}).get('summary', '')
 
+    # Undo ledger of committed actions — empty for rejections (nothing is
+    # executed). Initialized here so the decision-record step below never
+    # hits an UnboundLocalError on the rejection path.
+    ledger = []
+
     if is_approved:
         # Process immediately via Action Planner
         from core.actions.planner import plan_actions
@@ -120,7 +125,6 @@ async def _process_channel_pending_decision(channel: str, pending_id: int, decis
         except Exception:
             pass
         
-        ledger = []
         try:
             original_text = msg.get('body') or title
             actions = await plan_actions(

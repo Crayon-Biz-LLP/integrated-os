@@ -287,7 +287,7 @@ async def record_outgoing_message(
                 .maybe_single()
                 .execute()
             )
-            if existing.data:
+            if existing and existing.data:
                 return {"status": "duplicate", "message_id": existing.data["id"]}
         existing = (
             supabase.table('messages')
@@ -301,7 +301,7 @@ async def record_outgoing_message(
             .maybe_single()
             .execute()
         )
-        if existing.data:
+        if existing and existing.data:
             return {"status": "duplicate", "message_id": existing.data["id"]}
     except Exception as e:
         audit_log_sync("ingest", "WARNING", f"record_outgoing dedup check failed: {e}")

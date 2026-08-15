@@ -103,13 +103,14 @@ def query_list_safe(builder, max_results=100):
     return builder.limit(max_results).execute()
 
 
-def zombie_recovery():
+def zombie_recovery() -> int:
     from datetime import datetime, timezone, timedelta
     # M3: tenant facade — sentinel runs this per-tenant (M4 fan-out); without
     # scoping, tenant A's sentinel would reset tenant B's stuck dumps.
     # Legacy pre-db/78 (no tenant mode) runs unscoped exactly as before.
     supabase = tenant_aware_client()
     from core.lib.audit_logger import audit_log_sync
+    recovered = 0
     try:
         ten_mins_ago = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
         
@@ -122,6 +123,7 @@ def zombie_recovery():
         proc_count = len(proc_res.data or [])
         if proc_count:
             audit_log_sync("db", "INFO", f"Zombie recovery: reset {proc_count} 'processing' dumps to 'staged'")
+            recovered += proc_count
         
         # Recover orphaned completion dumps stuck in processing_completion
         comp_res = supabase.table('raw_dumps') \
@@ -132,9 +134,11 @@ def zombie_recovery():
         comp_count = len(comp_res.data or [])
         if comp_count:
             audit_log_sync("db", "INFO", f"Zombie recovery: reset {comp_count} 'processing_completion' dumps")
+            recovered += comp_count
             
     except Exception as e:
         audit_log_sync("db", "WARNING", f"Zombie recovery failed: {e}")
+    return recovered
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -617,7 +621,10 @@ def resolve_user_by_api_key(api_key: str) -> dict | None:
             .maybe_single()
             .execute()
         )
-        return res.data if res.data else None
+        # maybe_single().execute() returns None on a no-match — guard it
+        # (raised AttributeError: 'NoneType' object has no attribute 'data'
+        # for every unknown API key, logged as a spurious WARNING).
+        return res.data if res and res.data else None
     except Exception as e:
         msg = str(e)
         if _missing_table_error(msg):

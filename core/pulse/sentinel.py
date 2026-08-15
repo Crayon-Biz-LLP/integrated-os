@@ -242,45 +242,58 @@ Context:
                         audit_log_sync("sentinel", "WARNING", f"AI context generation failed: {e}")
                         msg += f"\n\n🧠 **Context found:**\n{context}"
 
-                success = await send_telegram(telegram_chat_id, msg)
-                
-                if success:
-                    audit_log_sync("sentinel", "INFO", f"{search_str} - Nudged for {title}")
-                    alerted_count += 1
-                    print(f"✅ Nudged for: {title}")
-                    # P4: Push notification for meeting nudge (only when within 15 mins)
-                    if mins_until <= 15:
-                        try:
-                            from core.services.persona import persona_guard_text
-
-                            nudge_content = f"{title} starts in {mins_until} min"
-                            # M18 Phase 2A: never-guard — if the event title
-                            # touches a persona never-topic, the banner falls
-                            # back to a neutral reminder. The full message
-                            # still travels in data.content.
-                            nudge_title = persona_guard_text(
-                                nudge_content,
-                                fallback=f"Meeting in {mins_until} min",
-                            )
-                            nudge_body = persona_guard_text(
-                                title, fallback="Meeting reminder"
-                            )
-                            await send_push_notification(
-                                title=nudge_title,
-                                body=nudge_body,
-                                data={
-                                    "type": "nudge",
-                                    "event_title": title,
-                                    # Carry the full message (with time context)
-                                    # so the Today screen renders it instantly on
-                                    # tap — no fetch wait.
-                                    "content": push_data_content(nudge_content),
-                                },
-                            )
-                        except Exception as push_err:
-                            audit_log_sync("sentinel", "WARNING", f"Push nudge failed (non-critical): {push_err}")
+                if telegram_chat_id:
+                    success = await send_telegram(telegram_chat_id, msg)
+                    if success:
+                        audit_log_sync("sentinel", "INFO", f"{search_str} - Nudged for {title}")
+                        alerted_count += 1
+                        print(f"✅ Nudged for: {title}")
+                    else:
+                        audit_log_sync("sentinel", "ERROR", f"Failed to send Telegram nudge for {title}")
                 else:
-                    audit_log_sync("sentinel", "ERROR", f"Failed to send Telegram nudge for {title}")
+                    # App-only tenant (no Telegram chat) — the app push below
+                    # is the ONLY channel, so deliver the nudge (and its dedup
+                    # marker) without a Telegram attempt. Previously this
+                    # logged an ERROR every cycle AND skipped the push
+                    # entirely (it lived inside the Telegram success branch),
+                    # so app-only tenants never got meeting nudges.
+                    audit_log_sync("sentinel", "INFO", f"{search_str} - Nudged for {title} (app push)")
+                    alerted_count += 1
+                    print(f"🔔 Nudged for: {title} (app push)")
+
+                # P4: Push notification for meeting nudge (only when within 15
+                # mins) — independent of the Telegram send, so the app nudge
+                # reaches Telegram tenants and app-only tenants alike.
+                if mins_until <= 15:
+                    try:
+                        from core.services.persona import persona_guard_text
+
+                        nudge_content = f"{title} starts in {mins_until} min"
+                        # M18 Phase 2A: never-guard — if the event title
+                        # touches a persona never-topic, the banner falls
+                        # back to a neutral reminder. The full message
+                        # still travels in data.content.
+                        nudge_title = persona_guard_text(
+                            nudge_content,
+                            fallback=f"Meeting in {mins_until} min",
+                        )
+                        nudge_body = persona_guard_text(
+                            title, fallback="Meeting reminder"
+                        )
+                        await send_push_notification(
+                            title=nudge_title,
+                            body=nudge_body,
+                            data={
+                                "type": "nudge",
+                                "event_title": title,
+                                # Carry the full message (with time context)
+                                # so the Today screen renders it instantly on
+                                # tap — no fetch wait.
+                                "content": push_data_content(nudge_content),
+                            },
+                        )
+                    except Exception as push_err:
+                        audit_log_sync("sentinel", "WARNING", f"Push nudge failed (non-critical): {push_err}")
             except Exception as event_err:
                 audit_log_sync("sentinel", "ERROR", f"Event processing failed for {event.get('summary', 'unknown')}: {event_err}")
                 

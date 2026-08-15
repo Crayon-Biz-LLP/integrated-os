@@ -187,7 +187,10 @@ async def _wrap_calendar_context(target_date: datetime) -> str:
     every pulse, silently dropping calendar context).
     """
     try:
-        return await get_calendar_context(target_date)
+        # get_calendar_context is SYNC (returns a formatted string) —
+        # awaiting it raised "object str can't be used in 'await' expression"
+        # on every pulse, silently dropping calendar context from briefings.
+        return get_calendar_context(target_date)
     except Exception as e:
         audit_log_sync("pulse", "WARNING", f"Calendar context fetch failed: {e}")
         return ""

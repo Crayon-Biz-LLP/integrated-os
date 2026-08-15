@@ -955,11 +955,16 @@ def backfill_orphaned_tasks():
     if not orphaned_tasks:
         return
     
-    all_people = fetch_all_paginated("people", "id, name")
     all_projects = fetch_all_paginated("projects", "id, name, status")
     
     project_id_to_name = {p["id"]: p["name"] for p in all_projects}
-    person_id_to_name = {p["id"]: p["name"] for p in all_people}
+    # Person linking is driven by live person-type graph nodes — the old
+    # `people` mirror table was dropped in migration 75, and fetching it
+    # here raised PGRST205 (table not in schema cache) on every pulse run.
+    person_nodes = fetch_all_paginated("graph_nodes", "id, label", in_filter_col="type", in_filter_val=["person"])
+    person_id_to_name = {}
+    for n in (person_nodes or []):
+        person_id_to_name.setdefault(n["id"], n["label"].strip())
     
     count = 0
     for task in orphaned_tasks:

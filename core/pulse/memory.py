@@ -33,7 +33,7 @@ async def write_outcome_memory(task_title: str):
         memory_id = result.data[0]['id']
         accumulate_action(ActionResult(action_type="memory_save", status="executed", entity_id=memory_id, human_label=label))
         from core.retrieval.pipeline import schedule_index_memory
-        asyncio.create_task(schedule_index_memory(memory_id, label, "outcome", "pulse_outcome"))
+        schedule_index_memory(memory_id, label, "outcome", "pulse_outcome")
         print(f"🧠 Outcome memory written: {label}")
     except Exception as e:
         audit_log_sync("pulse", "WARNING", f"⚠️ Outcome memory write failed (non-critical): {e}")
@@ -197,7 +197,13 @@ async def generate_after_action_report() -> str:
             }).execute()
             memory_id = result.data[0]['id']
             from core.retrieval.pipeline import schedule_index_memory
-            asyncio.create_task(schedule_index_memory(memory_id, lesson, "reflection", "pulse_reflection"))
+            # schedule_index_memory is SYNCHRONOUS (it inserts a
+            # pending_retrieval_index_jobs row that the sentinel piggyback
+            # processes) — call it directly. The old asyncio.create_task(...)
+            # wrapper expected an async function and raised "a coroutine was
+            # expected, got None" on every pulse run, so the reflection was
+            # never queued for indexing.
+            schedule_index_memory(memory_id, lesson, "reflection", "pulse_reflection")
             print(f"📝 Daily Reflection saved: {lesson[:50]}...")
             return lesson
     except Exception as e:
@@ -337,6 +343,12 @@ async def serendipity_engine(active_tasks: list, people: list, resources: list, 
             relations = path.get('path_relations', [])
             weight = path.get('total_weight', 0.0)
             
+            # Guard: an empty path_labels list (e.g. a path of length 1
+            # without a label payload) made `types[0]` raise
+            # "list index out of range" on every briefing for tenants
+            # with such edges — skip the malformed path instead.
+            if not labels:
+                continue
             # Reconstruct the string: Task [X] --RELATES_TO--> Person [Y]
             path_str_parts = []
             for i in range(len(labels)):
