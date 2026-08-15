@@ -4,6 +4,8 @@ import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 
 from core.prompts.classify import build_classify_intent_prompt
+pytestmark = pytest.mark.ingest
+
 
 
 # ── Global supabase mock (replaces the singleton before any module imports) ──

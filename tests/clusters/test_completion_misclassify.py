@@ -1,4 +1,6 @@
 import pytest
+pytestmark = pytest.mark.ingest
+
 
 # test_completion_misclassify is archived.
 # The _has_broader_context_signals() heuristic was removed in the P0/P2 overhaul.

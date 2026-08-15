@@ -8,11 +8,15 @@ original text with the user's answer.
 Run: python -m pytest tests/unit/test_workflow_clarification.py -v
 """
 
+
+
 from unittest.mock import MagicMock
 
 import pytest
 
 import core.webhook.workflows as wf
+pytestmark = pytest.mark.decision
+
 
 
 # ── _looks_like_time_reply ──

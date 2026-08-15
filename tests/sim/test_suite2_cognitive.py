@@ -6,6 +6,9 @@ from core.lib.conversation import resolve_thread
 from core.services.db import tenant_aware_client
 from core.lib.audit_logger import set_trace_id
 from sim.conftest import requires_live_db
+from tests.fixtures.run_isolation import run_chat_id
+pytestmark = pytest.mark.ingest
+
 
 supabase = tenant_aware_client()
 
@@ -51,7 +54,7 @@ async def test_c3_safe_hold_on_rate_limit():
 @pytest.mark.asyncio
 async def test_k2_routing_workflow_priority():
     set_trace_id("sim-k2-workflow")
-    chat_id = 9000001
+    chat_id = run_chat_id(1)  # X4: per-run band
     thread_id = str(uuid.uuid4())
 
     supabase.table('conversation_threads').insert({

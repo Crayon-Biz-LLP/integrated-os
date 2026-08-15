@@ -2,6 +2,8 @@ import concurrent.futures
 
 import pytest
 from dotenv import load_dotenv
+pytestmark = pytest.mark.graph
+
 
 load_dotenv()
 

@@ -10,13 +10,18 @@ the parser, the role cleaning, and the verifier's acceptance of curated
 names as source-row vocabulary.
 """
 
+
+
 from __future__ import annotations
+import pytest
 
 from core.services.persona_verifier import verify_persona_card
 from core.services.user_settings import (
     _clean_relationship_role,
     _parse_relationships_row,
 )
+pytestmark = pytest.mark.graph
+
 
 
 # ── _parse_relationships_row ─────────────────────────────────────────────

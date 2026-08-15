@@ -8,11 +8,15 @@ Unit tests for:
   - briefing greeting name resolution
 """
 
+
+
 import os
 from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
+pytestmark = pytest.mark.auth
+
 
 os.environ.setdefault("SUPABASE_URL", "http://localhost:1")
 os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "test-key")

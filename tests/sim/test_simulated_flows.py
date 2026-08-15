@@ -6,6 +6,9 @@ from core.actions import (
     begin_action_context, clear_action_context, snapshot_action_context,
     ActionResult, accumulate_action, validate_action_claims, render_actions
 )
+from tests.fixtures.run_isolation import run_thread_uuid
+pytestmark = pytest.mark.decision
+
 
 skip_unless_live_db = pytest.mark.skipif(
     os.getenv("LIVE_DB") != "true",
@@ -178,8 +181,8 @@ class TestSessionContinuity:
         """T13 — Follow-up anchored to explicit session state, not incidental memory."""
         from core.webhook.dispatch import interrogate_brain
 
-        # We need a session_id that matches our seeded thread
-        session_id = "00000000-0000-4000-8000-00000000aaaa"
+        # We need a session_id that matches our seeded thread (X4: per-run)
+        session_id = run_thread_uuid(0)
 
         # Mock interrogate_brain's inner LLM to return a controlled response
         mock_response = make_mock_response(

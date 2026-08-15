@@ -52,6 +52,82 @@ def webhook_tenant_scope():
         yield
 
 
+async def emit_undo_correction(decision_row: dict) -> None:
+    """Vision #4: an undo must TRAIN the pattern, not silently reset it.
+
+    The undo paths (Telegram undo_auto_*, /api/auto-decisions/undo,
+    /api/decisions/undo) reverse the decision record and re-pend the item,
+    but until now never emitted a learning signal — so the pattern that
+    caused the wrong auto-approve stayed strong and the same class of item
+    kept getting auto-approved (the "Not now that silently resets is a
+    trust-breaker" anti-pattern).
+
+    This helper re-emits the observation in INVERSE: an undone approval
+    becomes a correction (demotes the pattern), an undone rejection becomes
+    a confirmation (re-strengthens it). It uses the EXACT features persisted
+    on the decision row at record time (decisions.metadata.learn_features),
+    so the correction lands on the same pattern hash — rebuilding features
+    here would shift time-of-day context dims and miss the pattern.
+
+    Fail-open: a telemetry hiccup must never break the undo itself.
+    """
+    try:
+        meta = decision_row.get('metadata') or {}
+        features = meta.get('learn_features')
+        subsystem = meta.get('learn_subsystem')
+        if not features or not subsystem:
+            return  # pre-fix decision (no learn payload) — nothing to correct
+        decision_type = decision_row.get('decision_type') or ''
+        is_approval = 'approval' in decision_type
+        await emit_observation(
+            subsystem=subsystem,
+            event_type='correction' if is_approval else 'verification',
+            features=features,
+            predicted='auto_approve' if is_approval else 'rejected',
+            actual='reverted',
+            outcome='corrected' if is_approval else 'confirmed',
+            source='decision_undo',
+        )
+    except Exception as e:
+        audit_log_sync("webhook", "WARNING", f"Undo learning signal failed (non-critical): {e}")
+
+
+async def emit_confirmed_observation(decision_row: dict, source_tag: str) -> bool:
+    """Vision #4: confirming an auto-decision must TRAIN the pattern it came from.
+
+    The bulk confirm paths (Telegram 'confirm_auto_all', API
+    /api/auto-decisions/confirm) used to emit ONE decorative observation into
+    an 'auto_decisions' bucket nothing reads (ledger X3) — "patterns
+    strengthened" was an overclaim. This emits a per-item 'confirmed'
+    observation against the decision's REAL subsystem, using the EXACT
+    features persisted at decision time (decisions.metadata.learn_features),
+    so it lands on the same pattern hash compute_pattern_confidence queries.
+
+    Returns True when an observation was emitted (the decision carried a
+    learn payload), False otherwise (pre-fix decision — nothing to train).
+    Fail-open: a telemetry hiccup must never break the confirm itself.
+    """
+    try:
+        meta = decision_row.get('metadata') or {}
+        features = meta.get('learn_features')
+        subsystem = meta.get('learn_subsystem')
+        if not features or not subsystem:
+            return False  # no learn payload — nothing to reinforce
+        await emit_observation(
+            subsystem=subsystem,
+            event_type='verification',
+            outcome='confirmed',
+            predicted='auto_approve',
+            actual='verified',
+            features=features,
+            source=source_tag,
+        )
+        return True
+    except Exception as e:
+        audit_log_sync("webhook", "WARNING", f"Confirm learning signal failed (non-critical): {e}")
+        return False
+
+
 async def process_channel_pending_decision(channel: str, pending_id: int, decision: str, auto_decided: bool = False, rejection_context: str = None) -> dict:
     """Shared handler for processing approve/reject for channel-specific pending messages (teams, whatsapp, call).
     (M3: wrapped in the channel tenant scope.)
@@ -187,8 +263,17 @@ async def _process_channel_pending_decision(channel: str, pending_id: int, decis
             auto_decided=auto_decided,
         )
         decision_id = decision_row.get('id') if decision_row else None
-        if decision_id and ledger:
-            supabase.table('decisions').update({'metadata': {'actions': ledger}}).eq('id', decision_id).execute()
+        if decision_id:
+            # The decision row carries the learning payload: the exact
+            # features that were emitted (so an undo can correct the SAME
+            # pattern hash) plus the executed-action ledger (so undo can
+            # reverse side effects). Without learn_features, an undo would
+            # have to rebuild features — time-of-day context dims shift, the
+            # hash would differ, and the correction would miss the pattern.
+            meta = {'learn_features': _features, 'learn_subsystem': f'{channel}_pipeline'}
+            if ledger:
+                meta['actions'] = ledger
+            supabase.table('decisions').update({'metadata': meta}).eq('id', decision_id).execute()
     except Exception as dec_err:
         audit_log_sync("webhook", "WARNING", f"Failed to record channel decision: {dec_err}")
 

@@ -164,8 +164,14 @@ async def _process_email_pending_decision(pending_id: int, decision: str, supaba
                 auto_decided=auto_decided,
             )
             decision_id = decision_row.get('id') if decision_row else None
-            if decision_id and ledger:
-                client.table('decisions').update({'metadata': {'actions': ledger}}).eq('id', decision_id).execute()
+            if decision_id:
+                # Learning payload rides along: the exact features emitted (so
+                # an undo can correct the SAME pattern hash) + the action
+                # ledger (so undo can reverse side effects).
+                meta = {'learn_features': _features, 'learn_subsystem': 'email_pipeline'}
+                if ledger:
+                    meta['actions'] = ledger
+                client.table('decisions').update({'metadata': meta}).eq('id', decision_id).execute()
         except Exception as dec_err:
             audit_log_sync("webhook", "WARNING", f"Failed to record email approval decision: {dec_err}")
 
@@ -196,7 +202,7 @@ async def _process_email_pending_decision(pending_id: int, decision: str, supaba
         )
 
         try:
-            record_decision(
+            rej_row = record_decision(
                 decision_type="email_rejection",
                 title=f"Rejected email task: {title[:120]}",
                 context=f"Email message #{pending_id} rejected. {title[:200]}",
@@ -206,6 +212,10 @@ async def _process_email_pending_decision(pending_id: int, decision: str, supaba
                 source="email_decision",
                 auto_decided=auto_decided,
             )
+            if rej_row.get('id'):
+                client.table('decisions').update({
+                    'metadata': {'learn_features': _features, 'learn_subsystem': 'email_pipeline'},
+                }).eq('id', rej_row['id']).execute()
         except Exception as dec_err:
             audit_log_sync("webhook", "WARNING", f"Failed to record email rejection decision: {dec_err}")
 

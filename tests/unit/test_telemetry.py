@@ -17,6 +17,8 @@ directly — every DB touch goes through `tenant_aware_client()` and
 (any chain shape resolves; `.execute()` returns the configured data).
 """
 
+
+
 import pytest
 from unittest.mock import patch, MagicMock
 from datetime import datetime, timezone, timedelta
@@ -27,6 +29,8 @@ from core.lib.telemetry import (
     compute_pattern_confidence,
     weekly_synthesis,
 )
+pytestmark = pytest.mark.learning
+
 
 
 # Recent timestamps (relative to now) so temporal decay leaves confidence at

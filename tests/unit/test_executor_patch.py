@@ -8,8 +8,13 @@ Covers the pure patch builders from `core/actions/executor.py`:
 Run: python -m pytest tests/unit/test_executor_patch.py -v
 """
 
+import pytest
+
+
 from core.actions.executor import modify_recurring_updates, update_metadata_updates
 from core.actions.models import Action, ModifyRecurringAction, UpdateMetadataAction
+pytestmark = pytest.mark.decision
+
 
 RRULE = "RRULE:FREQ=WEEKLY;BYDAY=MO"
 

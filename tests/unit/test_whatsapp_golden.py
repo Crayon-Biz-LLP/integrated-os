@@ -10,6 +10,8 @@ this harness passes. Extend golden.json with new labeled threads as the
 system sees more real conversations.
 """
 
+
+
 import json
 from pathlib import Path
 
@@ -18,6 +20,8 @@ import pytest
 from core.lib.message_sieve import classify_sieve
 from core.lib.ask_detector import should_escalate
 from core.lib.chat_split import split_chat_identity
+pytestmark = pytest.mark.ingest
+
 
 GOLDEN_PATH = Path(__file__).parent.parent / "golden" / "whatsapp_classify" / "golden.json"
 

@@ -1,5 +1,7 @@
 """Tests for core/retrieval/ modules."""
 
+
+
 import asyncio
 import os
 from unittest.mock import patch, MagicMock, AsyncMock
@@ -10,6 +12,8 @@ from core.retrieval.ppr import personalized_pagerank, build_adjacency_from_edges
 from core.retrieval.ranking import rank_memories, WeightConfig
 from core.retrieval.schema import Passage
 from core.retrieval.pipeline import index_memory, retry_failed_index_runs
+pytestmark = pytest.mark.retrieval
+
 
 
 class TestChunker:

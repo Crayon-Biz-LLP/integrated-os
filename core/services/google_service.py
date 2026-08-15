@@ -351,7 +351,13 @@ def sync_to_google(service, title=None, due_at=None, task_id=None, status='todo'
 def get_google_calendar_events(target_date):
     try:
         service = get_cached_service("calendar", "v3")
-        start_dt = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
+        # Accept both datetime and date: a plain date scopes the whole day
+        # (00:00 → next 00:00). Passing a date used to crash on
+        # .replace(hour=...) and silently drop calendar context.
+        if isinstance(target_date, datetime):
+            start_dt = target_date.replace(hour=0, minute=0, second=0, microsecond=0)
+        else:
+            start_dt = datetime.combine(target_date, datetime.min.time())
         end_dt = start_dt + timedelta(days=1)
         rfc_start = format_rfc3339(start_dt.isoformat())
         rfc_end = format_rfc3339(end_dt.isoformat())

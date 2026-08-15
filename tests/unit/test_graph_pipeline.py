@@ -1,4 +1,7 @@
 from core.lib.graph_rules import validate_label, TYPE_TO_DANNY_EDGE
+import pytest
+pytestmark = pytest.mark.graph
+
 
 def test_validate_label_rejects_phrases():
     # Commas

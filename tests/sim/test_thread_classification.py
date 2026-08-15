@@ -4,6 +4,8 @@ import uuid
 from unittest.mock import patch, AsyncMock
 from core.services.db import tenant_aware_client
 from core.webhook.handler import process_webhook
+pytestmark = pytest.mark.ingest
+
 
 skip_unless_live_db = pytest.mark.skipif(
     os.getenv("LIVE_DB") != "true",

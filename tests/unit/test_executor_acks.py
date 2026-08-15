@@ -8,12 +8,16 @@ must keep "✅ Closed", and mixed batches must produce one line per operation.
 Run: python -m pytest tests/unit/test_executor_acks.py -v
 """
 
+
+
 from contextlib import ExitStack
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from core.actions.models import Action
+pytestmark = pytest.mark.decision
+
 
 RESCHEDULE_AT = "2026-08-20T12:40:28+05:30"
 

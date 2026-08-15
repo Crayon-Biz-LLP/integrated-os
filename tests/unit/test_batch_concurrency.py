@@ -8,11 +8,15 @@ item), and (3) items that were already decided are counted as skipped, not
 failed — so the app stops reporting "N failed" for things that merely
 changed already.
 """
+
+
 import asyncio
 
 import pytest
 
 from api.index import _run_batch_concurrently, _run_batch_job
+pytestmark = pytest.mark.decision
+
 
 
 async def _worker_ok(item_id: int) -> None:

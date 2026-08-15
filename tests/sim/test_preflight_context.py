@@ -3,6 +3,8 @@ import os
 import asyncio
 from unittest.mock import patch, MagicMock
 from core.context import execute_context_strategy, PRE_FLIGHT_CONFIG
+pytestmark = pytest.mark.retrieval
+
 
 skip_unless_live_db = pytest.mark.skipif(
     os.getenv("LIVE_DB") != "true",

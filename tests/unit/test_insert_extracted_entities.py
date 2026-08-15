@@ -1,4 +1,7 @@
 from core.pulse.graph import insert_extracted_entities
+import pytest
+pytestmark = pytest.mark.graph
+
 
 def test_insert_extracted_entities_routes_correctly(monkeypatch):
     calls = []

@@ -1,0 +1,28 @@
+#!/bin/sh
+# Pre-push hook — tracked in .githooks/ (git config core.hooksPath .githooks)
+# Runs the FAST tier (L0+L1+L2-mock — ruff, residue gate, mock unit tests)
+# before the push leaves this machine. CI remains the repo-level gate; this
+# hook is the 30-second local checkpoint that catches failures BEFORE they
+# land on main (CI discovers them after).
+#
+# Fast is mock-only by invariant (plans/75 §2.1) — it never touches the
+# database. The nightly/deep suite runs on a schedule, not before pushes.
+# Bypass: git push --no-verify  (genuine emergencies only)
+
+RUNNER="scripts/run_tests.py"
+if [ ! -f "$RUNNER" ]; then
+    echo "  ❌ pre-push: $RUNNER missing — cannot run the fast tier."
+    echo "     (git push --no-verify to override)"
+    exit 1
+fi
+
+echo "▶ pre-push: fast tier (ruff + residue + mock tests)…"
+if ! python3 "$RUNNER" fast --no-app; then
+    echo ""
+    echo "  ❌ pre-push rejected: fast tier failed — see above."
+    echo "     Fix before pushing. (git push --no-verify to override)"
+    exit 1
+fi
+
+echo "✅ pre-push: fast tier clean — push allowed."
+exit 0

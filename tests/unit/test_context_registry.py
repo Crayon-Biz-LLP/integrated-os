@@ -5,6 +5,8 @@ from core.context.schema import RetrievalItem
 from core.context.gates import apply_entity_grounding_gate
 from core.context.config import PRE_FLIGHT_CONFIG
 from core.context.pipeline import execute_context_strategy
+pytestmark = pytest.mark.retrieval
+
 
 
 class _Result:

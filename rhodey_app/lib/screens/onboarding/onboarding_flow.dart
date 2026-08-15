@@ -710,8 +710,20 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
       body: SafeArea(
         child: Column(
           children: [
-            if (_page > 0) _progressBar(),
+            // Always render the progress bar slot (it returns shrink on
+            // page 0). Inserting it conditionally would shift the PageView
+            // from child index 0 to 1 when _page becomes > 0, and Flutter's
+            // reconciliation (no key) would recreate the PageView element
+            // mid-animation — cancelling animateToPage and snapping back to
+            // page 0. The Sign-in step was unreachable.
+            _progressBar(),
             Expanded(
+              // Stable key: without it, the sibling slots changing type
+              // (progress bar / bottom bar appear between pages) makes
+              // Flutter's reconciliation recreate this PageView element
+              // mid-animation — cancelling animateToPage and snapping back
+              // to page 0. The Sign-in step was unreachable.
+              key: const ValueKey('onboarding-pages'),
               child: PageView(
                 controller: _controller,
                 physics: const NeverScrollableScrollPhysics(),
@@ -750,6 +762,9 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
   }
 
   Widget _progressBar() {
+    // Page 0 (welcome) has no progress bar — but the slot must still exist
+    // so the PageView's child index never changes (see build()).
+    if (_page == 0) return const SizedBox.shrink();
     return Padding(
       padding: const EdgeInsets.fromLTRB(24, 20, 24, 8),
       child: Row(

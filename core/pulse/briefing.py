@@ -136,6 +136,82 @@ def _ensure_briefing_opening(briefing_text: str, briefing_mode: str, opening_lin
     return '\n'.join([lines[0], '', opening, ''] + tail)
 
 
+def _resolve_time_intelligence(now: datetime, user_name: str = "") -> dict:
+    """Pure briefing-mode selection (extracted for the boundary-clock matrix).
+
+    `now` MUST be timezone-aware in the tenant's zone (Asia/Kolkata default).
+    Returns {is_weekend, is_pre_monday, is_monday_morning, briefing_mode,
+    system_persona} — the exact values the pulse engine derives from the
+    clock, so the whole weekday/weekend/Monday-morning branch is testable
+    without running the pipeline (plans/75 #6 boundary-clock matrix).
+
+    Current documented edges (pinned by tests): hour < 12 INCLUDES midnight
+    (00:00–11:59 → "Morning check.") — so a 00:30 pulse reads as a morning
+    briefing; Friday ≥19:00 and Saturday/Sunday count as weekend; Sunday
+    ≥19:00 takes Pre-Monday precedence over the weekend mode.
+    """
+    day = now.isoweekday()
+    hour = now.hour
+
+    is_weekend = (day == 6 or day == 7) or (day == 5 and hour >= 19)
+    is_pre_monday = (day == 7 and hour >= 19)
+    is_monday_morning = (day == 1 and hour < 11)
+
+    if is_weekend and not is_pre_monday:
+        briefing_mode = "Weekend: Chores and Ideas."
+        system_persona = "Focus ONLY on Home, Family, and Chores. Explicitly hide Work tasks. Be relaxed."
+    elif is_pre_monday:
+        briefing_mode = "Pre-Monday: Loading the Week."
+        system_persona = "Pre-load Monday. Show Work tasks that start tomorrow. Keep Home visible but deprioritized. Be direct."
+    else:
+        if hour < 12:
+            briefing_mode = "Morning check."
+            system_persona = f"Give {user_name} the plain picture of the board — what's on top, what's new, what needs doing. No coaching."
+        elif hour < 15 or (hour == 15 and now.minute < 30):
+            briefing_mode = "Afternoon check."
+            system_persona = f"Keep {user_name} moving on today's priorities. Be direct."
+        elif hour < 19:
+            if day == 5:
+                briefing_mode = "Friday wrap-up."
+                system_persona = f"Help {user_name} close the work week: what's done, what can wait. Be dry."
+            else:
+                briefing_mode = "Wrap-up."
+                system_persona = f"Help {user_name} close the day: what's done, what's still open. Be dry."
+        else:
+            briefing_mode = "Night wind-down."
+            system_persona = "Close out the day: what got done, what's still open, what's next. Be calm and brief."
+
+    return {
+        "is_weekend": is_weekend,
+        "is_pre_monday": is_pre_monday,
+        "is_monday_morning": is_monday_morning,
+        "briefing_mode": briefing_mode,
+        "system_persona": system_persona,
+    }
+
+
+def _map_pulse_mode(briefing_mode: str) -> str:
+    """Map a briefing_mode string → the clean pulse_mode the app renders.
+
+    Pure (extracted so every branch is pinned by tests). Unknown modes fall
+    back to 'check_in'.
+    """
+    mode_lower = (briefing_mode or "").lower()
+    if 'morning' in mode_lower:
+        return 'morning'
+    if 'afternoon' in mode_lower:
+        return 'afternoon'
+    if 'wrap' in mode_lower or 'closing' in mode_lower or 'sign off' in mode_lower:
+        return 'closing_loop'
+    if 'weekend' in mode_lower or 'chores' in mode_lower:
+        return 'weekend'
+    if 'pre-monday' in mode_lower or 'loading' in mode_lower:
+        return 'pre_monday'
+    if 'wind' in mode_lower or 'intel' in mode_lower or 'vaulted' in mode_lower:
+        return 'intel'
+    return 'check_in'
+
+
 def _store_briefing_to_history(briefing_text: str):
     """Store a condensed summary of this briefing in memories for future context."""
     if not briefing_text:
@@ -575,33 +651,14 @@ async def _process_pulse_impl(auth_secret: str = None, request_id: str = None, t
         hour = now.hour
         user_name = resolve_user_name()  # M2: per-tenant display name
 
-        is_weekend = (day == 6 or day == 7) or (day == 5 and hour >= 19)
-        is_pre_monday = (day == 7 and hour >= 19)
-        is_monday_morning = (day == 1 and hour < 11)
-
-        if is_weekend and not is_pre_monday:
-            briefing_mode = "Weekend: Chores and Ideas."
-            system_persona = "Focus ONLY on Home, Family, and Chores. Explicitly hide Work tasks. Be relaxed."
-        elif is_pre_monday:
-            briefing_mode = "Pre-Monday: Loading the Week."
-            system_persona = "Pre-load Monday. Show Work tasks that start tomorrow. Keep Home visible but deprioritized. Be direct."
-        else:
-            if hour < 12:
-                briefing_mode = "Morning check."
-                system_persona = f"Give {user_name} the plain picture of the board — what's on top, what's new, what needs doing. No coaching."
-            elif hour < 15 or (hour == 15 and now.minute < 30):
-                briefing_mode = "Afternoon check."
-                system_persona = f"Keep {user_name} moving on today's priorities. Be direct."
-            elif hour < 19:
-                if day == 5:
-                    briefing_mode = "Friday wrap-up."
-                    system_persona = f"Help {user_name} close the work week: what's done, what can wait. Be dry."
-                else:
-                    briefing_mode = "Wrap-up."
-                    system_persona = f"Help {user_name} close the day: what's done, what's still open. Be dry."
-            else:
-                briefing_mode = "Night wind-down."
-                system_persona = "Close out the day: what got done, what's still open, what's next. Be calm and brief."
+        # Pure branch — extracted so the boundary-clock matrix pins every
+        # mode without running the whole pipeline (plans/75 #6).
+        ti = _resolve_time_intelligence(now, user_name)
+        is_weekend = ti["is_weekend"]
+        is_pre_monday = ti["is_pre_monday"]
+        is_monday_morning = ti["is_monday_morning"]
+        briefing_mode = ti["briefing_mode"]
+        system_persona = ti["system_persona"]
 
         # M18c: the persona card is L3 KNOWLEDGE — it is fetched through the
         # ContextProvider in the parallel assembly below (same pipeline as
@@ -1408,21 +1465,7 @@ async def _process_pulse_impl(auth_secret: str = None, request_id: str = None, t
                 voice_line = _extract_insight(pre_report_briefing)[:120]
 
             # Map briefing_mode to a clean pulse_mode for the app
-            mode_lower = briefing_mode.lower()
-            if 'morning' in mode_lower:
-                pulse_mode_clean = 'morning'
-            elif 'afternoon' in mode_lower:
-                pulse_mode_clean = 'afternoon'
-            elif 'wrap' in mode_lower or 'closing' in mode_lower or 'sign off' in mode_lower:
-                pulse_mode_clean = 'closing_loop'
-            elif 'weekend' in mode_lower or 'chores' in mode_lower:
-                pulse_mode_clean = 'weekend'
-            elif 'pre-monday' in mode_lower or 'loading' in mode_lower:
-                pulse_mode_clean = 'pre_monday'
-            elif 'wind' in mode_lower or 'intel' in mode_lower or 'vaulted' in mode_lower:
-                pulse_mode_clean = 'intel'
-            else:
-                pulse_mode_clean = 'check_in'
+            pulse_mode_clean = _map_pulse_mode(briefing_mode)
 
             nag_list = overdue_tasks if overdue_tasks else []
             stale_names = [t.get('title', '') for t in stale_tasks] if stale_tasks else []

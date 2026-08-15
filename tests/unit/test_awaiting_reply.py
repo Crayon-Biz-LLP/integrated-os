@@ -14,6 +14,9 @@ Covered:
   - Fail-open behaviour: a DB error never propagates.
 """
 
+import pytest
+
+
 from unittest.mock import MagicMock
 
 from core.services.awaiting_reply import (
@@ -23,6 +26,8 @@ from core.services.awaiting_reply import (
     expire_stale_asks,
     auto_resolve_on_outgoing,
 )
+pytestmark = pytest.mark.decision
+
 
 
 class _FakeResponse:

@@ -21,31 +21,80 @@ from tests.fixtures.google_api_mocks import mock_google_apis  # noqa: F401, E402
 import pytest  # noqa: E402
 
 from tests.fixtures.test_tenant import fresh_supabase, resolve_test_tenant_uid  # noqa: E402
+from tests.fixtures.run_isolation import (  # noqa: E402
+    RUN_CHAT_BASE,
+    RUN_CHAT_SPAN,
+    SandboxLockHeldError,
+    acquire_sandbox_lock,
+    pre_delete_test_rows,
+    release_sandbox_lock,
+)
 
-# (table, column) pairs whose [TEST]/[SIM_TEST]-prefixed rows must live in the
-# test tenant only. Any row matching the marker pattern under a DIFFERENT
-# owner_id (or no owner) is a leak.
+
+# ── Clock determinism (plans/75 §8.2) ───────────────────────────────────────
+# One frozen-clock fixture for the whole suite. Anchored to a FIXED instant in
+# Asia/Kolkata (the repo's canonical timezone — see AGENTS.md timezone
+# hygiene) so pulse windows, sentinel nudge timing, and briefing-mode branches
+# are deterministic instead of wall-clock-flaky. Use it in any test that
+# depends on datetime.now()/today():
+#
+#     def test_x(self, frozen_clock):
+#         ...
+#
+# The yielded value is the frozen aware datetime. freezegun must be installed
+# (requirements.txt) — the fixture raises a clear error otherwise.
+@pytest.fixture
+def frozen_clock():
+    try:
+        from freezegun import freeze_time
+    except ImportError as e:  # pragma: no cover
+        raise RuntimeError(
+            "frozen_clock fixture requires freezegun — add it to requirements.txt"
+        ) from e
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    # Monday 2026-01-05 09:30 IST — a normal business-week morning, inside the
+    # briefing window. Tests that need a different instant pass their own
+    # freezegun.freeze_time(...) with an Asia/Kolkata-anchored datetime.
+    fixed = datetime(2026, 1, 5, 9, 30, tzinfo=ZoneInfo("Asia/Kolkata"))
+    with freeze_time(fixed):
+        yield fixed
+
+# (table, column) pairs whose [TEST]/[SIM_TEST]/[UAT]-prefixed rows must
+# live in the test tenant only. Any row matching the marker pattern under a
+# DIFFERENT owner_id (or no owner) is a leak. [UAT] added per the
+# leak-guard table growth rule (plans/75 §5): the L4 UAT suite writes
+# [UAT]-prefixed rows and its cleanup is owner-scoped — anything left under
+# another owner is exactly the 08-13 leak shape the guard must catch.
 _LEAK_MARKER_TABLES = [
     ("tasks", "title"),
     ("memories", "content"),
     ("graph_nodes", "label"),
-    ("raw_dumps", "text"),
+    ("raw_dumps", "content"),
     ("resources", "url"),
     ("audit_logs", "message"),
     ("projects", "name"),
     ("organizations", "name"),
+    # decisions: the per-item undo + learning-loop work writes decision rows
+    # (titles, learn_features metadata) — a [TEST]/[SIM_TEST]/[UAT]-titled
+    # decision owned outside the test tenant is a leak signal.
+    ("decisions", "title"),
 ]
 
 # Thread/workflow rows carry no [TEST] text — the sim suite seeds a fixed
 # UUID prefix, and workflow tests use a precise set of chat_ids. A broad
 # "chat_id >= 9000000" range is WRONG: real Telegram chat ids (e.g. Danny's
 # 756478183) exceed 9M, so the range check flags legitimate production rows
-# as leaks. The test suites use exactly these values:
-#   - sim seed fixture:          chat_id = 999999999
-#   - note_capture tests:        9000000 + offset (1..19)
-#   - sim test_suite2:           chat_id = 9000001
+# as leaks. The chat ids the suites write are:
+#   - legacy fixed ids (guard still knows pre-X4 rows on the sandbox):
+#     sim seed 999999999, note_capture 9000000+offset, suite2 9000001,
+#     UAT 909999999
+#   - the per-run band (X4): range(RUN_CHAT_BASE, RUN_CHAT_BASE + 32) —
+#     sim seed +0, suite2 +1, UAT +2, note_capture +0..+19
 _TEST_THREAD_ID_MARKER = "00000000-0000-4000-8000"
-_TEST_CHAT_IDS = frozenset({999999999, 9000000, 9000001, 9000002, 9000003, 9000005, 9000006, 9000007, 9000008, 9000009, 9000010, 9000019})
+_LEGACY_TEST_CHAT_IDS = frozenset({999999999, 9000000, 9000001, 9000002, 9000003, 9000005, 9000006, 9000007, 9000008, 9000009, 9000010, 9000019, 909999999})
+_TEST_CHAT_IDS = _LEGACY_TEST_CHAT_IDS | frozenset(range(RUN_CHAT_BASE, RUN_CHAT_BASE + RUN_CHAT_SPAN))
 
 
 def _leaked_test_rows() -> list[str]:
@@ -56,7 +105,7 @@ def _leaked_test_rows() -> list[str]:
     supabase = fresh_supabase()
     leaked = []
     for table, col in _LEAK_MARKER_TABLES:
-        for marker in ("[TEST]%", "[SIM_TEST]%"):
+        for marker in ("[TEST]%", "[SIM_TEST]%", "[UAT]%"):
             try:
                 res = (
                     supabase.table(table)
@@ -115,3 +164,35 @@ def _verify_no_cross_tenant_leaks():
         "CROSS-TENANT LEAK DETECTED — [TEST]/[SIM_TEST] rows outside the test "
         f"tenant: {leaked}"
     )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _clean_slate_before_live_session():
+    """Sandbox serialization (X4 residual) + clean-slate pre-delete (X5).
+
+    1. Acquire the cross-machine Redis lock — a second live run (CI cron +
+       local, or two locals) fails fast instead of racing the shared sandbox.
+       Marker-title sweeps cross runs regardless of chat allocation, so this
+       lock is what makes the residual structurally impossible. TTL
+       self-expires on a killed run; Redis-unconfigured environments skip it.
+    2. Purge test-tenant marker rows BEFORE the suite — a run killed mid-way
+       leaves residue (fixed thread UUIDs, [SIM_TEST] titles, workflow rows)
+       that poisons the next run. Rows owned by ANY other tenant are
+       deliberately untouched — the leak guard is the enforcement point.
+    """
+    if os.getenv("LIVE_DB") != "true":
+        yield
+        return
+    uid = resolve_test_tenant_uid()
+    if not uid:
+        yield
+        return  # no test tenant → suites skip → nothing to purge
+    try:
+        lock = acquire_sandbox_lock()
+    except SandboxLockHeldError as e:
+        pytest.fail(str(e), pytrace=False)
+    pre_delete_test_rows(uid)
+    try:
+        yield
+    finally:
+        release_sandbox_lock(lock)

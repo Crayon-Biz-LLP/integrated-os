@@ -8,6 +8,9 @@ These builders close the gap where actionable emails/Teams/WhatsApp/calls
 because the old feed only read raw_dumps with status='pending'.
 """
 
+import pytest
+
+
 from unittest.mock import MagicMock
 
 from core.services.inbox_feed import (
@@ -16,6 +19,8 @@ from core.services.inbox_feed import (
     fetch_pending_drafts,
     fetch_fyi_messages,
 )
+pytestmark = pytest.mark.decision
+
 
 
 class _FakeResponse:

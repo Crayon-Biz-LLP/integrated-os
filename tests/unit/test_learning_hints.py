@@ -9,11 +9,16 @@ hint is empty, so the M9.4 golden stays stable.
 Run: python -m pytest tests/unit/test_learning_hints.py -v
 """
 
+import pytest
+
+
 from unittest.mock import patch
 
 from core.lib import learning_hints
 from core.lib.learning_hints import build_planner_hint, get_action_planner_hint
 from core.prompts.planner import build_planner_prompt
+pytestmark = pytest.mark.learning
+
 
 
 def _pattern(op, total, missing, confidence=0.9):

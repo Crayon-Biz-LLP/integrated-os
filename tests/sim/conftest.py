@@ -1,8 +1,10 @@
 import pytest
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import patch, MagicMock
 from core.lib.audit_logger import set_trace_id
 from core.services.db import tenant_scope
 from tests.fixtures.test_tenant import fresh_supabase, resolve_test_tenant_uid
+from tests.fixtures.run_isolation import run_chat_id, run_thread_uuid
 from core.llm.compat import get_embedding_sync
 from core.llm.constants import EMBEDDING_DIMENSION
 from core.lib.graph_rules import normalize_label
@@ -66,19 +68,62 @@ def _test_tenant_scope():
 
 
 # ── Module-level cleanup: sweep stale [SIM_TEST] rows before any test ──
-# Must respect FK order: tasks/projects first → organizations/graph_nodes last.
+# Batched teardown (X6): the sweep used to run one sequential network
+# round-trip per table per test — ~17 deletes × 97 tests dominated the
+# nightly budget. Deletes are now grouped into FK-safe tiers (children
+# before parents; every FK among swept tables is SET NULL or CASCADE, and
+# org_creation_signals.task_id is the one NO ACTION edge, so it must go in
+# the first tier) and each tier's deletes run CONCURRENTLY. Leak-safety is
+# unchanged: every delete is still owner-scoped
+# (eq('owner_id', TEST_TENANT_UID)) — the parallel sweep can never touch
+# another tenant's rows, and the order within a tier is irrelevant because
+# no tier-A table is referenced by another tier-A table.
+
+_SWEEP_TIERS = [
+    # Tier A — leaves/children: nothing else in the sweep references these
+    # (org_creation_signals is the NO ACTION child of tasks/raw_dumps, so it
+    # must be deleted before them; conversations is the CASCADE child of
+    # conversation_threads which is cleaned by id elsewhere).
+    ['org_creation_signals', 'conversations', 'retrieval_index_runs',
+     'audit_logs', 'resources'],
+    # Tier B — reference projects/graph_nodes via SET NULL edges; also
+    # raw_dumps, because org_creation_signals.raw_dump_id → raw_dumps is a
+    # NO ACTION FK (no ON DELETE clause) — raw_dumps must be deleted AFTER
+    # org_creation_signals, and nothing else in the sweep references it.
+    ['tasks', 'memories', 'raw_dumps'],
+    # Tier C — references graph_nodes via SET NULL.
+    ['projects'],
+    # Tier D — the parent everything else points at (SET NULL edges);
+    # organizations joins here (parent of projects, dropped by migration 75).
+    ['graph_nodes', 'organizations'],
+]
 
 _SWEEP_ORDER = [
-    ('org_creation_signals', 'org_name', 'org_creation_signals'),
-    ('tasks', 'title', 'tasks'),
-    ('memories', 'content', 'memories'),
-    ('projects', 'name', 'projects'),
-    ('graph_nodes', 'label', 'graph_nodes'),
-    ('resources', 'url', 'resources'),
-    ('raw_dumps', 'content', 'raw_dumps'),
-    ('audit_logs', 'message', 'audit_logs'),
-    ('conversations', 'content', 'conversations'),
+    ('org_creation_signals', 'org_name'),
+    ('tasks', 'title'),
+    ('memories', 'content'),
+    ('projects', 'name'),
+    ('graph_nodes', 'label'),
+    ('resources', 'url'),
+    ('raw_dumps', 'content'),
+    ('audit_logs', 'message'),
+    ('conversations', 'content'),
 ]
+
+def _run_parallel(fns):
+    """Run a list of zero-arg callables concurrently.
+
+    Every fn builds its own client via fresh_supabase() (a new client per
+    call over the shared httpx transport — the transport is thread-safe, and
+    the per-call client keeps MagicMock replacement in other suites from
+    affecting the real deletes). Exceptions are swallowed inside each fn
+    (see _delete_ilike), so this only needs to join the workers.
+    """
+    if not fns:
+        return
+    with ThreadPoolExecutor(max_workers=len(fns)) as ex:
+        for fut in ex.map(lambda fn: fn(), fns):
+            pass
 
 def _delete_ilike(table, col, pattern):
     """Delete pattern-matched rows owned by the TEST TENANT only.
@@ -114,12 +159,24 @@ def _sweep_sim_test_rows():
     # FK orphans first (may not have [SIM_TEST] in their own title/content).
     # The organizations mirror was dropped by migration 75 — those calls
     # silently no-op (table missing), projects is the live parent.
-    _delete_fk_orphans('tasks', 'organization_id', 'organizations', 'name', '[SIM_TEST]%')
-    _delete_fk_orphans('tasks', 'project_id', 'projects', 'name', '[SIM_TEST]%')
-    _delete_fk_orphans('projects', 'organization_id', 'organizations', 'name', '[SIM_TEST]%')
-    # Then direct ilike sweep in FK-safe order
-    for tbl, col, _ in _SWEEP_ORDER:
-        _delete_ilike(tbl, col, '[SIM_TEST]%')
+    # These three passes are independent (different FK columns) → parallel.
+    _run_parallel([
+        lambda: _delete_fk_orphans('tasks', 'organization_id', 'organizations', 'name', '[SIM_TEST]%'),
+        lambda: _delete_fk_orphans('tasks', 'project_id', 'projects', 'name', '[SIM_TEST]%'),
+        lambda: _delete_fk_orphans('projects', 'organization_id', 'organizations', 'name', '[SIM_TEST]%'),
+    ])
+    # Then the direct ilike sweep, FK-safe tiers run sequentially, tables
+    # within a tier concurrently. The module sweep only covers the tables in
+    # _SWEEP_ORDER (tier members outside it — retrieval_index_runs,
+    # organizations — are swept by the per-test _cleanup_sim_test_rows).
+    by_table = {tbl: col for tbl, col in _SWEEP_ORDER}
+    for tier in _SWEEP_TIERS:
+        _run_parallel([
+            lambda tbl=t, col=c: _delete_ilike(tbl, col, '[SIM_TEST]%')
+            for t in tier
+            if t in by_table
+            for c in [by_table[t]]
+        ])
 
 _sweep_sim_test_rows()
 
@@ -146,17 +203,46 @@ _CLEANUP_PREDICATES = {
 }
 
 
+# Tables that are cleaned by direct ilike in _cleanup_sim_test_rows, mapped
+# onto the FK-safe _SWEEP_TIERS (tables absent from a tier are simply not
+# swept there).
+_CLEANUP_TABLE_TO_TIER = {
+    'org_creation_signals': 0,
+    'conversations': 0,
+    'retrieval_index_runs': 0,
+    'audit_logs': 0,
+    'resources': 0,
+    'tasks': 1,
+    'memories': 1,
+    'raw_dumps': 1,
+    'projects': 2,
+    'graph_nodes': 3,
+    'organizations': 3,
+}
+
+
 def _cleanup_sim_test_rows():
-    # FK orphans first (tasks/projects with titles that don't start with [SIM_TEST])
-    _delete_fk_orphans('tasks', 'organization_id', 'organizations', 'id', '[SIM_TEST]%')
-    _delete_fk_orphans('tasks', 'project_id', 'projects', 'id', '[SIM_TEST]%')
-    _delete_fk_orphans('projects', 'organization_id', 'organizations', 'id', '[SIM_TEST]%')
-    # Then direct ilike sweep
+    # FK orphans first (tasks/projects with titles that don't start with
+    # [SIM_TEST]) — independent passes → parallel.
+    _run_parallel([
+        lambda: _delete_fk_orphans('tasks', 'organization_id', 'organizations', 'id', '[SIM_TEST]%'),
+        lambda: _delete_fk_orphans('tasks', 'project_id', 'projects', 'id', '[SIM_TEST]%'),
+        lambda: _delete_fk_orphans('projects', 'organization_id', 'organizations', 'id', '[SIM_TEST]%'),
+    ])
+    # Then direct ilike sweep: tiers sequential, tables within a tier
+    # concurrent. Organizations was dropped by migration 75 — the delete
+    # silently no-ops (table missing), projects is the live parent.
+    tiers: list[list[tuple[str, str, str]]] = [[] for _ in _SWEEP_TIERS]
     for tbl, pred in _CLEANUP_PREDICATES.items():
         if pred is None:
             continue
         col, pattern = pred
-        _delete_ilike(tbl, col, pattern)
+        tiers[_CLEANUP_TABLE_TO_TIER[tbl]].append((tbl, col, pattern))
+    for tier in tiers:
+        _run_parallel([
+            lambda tbl=t, col=c, pat=p: _delete_ilike(tbl, col, pat)
+            for (t, c, p) in tier
+        ])
 
 
 def _cleanup_by_ids(table: str, id_column: str, ids: list):
@@ -292,9 +378,13 @@ def seed_test_data():
         seeded['tasks'].append(task_res.data[0]['id'])
 
     # 4. Conversation thread (for session continuity tests)
+    # X4: per-run chat/thread ids so concurrent runs never collide on the
+    # fixed values (thread UUID PK, workflow chat rows).
+    thread_chat_id = run_chat_id()
+    thread_id = run_thread_uuid()
     thread_res = supabase.table('conversation_threads').insert({
-        'id': '00000000-0000-4000-8000-00000000aaaa',
-        'chat_id': 999999999,
+        'id': thread_id,
+        'chat_id': thread_chat_id,
         'active_anchor': {"type": "person", "name": "Shifrah", "id": seeded['graph_nodes'].get('[SIM_TEST] Shifrah')},
         'owner_id': TEST_TENANT_UID,
     }).execute()
@@ -303,8 +393,8 @@ def seed_test_data():
 
     # 5. Workflow (for session continuity tests)
     wf_res = supabase.table('conversation_workflows').insert({
-        'thread_id': '00000000-0000-4000-8000-00000000aaaa',
-        'chat_id': 999999999,
+        'thread_id': thread_id,
+        'chat_id': thread_chat_id,
         'workflow_type': 'awaiting_disambiguation_confirmation',
         'payload': {},
         'awaiting_user_input': True,

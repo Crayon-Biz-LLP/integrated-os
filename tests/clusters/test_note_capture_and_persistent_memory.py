@@ -3,6 +3,8 @@ Comprehensive acceptance/regression suite for Rhodey's note capture and persiste
 
 Run: LIVE_DB=true PYTHONPATH=. pytest tests/clusters/test_note_capture_and_persistent_memory.py -v
 """
+
+
 import uuid
 from datetime import datetime, timezone, timedelta
 
@@ -10,11 +12,14 @@ import pytest
 from core.services.db import tenant_aware_client
 from core.webhook.workflows import check_and_resume_workflow
 from core.lib.conversation import resolve_thread
+from tests.fixtures.run_isolation import run_chat_id
+pytestmark = pytest.mark.graph
+
 
 supabase = tenant_aware_client()
 
 
-TEST_CHAT_BASE = 9000000
+TEST_CHAT_BASE = run_chat_id()  # X4: per-run band, never collides with CI/local
 TEST_SOURCE = "test_e2e_nc"
 
 

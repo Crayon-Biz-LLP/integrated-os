@@ -10,12 +10,16 @@ Proves, per the hardened test matrix:
   signoffs; never the raw card, curated people, or never-topics.
 """
 
+
+
 from __future__ import annotations
 
 import pytest
 
 from core.services import message_voice
 from core.services.persona import persona_surface_summary
+pytestmark = pytest.mark.briefing
+
 
 
 def make_card(**overrides) -> dict:

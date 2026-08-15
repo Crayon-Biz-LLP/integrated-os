@@ -11,6 +11,9 @@ This is the accidental-tap protection that the old auto-decisions undo never
 covered: manual approve/reject (auto_decided=False) now carries the same
 recovery path.
 """
+
+import pytest
+
 from collections import defaultdict
 from types import SimpleNamespace
 
@@ -18,6 +21,8 @@ from fastapi.testclient import TestClient
 
 from api.index import app
 from core.webhook.utils import build_action_ledger
+pytestmark = pytest.mark.decision
+
 
 client = TestClient(app)
 

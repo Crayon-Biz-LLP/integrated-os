@@ -13,13 +13,18 @@ Proves, per the hardened test matrix:
 The negative AST gate (matrix d) lives in test_persona_l3_context.py.
 """
 
+
+
 from __future__ import annotations
+import pytest
 
 import asyncio
 
 from fastapi.testclient import TestClient
 
 from api.index import app, get_persona_route
+pytestmark = pytest.mark.briefing
+
 
 client = TestClient(app)
 

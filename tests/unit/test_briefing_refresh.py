@@ -16,12 +16,16 @@ T4 — fire_briefing_refresh in a sync context (no running event loop) logs and
      skips instead of raising.
 """
 
+
+
 import asyncio
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
 import core.services.briefing_refresh as mod
+pytestmark = pytest.mark.pulse
+
 
 
 @pytest.fixture(autouse=True)

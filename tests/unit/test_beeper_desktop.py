@@ -13,6 +13,9 @@ Covered (pure logic — no network):
   - process_chat: cursor advances only to the newest routed message
 """
 
+import pytest
+
+
 import asyncio
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
@@ -28,6 +31,8 @@ from core.skills.beeper_desktop import (
     _cursor_key,
     BeeperDesktopClient,
 )
+pytestmark = pytest.mark.ingest
+
 
 
 # ── token resolution ───────────────────────────────────────────────────

@@ -8,9 +8,14 @@ These stages are pure and cost-free — they gate whether the LLM ever sees a
 message. Getting them right is what collapses the FYI backlog.
 """
 
+import pytest
+
+
 from core.lib.chat_split import split_chat_identity, is_automated_participant, normalize_chat_key
 from core.lib.message_sieve import classify_sieve
 from core.lib.ask_detector import should_escalate
+pytestmark = pytest.mark.ingest
+
 
 
 # ── Stage 0: chat/participant split ──────────────────────────────────

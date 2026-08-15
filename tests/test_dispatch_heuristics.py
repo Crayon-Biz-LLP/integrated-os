@@ -1,4 +1,7 @@
 from core.webhook.dispatch import _format_task_line, resolve_dates_from_query
+import pytest
+pytestmark = pytest.mark.ingest
+
 
 def test_format_task_line():
     assert _format_task_line("Clean desk", "HOME") == "Clean desk [HOME]"

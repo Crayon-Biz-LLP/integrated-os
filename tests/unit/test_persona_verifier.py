@@ -5,7 +5,12 @@ fabrication a CI failure instead of a discovery: every planted claim must
 be REJECTED, and a genuinely grounded card must PASS.
 """
 
+import pytest
+
+
 import os
+pytestmark = pytest.mark.briefing
+
 
 os.environ.setdefault("SUPABASE_URL", "http://localhost:1")
 os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "test-key")

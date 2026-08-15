@@ -1,7 +1,12 @@
 """Unit tests for Phase 3 — chunk enrichment with metadata prefixes."""
 
+import pytest
+
+
 from core.retrieval.pipeline import _build_enrichment_prefix
 from core.retrieval.config import RetrievalConfig
+pytestmark = pytest.mark.retrieval
+
 
 
 class TestBuildEnrichmentPrefix:

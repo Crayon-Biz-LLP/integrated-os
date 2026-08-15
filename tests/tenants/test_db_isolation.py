@@ -7,8 +7,13 @@ tenant-scoped RPC function carries an owner parameter.
 Runs against the copy DB — skips when unreachable (see conftest.tenants).
 """
 
+import pytest
+
+
 from tests.tenants.conftest import _UID_A, _UID_B
 from tests.tenants.db_utils import MARK, psql
+pytestmark = pytest.mark.auth
+
 
 # (table, marker-column, A-marker-value, B-marker-value)
 MARKERS = [

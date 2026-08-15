@@ -119,6 +119,13 @@ ALLOW_PAIRS: set[tuple[str, str]] = {
     # TENANT1_EMAIL_ARCHIVE_LABEL constant — Danny-channel config (M6); the
     # rest of email_ingest.py is the multi-tenant fan-out file and stays gated.
     ("core/skills/email_ingest.py", "Ashraya"),
+    # FALSE POSITIVE (d9a8b1b): entity_detector.py's _COMMON_ORG_WORDS is a
+    # generic English vocabulary guard — ordinary words that must NEVER become
+    # org entities ('church', 'school', 'family', 'community' are already in
+    # STOPLIST). 'ministry' here is generic NLP vocabulary beside them, NOT
+    # tenant-1 flavor content; prompts stay gated. Kept as a pair (not STOPLIST)
+    # so the token still flags everywhere else.
+    ("core/lib/entity_detector.py", "ministry"),
 }
 
 # Files whose HITS are always comments/docstrings (kept out of the scan to

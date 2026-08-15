@@ -2,6 +2,12 @@
 -- Migration 101: Drop dead schema (tables + RPCs superseded by
 -- the graph + on-demand context pipeline)
 --
+-- NOTE (2026-08-15, same-day amendment): section 1 now drops the
+-- retrieval_edges → retrieval_triples FK first — see the inline comment.
+-- This migration was applied to prod BEFORE the amendment (prod's FK was
+-- absent, so nothing changed there); the amendment makes the chain
+-- replayable from a fresh schema. ====================================
+--
 -- Verified dead (2026-08-15 analysis — zero references in Python,
 -- RPCs, triggers, or inbound FKs; checked against live schema):
 --
@@ -32,6 +38,14 @@
 -- ============================================================
 
 -- 1. Drop the five dead tables (verified: no inbound FKs → no CASCADE needed)
+--    Chain-replay fix (replay_migrations caught this): db/04 created
+--    retrieval_edges.source_triple_id REFERENCES retrieval_triples, so a
+--    FRESH replay of the chain hits "cannot drop retrieval_triples because
+--    other objects depend on it" here. Prod was unaffected (retrieval_edges
+--    predated db/04, so the FK never existed there) — this drop is an
+--    IF EXISTS no-op on prod and the missing link on a fresh schema.
+ALTER TABLE IF EXISTS public.retrieval_edges
+    DROP CONSTRAINT IF EXISTS retrieval_edges_source_triple_id_fkey;
 DROP TABLE IF EXISTS public.retrieval_passage_triple_links;
 DROP TABLE IF EXISTS public.retrieval_triples;
 DROP TABLE IF EXISTS public.entity_briefs;

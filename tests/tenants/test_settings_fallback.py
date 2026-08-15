@@ -2,10 +2,15 @@
 gets the defaults; another tenant's settings never leak into their view.
 """
 
+import pytest
+
+
 import uuid
 from unittest.mock import patch
 
 from core.services import user_settings as us
+pytestmark = pytest.mark.auth
+
 
 
 def _mk(users_rows, settings_rows):

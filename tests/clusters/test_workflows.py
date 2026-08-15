@@ -4,6 +4,8 @@ from core.webhook.workflows import check_and_resume_workflow
 from core.lib.conversation import resolve_thread
 from core.services.db import tenant_aware_client
 import uuid
+pytestmark = pytest.mark.ingest
+
 
 def _seed_org_node(label: str) -> str:
     """Create (or reuse) an organization graph node owned by the test tenant.

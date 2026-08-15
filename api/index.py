@@ -219,7 +219,8 @@ async def pulse_route_post(request: Request):
     return {"success": True, "briefing": result.get("briefing")}
 
 # --- PULSE HEARTBEAT (cron-job.org — gated per-tenant briefing) ---
-@app.api_route("/api/pulse-cron", methods=["GET", "POST"])
+@app.get("/api/pulse-cron")
+@app.post("/api/pulse-cron")
 async def pulse_cron_route(request: Request):
     """Triggered by cron-job.org every 30 minutes — the briefing heartbeat.
 
@@ -307,7 +308,8 @@ async def pulse_cron_route(request: Request):
     }
 
 # --- THE SENTINEL WATCHER (Vercel Cron) ---
-@app.api_route("/api/sentinel", methods=["GET", "POST"])
+@app.get("/api/sentinel")
+@app.post("/api/sentinel")
 async def sentinel_route(request: Request):
     """Triggered by Vercel Cron every 5 minutes."""
     # Vercel Cron uses a bearer token
@@ -326,7 +328,8 @@ async def sentinel_route(request: Request):
 
 
 # --- DECISION PULSE (Pending Approvals) ---
-@app.api_route("/api/decision-pulse", methods=["GET", "POST"])
+@app.get("/api/decision-pulse")
+@app.post("/api/decision-pulse")
 async def decision_pulse_route(request: Request):
     """Triggered by cron-job.org — pending approvals (no AI)."""
     auth_header = request.headers.get("Authorization", "")
@@ -342,13 +345,15 @@ async def decision_pulse_route(request: Request):
     return result
 
 # Backward-compat redirect for old /api/maintenance (now /api/health)
-@app.api_route("/api/maintenance", methods=["GET", "POST"])
+@app.get("/api/maintenance")
+@app.post("/api/maintenance")
 async def maintenance_redirect_route(request: Request):
     """Redirect to /api/health. Old route kept for backward compat."""
     return await health_check_route(request)
 
 # --- HEALTH CHECK (replaces old /api/maintenance) ---
-@app.api_route("/api/health", methods=["GET", "POST"])
+@app.get("/api/health")
+@app.post("/api/health")
 async def health_check_route(request: Request):
     """Triggered by cron-job.org or GitHub Actions — runs full health check.
 
@@ -369,7 +374,8 @@ async def health_check_route(request: Request):
     return result
 
 
-@app.api_route("/api/admin/spend", methods=["GET", "POST"])
+@app.get("/api/admin/spend")
+@app.post("/api/admin/spend")
 async def admin_spend_route(request: Request, days: int = 7):
     """(M6) Per-tenant LLM spend — cost-per-user per day/week.
 
@@ -770,7 +776,8 @@ async def _home_feed_briefing():
     return payload
 
 # --- EVENING ROUNDUP ---
-@app.api_route("/api/roundup", methods=["GET", "POST"])
+@app.get("/api/roundup")
+@app.post("/api/roundup")
 async def roundup_route(request: Request):
     """Triggered by cron-job.org — evening roundup prompt."""
     auth_header = request.headers.get("Authorization", "")
@@ -2835,7 +2842,7 @@ async def auto_decisions_confirm_route(request: Request):
         cutoff = (now - timedelta(minutes=30)).isoformat()
 
         decision_res = supabase.table('decisions') \
-            .select('id, decision_type') \
+            .select('id, decision_type, source, metadata') \
             .eq('auto_decided', True) \
             .eq('status', 'active') \
             .is_('verified_at', None) \
@@ -2843,22 +2850,22 @@ async def auto_decisions_confirm_route(request: Request):
             .execute()
 
         confirmed_count = 0
+        trained_count = 0
         for row in (decision_res.data or []):
             supabase.table('decisions').update({
                 'verified_at': now.isoformat(),
             }).eq('id', row['id']).execute()
+            # Vision #4: per-item learning signal against the decision's REAL
+            # subsystem + EXACT decision-time features (ledger X3 — the old
+            # single 'auto_decisions' observation was decorative).
+            from core.webhook.utils import emit_confirmed_observation
+            if await emit_confirmed_observation(row, source_tag='auto_decisions_confirm'):
+                trained_count += 1
             confirmed_count += 1
 
         if confirmed_count > 0:
-            await emit_observation(
-                subsystem='auto_decisions',
-                event_type='verification',
-                outcome='confirmed',
-                predicted='auto_approve',
-                actual='verified',
-                features={'count': confirmed_count}
-            )
-            print(f"User confirmed {confirmed_count} auto-decisions via app")
+            print(f"User confirmed {confirmed_count} auto-decisions via app "
+                  f"({trained_count} emitted learning signals)")
 
         return {"success": True, "confirmed": confirmed_count}
     except HTTPException:
@@ -2893,7 +2900,7 @@ async def auto_decisions_undo_route(request: Request):
             'edge': 'graph_edge_approval',
         }[undo_target]
 
-        decision_res = supabase.table('decisions').select('id, entity_id, decision_type') \
+        decision_res = supabase.table('decisions').select('id, entity_id, decision_type, metadata') \
             .eq('auto_decided', True) \
             .eq('status', 'active') \
             .is_('verified_at', None) \
@@ -2908,6 +2915,12 @@ async def auto_decisions_undo_route(request: Request):
 
             # Reverse the decision record
             reverse_decision(decision_id, rationale="User undid auto-approve via app")
+
+            # Vision #4: an undo is a learning signal — emit the inverse
+            # observation so the pattern that caused the wrong auto-approve
+            # demotes (see emit_undo_correction).
+            from core.webhook.utils import emit_undo_correction
+            await emit_undo_correction(row)
 
             # Attempt to undo the actual DB action
             if undo_target == 'channels' and entity_id and str(entity_id).isdigit():
@@ -2983,6 +2996,12 @@ async def decision_undo_route(request: Request):
 
         # 1. Reverse the decision record.
         reverse_decision(decision['id'], rationale="User undid manual decision via app undo")
+
+        # Vision #4: an undo is a learning signal — emit the inverse
+        # observation so the pattern that overstepped demotes (see
+        # emit_undo_correction). Fail-open: never breaks the undo.
+        from core.webhook.utils import emit_undo_correction
+        await emit_undo_correction(decision)
 
         # 2. Revert the underlying row back to pending so it reappears.
         reverted_rows = 0
@@ -4481,7 +4500,8 @@ async def whatsapp_ingest_route(request: Request):
 
 
 # --- BEEPER BRIDGE (Phase B1 — Matrix stream sync) ---
-@app.api_route("/api/beeper-sync", methods=["GET", "POST"])
+@app.get("/api/beeper-sync")
+@app.post("/api/beeper-sync")
 async def beeper_sync_route(request: Request):
     """Trigger one Beeper bridge tick (fan out per active tenant).
 

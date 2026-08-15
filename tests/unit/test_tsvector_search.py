@@ -3,7 +3,12 @@
 These are pure functions with no DB dependency.
 """
 
+import pytest
+
+
 from core.retrieval.search import _build_tsquery
+pytestmark = pytest.mark.retrieval
+
 
 
 class TestBuildTsquery:

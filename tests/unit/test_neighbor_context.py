@@ -1,6 +1,11 @@
 """Unit tests for Phase 2 — neighboring-context surfacing in _assemble_bundles."""
 
+import pytest
+
+
 from core.retrieval.search import _find_neighbor_ids, _MAX_SUPPORTING_PASSAGES
+pytestmark = pytest.mark.retrieval
+
 
 
 class TestFindNeighborIds:

@@ -7,9 +7,14 @@ invariant #2) and the `resolve_relative_dates` delta extensions
 Run: python -m pytest tests/unit/test_time_utils.py -v
 """
 
+import pytest
+
+
 from datetime import datetime, timedelta, timezone
 
 from core.lib.time_utils import extract_time_delta, resolve_relative_dates, resolve_time_delta
+pytestmark = pytest.mark.decision
+
 
 IST = timezone(timedelta(hours=5, minutes=30))
 # Aug 12, 2026 14:48 IST — the Aug 12 incident's reference time

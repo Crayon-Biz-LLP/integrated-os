@@ -1,4 +1,7 @@
 from core.skills.backfill_graph import get_or_create_node
+import pytest
+pytestmark = pytest.mark.graph
+
 
 def test_backfill_suspicious_concept_routes_to_pending(monkeypatch):
     calls = []

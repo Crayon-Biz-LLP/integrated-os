@@ -4,10 +4,15 @@ PROJECT_UPDATE is still needed as a separate intent, or if NOTE handles it.
 
 Run: PYTHONPATH=. python tests/test_classify_project_update.py
 """
+
+import pytest
+
 import asyncio
 import sys
 import os
 from dotenv import load_dotenv
+pytestmark = pytest.mark.ingest
+
 
 # Load .env from project root
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

@@ -38,6 +38,23 @@ from core.webhook.commands import handle_command, handle_undo_command
 from core.webhook.multimodal import process_multimodal_content
 
 
+# ── Chat authorization (plans/75 §7: webhook test-chat bypass) ─────────────
+# Production truth: ONLY the owner chat (env TELEGRAM_CHAT_ID) is authorized.
+# TEST_CHAT_IDS is a DEFAULT-OFF allow-list for the automated UAT suite — when
+# unset/empty, behavior is byte-identical to the legacy single-chat gate
+# (fail-closed: no test chat, no bypass). When set, each listed chat id is
+# additionally accepted. Prod never sets it; only CI/nightly UAT runs do.
+def _chat_authorized(chat_id) -> bool:
+    owner = os.getenv("TELEGRAM_CHAT_ID")
+    if owner and str(chat_id) == str(owner):
+        return True
+    allowlist = os.getenv("TEST_CHAT_IDS", "").strip()
+    if not allowlist:
+        return False
+    allowed = {c.strip() for c in allowlist.split(",") if c.strip()}
+    return str(chat_id) in allowed
+
+
 async def handle_confident_note(text: str, chat_id: int, receipt: str = None, source: str = "telegram", sender: str = "user", entity: str = None, extraction_method: str = None, session_id: str = None, active_anchor: dict = None, exclude_signal_types: list = None) -> str | None:
     """NOTE handler: routes bare URLs and /note shortcuts to the processing pipeline.
 
@@ -110,8 +127,7 @@ async def process_callback_query(callback_query: dict):
     if not chat_id:
         return {"success": True}
 
-    owner_id = os.getenv("TELEGRAM_CHAT_ID")
-    if not owner_id or str(chat_id) != str(owner_id):
+    if not _chat_authorized(chat_id):
         audit_log_sync("webhook", "WARNING", f"Unauthorized callback from Chat ID: {chat_id}")
         return {"success": True}
         
@@ -145,7 +161,7 @@ async def process_callback_query(callback_query: dict):
 
                 # Find unverified auto-decisions from the last 30 minutes
                 decision_res = supabase.table('decisions')\
-                    .select('id, decision_type')\
+                    .select('id, decision_type, source, metadata')\
                     .eq('auto_decided', True)\
                     .eq('status', 'active')\
                     .is_('verified_at', None)\
@@ -153,6 +169,7 @@ async def process_callback_query(callback_query: dict):
                     .execute()
 
                 confirmed_count = 0
+                trained_count = 0
                 for row in (decision_res.data or []):
                     decision_id = row['id']
 
@@ -161,27 +178,24 @@ async def process_callback_query(callback_query: dict):
                         'verified_at': now.isoformat(),
                     }).eq('id', decision_id).execute()
 
+                    # Vision #4: confirming is a learning signal — per-item,
+                    # against the decision's REAL subsystem and its EXACT
+                    # decision-time features (ledger X3: the old single
+                    # 'auto_decisions' observation was decorative).
+                    from core.webhook.utils import emit_confirmed_observation
+                    if await emit_confirmed_observation(row, source_tag='confirm_auto_all'):
+                        trained_count += 1
+
                     confirmed_count += 1
 
                 if confirmed_count > 0:
-                    # Emit observation to reinforce pattern confidence
-                    # _update_pattern_count() in telemetry correctly maps
-                    # this to the right pattern via feature-hash matching
-                    await emit_observation(
-                        subsystem='auto_decisions',
-                        event_type='verification',
-                        outcome='confirmed',
-                        predicted='auto_approve',
-                        actual='verified',
-                        features={'count': confirmed_count}
-                    )
-
                     await send_telegram(
                         chat_id,
                         ack_verified(confirmed_count)
                     )
                     audit_log_sync("webhook", "INFO",
-                        f"User confirmed {confirmed_count} auto-decisions — patterns strengthened")
+                        f"User confirmed {confirmed_count} auto-decisions "
+                        f"({trained_count} emitted learning signals against their source subsystems)")
                 else:
                     await send_telegram(
                         chat_id,
@@ -205,7 +219,7 @@ async def process_callback_query(callback_query: dict):
                 # Map target to decision types and entity types
                 if undo_target == "channels":
                     # Channel items use decision_type='channel_approval' (utils.py line 99)
-                    decision_res = supabase.table('decisions').select('id, entity_id, decision_type')\
+                    decision_res = supabase.table('decisions').select('id, entity_id, decision_type, metadata')\
                         .eq('auto_decided', True)\
                         .eq('status', 'active')\
                         .is_('verified_at', None)\
@@ -214,7 +228,7 @@ async def process_callback_query(callback_query: dict):
                         .execute()
                 elif undo_target == "graph":
                     # Graph nodes use decision_type='graph_node_approval' (graph.py line 468)
-                    decision_res = supabase.table('decisions').select('id, entity_id, decision_type')\
+                    decision_res = supabase.table('decisions').select('id, entity_id, decision_type, metadata')\
                         .eq('auto_decided', True)\
                         .eq('status', 'active')\
                         .is_('verified_at', None)\
@@ -223,7 +237,7 @@ async def process_callback_query(callback_query: dict):
                         .execute()
                 else:  # edges
                     # Graph edges use decision_type='graph_edge_approval' (graph.py line 596)
-                    decision_res = supabase.table('decisions').select('id, entity_id, decision_type')\
+                    decision_res = supabase.table('decisions').select('id, entity_id, decision_type, metadata')\
                         .eq('auto_decided', True)\
                         .eq('status', 'active')\
                         .is_('verified_at', None)\
@@ -238,6 +252,11 @@ async def process_callback_query(callback_query: dict):
                     
                     # Reverse the decision record
                     reverse_decision(decision_id, rationale="User undid auto-approve via Telegram undo button")
+                    # Vision #4: the undo is a learning signal — emit the
+                    # inverse observation so the pattern that caused the wrong
+                    # auto-approve demotes (see emit_undo_correction).
+                    from core.webhook.utils import emit_undo_correction
+                    await emit_undo_correction(row)
                     
                     # Attempt to undo the actual DB action
                     if undo_target == "channels" and entity_id and entity_id.isdigit():
@@ -583,8 +602,7 @@ async def _process_webhook(update: dict):
         if not chat_id:
             return {"success": True}
 
-        owner_id = os.getenv("TELEGRAM_CHAT_ID")
-        if not owner_id or str(chat_id) != str(owner_id):
+        if not _chat_authorized(chat_id):
             audit_log_sync("webhook", "WARNING", f"Unauthorized access from Chat ID: {chat_id}")
             return {"message": "Unauthorized"}
 

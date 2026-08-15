@@ -619,6 +619,13 @@ async def process_graph_pending_decision(pending_id: int, decision: str, context
                     confidence=1.0,
                     source="decision_pulse",
                     auto_decided=auto_decided,
+                    # Vision #4: persist the EXACT decision-time features so
+                    # emit_undo_correction can demote the pattern on undo
+                    # (must match the emit_observation call below).
+                    metadata={
+                        'learn_features': {"node_type": raw_type},
+                        'learn_subsystem': 'entity_extraction',
+                    },
                 )
             except Exception as dec_err:
                 audit_log_sync("pulse", "WARNING", f"Failed to record graph node rejection: {dec_err}")
@@ -732,6 +739,13 @@ async def process_graph_pending_decision(pending_id: int, decision: str, context
                             confidence=1.0,
                             source="decision_pulse",
                             auto_decided=auto_decided,
+                            # Vision #4: persist the EXACT decision-time features so
+                            # emit_undo_correction can demote the pattern on undo
+                            # (must match the emit_observation call below).
+                            metadata={
+                                'learn_features': {"node_type": node_type, "has_context": bool(context), "source": pending_item.get('source_tag', 'pending_approval')},
+                                'learn_subsystem': 'entity_extraction',
+                            },
                         )
                     except Exception as dec_err:
                         audit_log_sync("pulse", "WARNING", f"Failed to record graph node decision: {dec_err}")
@@ -779,6 +793,13 @@ async def process_pending_edge_decision(pending_id: int, decision: str, new_sour
                     confidence=1.0,
                     source="decision_pulse",
                     auto_decided=auto_decided,
+                    # Vision #4: persist the EXACT decision-time features so
+                    # emit_undo_correction can demote the pattern on undo
+                    # (must match the emit_observation call below).
+                    metadata={
+                        'learn_features': {"relationship": pe['relationship'], "source_type": pe.get('source_type'), "target_type": pe.get('target_type')},
+                        'learn_subsystem': 'entity_extraction',
+                    },
                 )
             except Exception as dec_err:
                 audit_log_sync("pulse", "WARNING", f"Failed to record graph edge rejection: {dec_err}")
@@ -886,6 +907,13 @@ async def process_pending_edge_decision(pending_id: int, decision: str, new_sour
                     confidence=1.0,
                     source="decision_pulse",
                     auto_decided=auto_decided,
+                    # Vision #4: persist the EXACT decision-time features so
+                    # emit_undo_correction can demote the pattern on undo
+                    # (must match the emit_observation call below).
+                    metadata={
+                        'learn_features': {"relationship": rel, "source_type": s_type or pe.get('source_type'), "target_type": t_type or pe.get('target_type')},
+                        'learn_subsystem': 'entity_extraction',
+                    },
                 )
             except Exception as dec_err:
                 audit_log_sync("pulse", "WARNING", f"Failed to record graph edge decision: {dec_err}")

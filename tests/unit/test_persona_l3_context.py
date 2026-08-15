@@ -16,7 +16,10 @@ These tests pin the fail-closed contract, the life-circle inclusion, and
 the layer rule (no generator reaches into the card directly).
 """
 
+
+
 from __future__ import annotations
+import pytest
 
 import ast
 import asyncio
@@ -26,6 +29,8 @@ from unittest.mock import patch
 
 from core.pulse.context import ContextProvider
 from core.services.persona import clear_persona_cache
+pytestmark = pytest.mark.briefing
+
 
 
 async def _hydrate(provider) -> str:

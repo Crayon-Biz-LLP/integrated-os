@@ -27,6 +27,7 @@ def record_decision(
     expires_at: str = None,
     auto_decided: bool = False,
     reversible: bool = True,
+    metadata: dict = None,
 ) -> dict:
     """Record a new decision. Returns the inserted row."""
     supabase = tenant_aware_client()
@@ -51,6 +52,8 @@ def record_decision(
         data["organization_id"] = organization_id
     if source_ref:
         data["source_ref"] = source_ref
+    if metadata:
+        data["metadata"] = metadata
     if expires_at:
         data["expires_at"] = expires_at
     else:

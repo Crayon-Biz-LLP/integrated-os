@@ -7,11 +7,15 @@ S3 — Approve callback fails gracefully on DB error
 S4 — Approve callback idempotency via on_conflict='key'
 """
 
+
+
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 
 from core.lib.telemetry import hash_features
 from core.pulse.sentinel import hash_features_simple
+pytestmark = pytest.mark.decision
+
 
 # Local builder mock (replaces import from deleted test_auto_approve.py)
 def _make_builder():

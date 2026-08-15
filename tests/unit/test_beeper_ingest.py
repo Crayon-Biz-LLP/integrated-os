@@ -12,6 +12,9 @@ Covered (pure logic — no network):
   - resolve_beeper_token: oauth row first, env fallback, None when absent
 """
 
+import pytest
+
+
 import asyncio
 import os
 from unittest.mock import MagicMock, patch
@@ -29,6 +32,8 @@ from core.skills.beeper_ingest import (
     resolve_beeper_token,
     process_sync_tick,
 )
+pytestmark = pytest.mark.ingest
+
 
 
 class _FakeResponse:

@@ -10,6 +10,9 @@ Covered (pure logic / mocked — no network):
   - record_outgoing_message is called for own sends (not classify+ingest)
 """
 
+import pytest
+
+
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -18,6 +21,8 @@ from core.skills.teams_ingest import (
     is_own_message,
     ingest_teams_messages,
 )
+pytestmark = pytest.mark.ingest
+
 
 
 class _FakeResponse:

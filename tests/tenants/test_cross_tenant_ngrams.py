@@ -13,7 +13,12 @@ matcher, given a tenant-scoped candidate set, cannot pick another tenant's
 row.
 """
 
+import pytest
+
+
 import re
+pytestmark = pytest.mark.auth
+
 
 
 def _normalize(s: str) -> str:

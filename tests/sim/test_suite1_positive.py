@@ -4,6 +4,8 @@ from core.services.db import tenant_aware_client
 from core.lib.audit_logger import set_trace_id
 from core.pulse.sentinel import process_sentinel
 from sim.conftest import requires_live_db
+pytestmark = pytest.mark.ingest
+
 
 supabase = tenant_aware_client()
 

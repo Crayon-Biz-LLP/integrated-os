@@ -8,11 +8,16 @@ Covers the four root-cause fixes:
 4. When Phase 1 DB lookup fails, detection degrades (orgs disabled, person
    proposals capped) instead of running ungrounded at full confidence.
 """
+
+import pytest
+
 import json
 
 from core.lib.graph_rules import sanitize_edge_label, resolve_edge_label
 from core.lib.entity_detector import detect_entities, DetectedEntity
 from core.skills.backfill_graph import extract_graph_elements
+pytestmark = pytest.mark.graph
+
 
 
 # ── Fix 2: edge-label echo sanitization ─────────────────────────────────────

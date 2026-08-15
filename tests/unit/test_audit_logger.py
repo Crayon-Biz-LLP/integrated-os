@@ -7,10 +7,14 @@ audit logging on the unmigrated DB. Fixed: the key is only included when a
 tenant is actually resolved (tenant mode + scoped call).
 """
 
+
+
 import os
 from unittest.mock import MagicMock, patch
 
 import pytest
+pytestmark = pytest.mark.decision
+
 
 os.environ.setdefault("SUPABASE_URL", "http://localhost:1")
 os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "test-key")

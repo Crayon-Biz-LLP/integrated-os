@@ -6,10 +6,14 @@ Validates every refactored path against real Supabase (LIVE_DB=true).
 Run: LIVE_DB=true python -m pytest tests/sim/test_validation_refactor.py -v
 """
 
+
+
 import os
 import pytest
 from datetime import datetime, timezone
 from core.services.db import tenant_aware_client
+pytestmark = pytest.mark.decision
+
 
 skip_unless_live_db = pytest.mark.skipif(
     os.getenv("LIVE_DB") != "true",

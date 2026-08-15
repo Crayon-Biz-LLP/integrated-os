@@ -8,9 +8,14 @@ They lock in the open-registration contract:
   - provision_user is idempotent for existing emails
 """
 
+import pytest
+
+
 from datetime import datetime, timedelta, timezone
 
 import core.services.auth as auth
+pytestmark = pytest.mark.auth
+
 
 
 class _FakeTable:

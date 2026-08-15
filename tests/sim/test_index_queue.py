@@ -3,6 +3,8 @@ import os
 from unittest.mock import patch
 from core.services.db import tenant_aware_client
 from core.retrieval.pipeline import schedule_index_memory, process_pending_index_jobs
+pytestmark = pytest.mark.retrieval
+
 
 skip_unless_live_db = pytest.mark.skipif(
     os.getenv("LIVE_DB") != "true",

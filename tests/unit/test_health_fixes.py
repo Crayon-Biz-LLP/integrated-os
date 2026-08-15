@@ -8,10 +8,14 @@ back:
   3. ingest: 'NoneType' object has no attribute 'data' (record_outgoing dedup)
   4. webhook: UnboundLocalError 'ledger' on channel rejections
 """
+
+
 import inspect
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+pytestmark = pytest.mark.briefing
+
 
 
 # ── 1. memory.py: schedule_index_memory is called directly (sync) ──────────

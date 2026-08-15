@@ -6,7 +6,12 @@ mailbox-specific context for both personal (Gmail) and work (Outlook) mailboxes.
 No DB or Gemini dependencies — pure string assertions.
 """
 
+import pytest
+
+
 from core.prompts.email_classify import build_email_classify_prompt
+pytestmark = pytest.mark.email
+
 
 
 class TestEmailClassifyPrompt:

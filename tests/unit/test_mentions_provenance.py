@@ -1,3 +1,6 @@
+import pytest
+pytestmark = pytest.mark.graph
+
 def test_provenance_rows_are_not_promoted():
     # This is a static code check test to verify the sentinel sweep correctly excludes provenance
     with open('core/pulse/sentinel.py', 'r') as f:

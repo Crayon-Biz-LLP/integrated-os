@@ -3,6 +3,8 @@ from unittest.mock import patch, MagicMock
 from core.pulse.tools import update_task_status
 from tests.fixtures.task_factory import factory
 from core.services.db import tenant_aware_client
+pytestmark = pytest.mark.decision
+
 
 supabase = tenant_aware_client()
 

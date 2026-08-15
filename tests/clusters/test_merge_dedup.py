@@ -1,6 +1,8 @@
 import pytest
 from tests.fixtures.task_factory import factory
 from core.webhook.utils import is_already_in_tasks_table
+pytestmark = pytest.mark.graph
+
 
 @pytest.fixture(autouse=True)
 def cleanup():

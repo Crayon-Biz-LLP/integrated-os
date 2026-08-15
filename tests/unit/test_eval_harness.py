@@ -3,8 +3,12 @@
 These tests exercise pure functions only (no DB, no LLM).
 """
 
+
+
 import pytest
 from core.retrieval.eval import compute_recall, compute_precision, compute_metrics
+pytestmark = pytest.mark.retrieval
+
 
 
 # ---------------------------------------------------------------------------

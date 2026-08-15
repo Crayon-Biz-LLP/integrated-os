@@ -162,36 +162,48 @@ export async function PATCH(
       }
     }
 
-    // Emit a 'corrected' observation to train Rhodey negatively
-    // Map the decision source to the correct pattern subsystem so the
-    // correction lands in the right bucket for compute_pattern_confidence()
-    const source = decision.source || "";
-    const subsystemMap: Record<string, string> = {
-      decision_pulse: "entity_extraction",
-      pulse_engine: "task_management",
-      auto_approve_cascade: "entity_extraction",
-    };
+    // Vision #4: prefer the decision's persisted learn payload — the EXACT
+    // decision-time features + subsystem — so the correction lands on the
+    // same pattern hash compute_pattern_confidence() queries (ledger X3).
+    // Pre-fix decisions carry no learn payload; fall back to source→subsystem
+    // mapping so the observation still lands in a real bucket.
+    const meta = (decision.metadata as Record<string, unknown>) || {};
+    const learnFeatures = meta.learn_features as Record<string, unknown> | undefined;
+    const learnSubsystem = meta.learn_subsystem as string | undefined;
+
     let subsystem = "auto_decisions";
-    for (const [key, val] of Object.entries(subsystemMap)) {
-      if (source.includes(key)) {
-        subsystem = val;
-        break;
+    let features: Record<string, unknown> = {
+      decision_type: decision.decision_type,
+      auto_decided: true,
+      rejected: true,
+    };
+    if (learnFeatures && learnSubsystem) {
+      subsystem = learnSubsystem;
+      features = learnFeatures;
+    } else {
+      const source = decision.source || "";
+      const subsystemMap: Record<string, string> = {
+        decision_pulse: "entity_extraction",
+        pulse_engine: "task_management",
+        auto_approve_cascade: "entity_extraction",
+      };
+      for (const [key, val] of Object.entries(subsystemMap)) {
+        if (source.includes(key)) {
+          subsystem = val;
+          break;
+        }
       }
-    }
-    // "email_decision_pulse" → "email_pipeline", "call_decision_pulse" → "call_pipeline", etc.
-    const channelMatch = source.match(/^(email|call|whatsapp|teams)/);
-    if (channelMatch) {
-      subsystem = `${channelMatch[1]}_pipeline`;
+      // "email_decision_pulse" → "email_pipeline", "call_decision_pulse" → "call_pipeline", etc.
+      const channelMatch = source.match(/^(email|call|whatsapp|teams)/);
+      if (channelMatch) {
+        subsystem = `${channelMatch[1]}_pipeline`;
+      }
     }
 
     const observation = {
       subsystem,
       event_type: "user_correction",
-      features: {
-        decision_type: decision.decision_type,
-        auto_decided: true,
-        rejected: true,
-      },
+      features,
       predicted: decision.decision_type,
       actual: "reversed",
       outcome: "corrected",

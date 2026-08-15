@@ -10,9 +10,14 @@ These tests monkeypatch the module-level `emit_observation` so no DB or
 network is touched.
 """
 
+import pytest
+
+
 import asyncio
 
 from core.webhook.email import _emit_draft_observation
+pytestmark = pytest.mark.email
+
 
 
 class _Recorder:

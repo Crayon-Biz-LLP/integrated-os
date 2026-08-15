@@ -1,5 +1,8 @@
 from unittest.mock import patch, MagicMock
 from core.services.google_service import sync_to_calendar
+import pytest
+pytestmark = pytest.mark.pulse
+
 
 def test_timezone_handling_documents_current_behaviour():
     """

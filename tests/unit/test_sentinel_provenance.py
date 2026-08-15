@@ -1,3 +1,6 @@
+import pytest
+pytestmark = pytest.mark.sentinel
+
 def test_provenance_rows_are_not_promoted():
     with open('core/pulse/sentinel.py', 'r') as f:
         content = f.read()

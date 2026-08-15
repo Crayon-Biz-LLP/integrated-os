@@ -8,6 +8,8 @@ class), the `params` executor channel (incl. `_created_*` bookkeeping), and
 Run: python -m pytest tests/unit/test_action_models.py -v
 """
 
+
+
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -25,6 +27,8 @@ from core.actions.models import (
     inject_deterministic_delta,
     validation_missing_fields,
 )
+pytestmark = pytest.mark.decision
+
 
 
 def _validate(raw: dict):

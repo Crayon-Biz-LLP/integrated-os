@@ -3,6 +3,9 @@ from unittest import mock
 
 from fastapi.testclient import TestClient
 from api.index import app
+import pytest
+pytestmark = pytest.mark.pulse
+
 
 client = TestClient(app)
 

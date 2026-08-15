@@ -9,11 +9,15 @@ Unit tests for:
   - require_api_auth resolution (user key vs legacy key vs unknown/dev)
 """
 
+
+
 import hashlib
 import os
 from unittest.mock import MagicMock, patch
 
 import pytest
+pytestmark = pytest.mark.auth
+
 
 os.environ.setdefault("SUPABASE_URL", "http://localhost:1")
 os.environ.setdefault("SUPABASE_SERVICE_ROLE_KEY", "test-key")

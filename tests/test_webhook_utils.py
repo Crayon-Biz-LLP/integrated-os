@@ -1,4 +1,7 @@
 from core.webhook.classify import detect_opportunity_language
+import pytest
+pytestmark = pytest.mark.webhook
+
 
 def test_detect_opportunity_language():
     assert detect_opportunity_language("This is a potential project for us") is True

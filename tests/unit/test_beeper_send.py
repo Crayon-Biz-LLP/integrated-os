@@ -9,6 +9,9 @@ Covered (no network — httpx is faked):
     None or mark_awaiting=False)
 """
 
+import pytest
+
+
 import asyncio
 import json
 from unittest.mock import MagicMock, patch
@@ -18,6 +21,8 @@ from core.skills.beeper_send import (
     resolve_room_id,
     send_whatsapp_message,
 )
+pytestmark = pytest.mark.ingest
+
 
 
 class _FakeResp:

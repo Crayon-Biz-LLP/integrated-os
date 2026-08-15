@@ -2,6 +2,9 @@ from core.actions import (
     ActionResult, render_actions, validate_action_claims, 
     begin_action_context, accumulate_action, snapshot_action_context, clear_action_context
 )
+import pytest
+pytestmark = pytest.mark.decision
+
 
 def test_render_actions_executed():
     res = ActionResult(action_type="task_create", status="executed", entity_id=123, human_label="Buy milk")

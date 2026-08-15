@@ -7,6 +7,8 @@ module-level bindings that detect_drift actually resolves: the
 `core.lib.telemetry.hash_features`.
 """
 
+
+
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 import json
@@ -16,6 +18,8 @@ from core.lib.pattern_extractor import (
     detect_drift,
     build_transparency_report,
 )
+pytestmark = pytest.mark.learning
+
 
 
 @pytest.mark.asyncio

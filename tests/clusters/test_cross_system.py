@@ -2,6 +2,8 @@ import pytest
 from unittest.mock import patch
 from tests.fixtures.task_factory import factory
 from core.services.db import tenant_aware_client
+pytestmark = pytest.mark.decision
+
 
 supabase = tenant_aware_client()
 

@@ -1,6 +1,8 @@
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 from core.pulse.memory import write_outcome_memory
+pytestmark = pytest.mark.retrieval
+
 
 class TestMemoryWiring:
     @pytest.mark.asyncio

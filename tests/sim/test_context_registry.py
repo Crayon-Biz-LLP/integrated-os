@@ -4,6 +4,8 @@ from unittest.mock import patch
 from core.context import execute_context_strategy, PRE_FLIGHT_CONFIG
 from core.context.schema import RetrievalItem
 from core.context.gates import apply_entity_grounding_gate
+pytestmark = pytest.mark.retrieval
+
 
 skip_unless_live_db = pytest.mark.skipif(
     os.getenv("LIVE_DB") != "true",

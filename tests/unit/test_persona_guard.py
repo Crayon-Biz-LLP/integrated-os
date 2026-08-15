@@ -10,9 +10,14 @@ Covers the two helpers every proactive-copy surface now calls:
   neutral. Fail-closed: no card => text passes through untouched.
 """
 
+
+
 from __future__ import annotations
+import pytest
 
 from core.services.persona import persona_guard_text, persona_voice_block
+pytestmark = pytest.mark.briefing
+
 
 
 def make_card(**overrides) -> dict:

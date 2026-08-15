@@ -9,6 +9,9 @@ from core.webhook.why_handler import _resolve_chain_id, _fetch_decision_records,
 from core.context import execute_context_strategy, PRE_FLIGHT_CONFIG
 from core.services.db import tenant_aware_client
 from core.webhook.handler import process_webhook
+from tests.fixtures.run_isolation import run_thread_uuid
+pytestmark = pytest.mark.decision
+
 
 skip_unless_live_db = pytest.mark.skipif(
     os.getenv("LIVE_DB") != "true",
@@ -68,7 +71,7 @@ async def test_ws1_execute_context_strategy_writes_decision_audit(seed_test_data
 def test_ws2_persist_chain_id():
     """W-S2: _persist_chain_id() updates conversation_threads.last_decision_chain_id."""
     supabase = tenant_aware_client()
-    thread_id = "00000000-0000-4000-8000-00000000bbbb"
+    thread_id = run_thread_uuid(1)
     target_chain = "sim-test-chain-002"
     
     try:
@@ -93,7 +96,7 @@ def test_ws2_persist_chain_id():
 def test_ws3_resolve_chain_id_fallback():
     """W-S3: _resolve_chain_id() prefers thread/session and falls back correctly."""
     supabase = tenant_aware_client()
-    thread_id = "00000000-0000-4000-8000-00000000cccc"
+    thread_id = run_thread_uuid(2)
     target_chain = "sim-test-chain-003"
     chat_id = 888888888
     
@@ -158,7 +161,7 @@ def test_ws4_fetch_decision_records():
 async def test_ws5_handle_why_end_to_end():
     """W-S5: handle_why() with real stored thread + decision rows produces coherent Telegram output."""
     supabase = tenant_aware_client()
-    thread_id = "00000000-0000-4000-8000-00000000dddd"
+    thread_id = run_thread_uuid(3)
     target_chain = "sim-test-chain-005"
     chat_id = 777777777
     

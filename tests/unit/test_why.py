@@ -4,10 +4,14 @@ Unit tests for the /why handler — formatting, reason code display, empty-chain
 These tests mock DB calls and exercise format_decision_chain() directly.
 No LIVE_DB required.
 """
+
+
 import json
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 from core.webhook.why_handler import format_decision_chain, handle_why, _resolve_chain_id, _fetch_decision_records
+pytestmark = pytest.mark.decision
+
 
 
 # ── W1: Empty chain returns helpful message ─────────────────────────────────
