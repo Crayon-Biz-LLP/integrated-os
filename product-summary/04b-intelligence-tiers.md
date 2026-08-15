@@ -3,7 +3,7 @@
 Rhodey's intelligence isn't a single model or pipeline — it's a **layered architecture** where each tier adds a deeper capability. Lower tiers handle the basics; higher tiers discover connections, remember context, and act proactively.
 
 ```
-Tier 4  │ Session Working Memory ─── Active anchor, proactive signals, source heuristics
+Tier 4  │ Session Working Memory ─── Active anchor, source heuristics
 Tier 3  │ Memory & Graph Intelligence ── Hindsight, serendipity, temporal patterns, KG traversal
 Tier 2  │ Context Hydration ──────── Multi-source parallel fetch, TTL caching, semantic selection
 Tier 1  │ Pulse Orchestration ────── Intent classification, Action Planner routing, Google sync
@@ -43,7 +43,7 @@ All four tiers are always active. A single `interrogate_brain()` call touches ev
 - Dedup via `processed_updates` table with UNIQUE constraint + `dedup_key` hash
 - Authorization check against `TELEGRAM_CHAT_ID` + HMAC PULSE_SECRET
 - All Tier 1 operations gracefully degrade on failure
-- Enrichment (graph edges, entities, embeddings) queued via `pending_enrichment_jobs` to survive Vercel cold kills
+- Enrichment (graph edges, entities, embeddings) queued via `pending_enrichment_jobs` to survive serverless cold starts
 
 ---
 
@@ -59,12 +59,13 @@ All four tiers are always active. A single `interrogate_brain()` call touches ev
 
 | Cache Key | TTL | Data |
 |-----------|-----|------|
-| `rhodey:cache:tasks` | 30s | Active tasks with priority, project, reminder |
-| `rhodey:cache:projects` | 300s | Active project names and org tags |
+| `rhodey:cache:tasks` | 300s | Active tasks with priority, project, reminder |
 | `rhodey:cache:people` | 300s | People names and strategic weights |
 | `rhodey:cache:calendar` | 300s | Today's Google + Outlook events |
-| `rhodey:cache:recent_tasks` | 60s | Tasks completed in the last 24h |
-| `rhodey:cache:calendar_range:{start}:{end}:{max_days}` | 120s | Date-range calendar queries |
+| `rhodey:cache:recent_tasks` | 300s | Tasks completed in the last 24h |
+| `rhodey:cache:organizations` | 300s | Org-entity labels (replaces the old `projects` cache) |
+| `rhodey:cache:graph_nodes` | 300s | Approved graph-node labels |
+| `rhodey:cache:calendar_range:{owner}:{start}:{end}` | 120s | Date-range calendar queries |
 
 Each cache follows a **dual-layer pattern**:
 1. In-memory `SimpleCache` with TTL (fastest, process-local)
@@ -153,9 +154,9 @@ Each conversation session has an `active_anchor` — structured JSONB with `{id,
 3. Matches against `graph_nodes` (exact → ilike → edge-count tiebreaker)
 4. Updates the session's active anchor
 
-### 4b. Proactive Signals
+### 4b. Proactive Signals (REMOVED)
 
-In parallel with every query response, `check_proactive_signals()` checks pending drafts, unapproved messages, and unapproved graph nodes mentioning the anchor. All checks run with a 1.5-second timeout.
+`check_proactive_signals()` was removed along with `core/pulse/proactive.py` — no `💡` proactive note is appended to query responses anymore. Proactive nudges now live in `core/services/awaiting_reply.py` (snooze/escalation ladder) and the Sentinel piggybacks. See `18-passive-intelligence.md` for the same correction.
 
 ### 4c. Source Selection Heuristics
 

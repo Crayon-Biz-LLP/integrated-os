@@ -139,7 +139,7 @@ This ensures unique filenames. Only `.mp4` files are synced — `metadata.json` 
 - **No code changes needed** — Meetily just replaces "phone dialer app" with "desktop meeting recorder" as the audio source
 - **Privacy-first** — Meetily runs locally, no cloud transcription. Audio is only sent to Rhodey's pipeline after recording ends
 - **Zero API cost** — Uses free Google Drive storage and the existing faster-whisper/Gemini pipeline
-- **No new infrastructure** — No new Vercel endpoints, no new tables, no new GitHub Actions workflows
+- **No new infrastructure** — No new API endpoints, no new tables, no new GitHub Actions workflows
 
 ## Security & Reliability
 - **Idempotency**: The system queries the `call_recordings` table by `drive_file_id` before processing to guarantee a file is only transcribed once.

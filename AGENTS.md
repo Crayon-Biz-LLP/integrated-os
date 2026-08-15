@@ -27,7 +27,7 @@ static stage, chatbot passivity, surfacing without learning) are listed in the
 vision document — if a change resembles one, it needs rethinking.
 
 ## Project Overview
-FastAPI-based executive command system deployed on Modal (Python 3.11+). Processes Telegram messages into tasks, syncs with Google Calendar/Tasks, sends AI-generated briefings via Telegram.
+FastAPI-based executive command system deployed on Modal (Python 3.11+). Multi-tenant by design (`owner_id` scoping, OTP/Google sign-in). Processes Telegram/email/Teams/WhatsApp (Beeper) into tasks, syncs with Google Calendar/Tasks, sends AI-generated briefings, and runs a Flutter app (rhodey_app) with a decisions ledger + learning loop. Full verified reference: `product-summary/`.
 
 ## Codebase Discovery Workflow
 
@@ -120,6 +120,17 @@ When proposing fixes, making architectural changes, or summarizing completed wor
 4. **Prove behavior, don't just lint.**
    - `ruff check .` proves style and syntax compliance. It does not prove concurrency safety, datetime correctness, or workflow semantics.
    - Claims of "deploy safety" must be backed by documented evidence: execution traces of forced-failure paths, delayed-processing proofs, and verifiable edge-case coverage.
+
+## Test Gate (Non-Negotiable)
+
+Every change must pass the suite before it is considered done. See `tests/README.md` and `plans/75-comprehensive-test-plan.md` for the full contract; the essentials:
+
+- **Runner**: `python3 scripts/run_tests.py` is the ONLY entry point.
+  - `--tier fast` (~5 min): L0 + L1 + L2-mock + app — runs on the pre-push hook.
+  - `--tier nightly` (~20 min): L2-live → L4 + coverage + leak guard — CI nightly.
+- **Aspect markers**: every test module carries one of the 13 aspect markers (`pulse`, `briefing`, `sentinel`, `decision`, `ingest`, `webhook`, `auth`, `calendar`, `email`, `sync`, `retrieval`, `graph`, `app`). New/modified test files MUST carry an aspect marker — `python3 scripts/check_marker_presence.py` enforces this and CI fails otherwise. Run a single aspect with `-m <aspect>`.
+- **Live-sandbox contract** (when you run live tiers): suites run as the dedicated Test tenant only; live runs serialize behind the Redis sandbox lock; the session fail-closed leak guard fails the run if any test-marker row leaks to a non-test tenant. Never point live tiers at a production tenant.
+- **Quick self-check before pushing**: `ruff check .` + `python3 scripts/check_marker_presence.py` + `python3 -m pytest tests/unit tests/sim -q --no-header -p no:cacheprovider` (hermetic). The pre-push hook runs the fast tier automatically.
 
 ## Session Anchored Summary (Trimmed)
 For full session-by-session history, see `session-notes/` in the project root. This file previously contained ~1700 lines of session summaries here — they have been moved to `session-notes/` to keep AGENTS.md manageable.

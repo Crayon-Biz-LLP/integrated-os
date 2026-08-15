@@ -21,7 +21,7 @@ Each cluster is sent to Gemini to determine:
 
 ### What Gets Excluded
 
-Only entries explicitly tagged `PERSONAL` can become practices. Null/unclassified entities and work entities are blocked:
+Only entries explicitly tagged `PERSONAL` can become practices. Null/unclassified entities and work entities are blocked (in M6 terms: `PERSONAL` is the tenant's personal-org label from `user_settings.personal_orgs`, not a hardcoded org tag):
 ```python
 if not entity or entity.upper() != 'PERSONAL':
     continue

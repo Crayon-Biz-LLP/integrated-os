@@ -1,4 +1,11 @@
-# 58. Final Architecture Overhaul (Jul 14-17, 2026)
+# 58. Final Architecture Overhaul
+
+> ## ⚠️ HISTORICAL RECORD (Jul 14–17, 2026)
+> This is a dated snapshot of the architecture at that time. The backend has
+> since moved from Vercel to **Modal** (Jul 26), gone **multi-tenant (M3)**, and
+> shipped the decisions ledger, graph-consolidation, and the comprehensive test
+> suite. Treat the mechanisms as history — the definitive reference is
+> `99-architecture-reference.md`. (Jul 14-17, 2026)
 
 ## Root Cause
 

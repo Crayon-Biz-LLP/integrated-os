@@ -13,23 +13,25 @@ Stored in the `canonical_pages` table:
 | `title` | Entity name (e.g., "Solvstrat", "Ashraya") |
 | `content` | AI-synthesized knowledge summary |
 | `embedding` | 768-dim vector for semantic search |
-| `organization_id` | FK to the `organizations` table |
+| `organization_id` | FK to `graph_nodes.id` (org-type node — the `organizations` table was dropped in db/75) |
 | `is_current` | TRUE for active page, FALSE for archived |
 | `version` | Incremented on each update |
 | `source_count` | How many source fragments were used |
 | `last_synth_at` | When it was last synthesized |
 | `is_sparse` | Flag if content is <500 chars |
 
-### The 6-Source Accumulation Model
+### The Multi-Source Accumulation Model
 
-When `brain_synth_v2.py` runs, it gathers fragments from 6 sources for each active organization:
+When `brain_synth_v2.py` runs, entities are enumerated from `graph_nodes` where `type='organization'` and `is_current=True`, and fragments are gathered per entity:
 
-1. `match_memories` RPC — semantic memory search (filtered by org name)
-2. `tasks` table — active org tasks, scoped by `organization_id`
-3. `match_logs` RPC — AI-generated log entries (filtered by org name)
-4. `match_resources` RPC — resources linked to the entity (filtered by title/content)
-5. `match_raw_dumps` RPC — raw message dumps (filtered by org name)
-6. `match_emails` RPC — email entries (filtered by org name)
+1. `memories` table — direct query scoped by `organization_id` (entity id)
+2. `tasks` table — active tasks, scoped by `organization_id`
+3. `match_resources` RPC — resources linked to the entity
+4. `match_raw_dumps` RPC — raw message dumps
+5. `match_emails_hybrid` RPC — email entries
+6. `match_whatsapp_hybrid` RPC — WhatsApp entries
+
+(The legacy `match_logs` RPC was **dropped** by db/101; the `match_canonical_pages` RPC was also dropped — canonical pages are now read directly from the table.)
 
 **Fragment filtering**: All RPC results are passed through `filter_fragments_by_org_strict()`, which checks each fragment's `metadata.entity` field and content for the org name. Uses **AND word-level matching** — ALL significant words (>2 chars) from the org name must appear in the entity or content. This catches memories tagged with a parent org tag (e.g., `entity: "SOLVSTRAT"`) that belong to a child project (e.g., "Armour Cyber" whose name doesn't appear as a contiguous substring in the fragment). Prevents cross-org contamination while avoiding false negatives for multi-word org names.
 
@@ -123,16 +125,13 @@ Without brain synthesis, knowledge is scattered across memories, tasks, raw_dump
 
 ### Query Integration
 
-When the user interrogates the brain via `?query`, canonical pages are included in the hybrid search:
+When the user interrogates the brain via `?query`, canonical pages are included via a **direct table read** (`core/webhook/dispatch.py`):
 ```python
-canonical_res = supabase.rpc('match_canonical_pages', {
-    'query_embedding': embedding,
-    'match_count': 3,
-    'match_threshold': 0.65
-}).execute()
+res = supabase.table('canonical_pages').select('title, content, last_synth_at')\
+    .eq('is_current', True).ilike('title', f"%{search_val}%").limit(1).execute()
 ```
 
-This means a query like `?what do I know about Qhord` returns both vector memories AND synthesized canonical knowledge.
+(`match_canonical_pages` was dropped by db/101 — direct reads replaced it.) This means a query like `?what do I know about Qhord` returns both vector memories AND synthesized canonical knowledge.
 
 ## Journal Entity Mapping
 

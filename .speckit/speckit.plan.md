@@ -1,6 +1,11 @@
 # Rhodey OS — Architecture Plan
 > Technical decisions, stack rationale, and system design constraints.
 
+> ⚠️ **Status (2026-08-15):** Pre-M3 (Jul 27) — the "What Must NOT Change" list
+> predates multi-tenant, the test gates, and the Modal migration. The current
+> architecture reference is `product-summary/03-architecture-overview.md` and
+> `99-architecture-reference.md`; this file is the original plan.
+
 ---
 
 ## Stack

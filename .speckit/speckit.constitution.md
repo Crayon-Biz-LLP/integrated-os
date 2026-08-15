@@ -1,6 +1,11 @@
 # Rhodey OS — System Constitution
 > Last Updated: July 2026 | Maintained by: Danny (Yashwant Daniel), Crayon
 
+> ⚠️ **Status (2026-08-15):** Constitution node-types/state-machine claims are
+> mostly still true, but the document predates multi-tenant, the decisions
+> ledger, and the test gates. `product-summary/00-vision-and-mindset.md` and
+> `AGENTS.md` are the current governing documents.
+
 ---
 
 ## 1. What This System Is

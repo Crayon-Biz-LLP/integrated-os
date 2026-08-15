@@ -98,3 +98,7 @@ Example:
 - Task gets tagged with project = SOLVSTRAT, person = Vasanth, graph edges created
 
 This keeps the conversation natural while maintaining complete data integrity for routing.
+
+## Update (2026-08-15): Tenant Scoping (M3)
+
+Classification is **tenant-scoped**: `classifier_corrections`, patterns, and classification feedback all carry `owner_id`, and the classifier context is bounded per tenant (doc 70). The old hardcoded entity examples in this doc predate M6 de-personalization — routing now resolves entities per tenant from the tenant's own graph, not from a shared tag list.

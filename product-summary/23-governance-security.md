@@ -105,7 +105,7 @@ Every workflow has a `failure()` step that echoes to GitHub logs. Critical failu
 |----------|--------|-----------|
 | `/api/webhook` | POST | Chat ID authorization (TELEGRAM_CHAT_ID env var) |
 | `/api/pulse` | POST | HMAC-SHA256 signature (X-Rhodey-Signature header) + PULSE_SECRET |
-| `/api/*` (frontend) | Various | X-API-Key header with constant-time comparison |
+| `/api/*` (API consumers) | Various | X-API-Key header with constant-time comparison (see update below) |
 | `/` (health) | GET | None (public) |
 | Supabase | — | SUPABASE_SERVICE_ROLE_KEY (bypasses RLS) |
 
@@ -145,3 +145,12 @@ PULSE_SECRET, API_SECRET_KEY
 GOOGLE_REFRESH_TOKEN, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET
 GOOGLE_SHEET_ID, OPENROUTER_API_KEY
 ```
+
+## Update (2026-08-15): Auth Model — OTP/Google Sign-In (M11–M14)
+
+The **sign-in model changed** — the API-key paste is gone for users:
+
+- **App sign-in** is Google / **email-OTP** (`core/services/auth.py`, `otp_email.py`; `login_otps` table; `verify_otp` creates the tenant on first use). Onboarding state lives in `user_settings.onboarding_state` (`core/services/onboarding.py`).
+- **`require_api_auth` remains** for API consumers only (`api/index.py:152`): per-user `X-API-Key` matched against `users.api_key_hash` (multi-tenant) or the legacy shared `API_SECRET_KEY`.
+- **Per-tenant LLM spend caps** (M6) — `llm_spend` metering + `users.monthly_credit_usd`/`credit_cycle_day`; cross-tenant token fallback (M14) is scoped so it never leaks tenant data.
+- **DB grants reworked (db/87–91)** — anon revoked, per-tenant roles; the security audit (Aug 10) drove the hardening. See doc 70.

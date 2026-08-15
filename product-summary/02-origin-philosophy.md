@@ -24,9 +24,9 @@ Data enters from Telegram, Gmail, Outlook, Google Forms, and a web UI. It all co
 
 A "Season Context" stored in `core_config` acts as a strategic north star. It sets 3-6 month priorities. Tasks that don't align are deprioritized in briefings. When a season expires, the system flags it as CRITICAL — ensuring the user is never operating on stale strategy.
 
-### Privacy by Architecture
+### Privacy by Architecture (multi-tenant since M3)
 
-The system runs on Supabase with service-role authentication. There is no multi-tenant architecture. There are no user accounts (except the single owner). The frontend uses Supabase Auth for session management, but the backend authenticates via HMAC and API keys. The system was designed from day one as a single-user system, which simplifies security dramatically.
+The system runs on Supabase with service-role authentication server-side, and **multi-tenant isolation since M3 (Aug 2026)**: every row carries an `owner_id`, all app access flows through the tenant facade (`core/services/db.py`), and RLS grants were reworked (db/87–91, anon revoked). Sign-in is Google / email-OTP (`core/services/auth.py`, `otp_email.py`) — no API-key pasting — with per-tenant LLM spend caps. The original single-tenant design was the seed; the isolation architecture is what ships today.
 
 ### AI as a Co-pilot, Not a Black Box
 
@@ -34,7 +34,7 @@ The AI is heavily constrained by prompt engineering (250+ lines of system prompt
 
 ### Self-Healing by Default
 
-The system expects failures. Every API call has a fallback. Every processing step has a timeout with zombie recovery. Failed operations queue for retry with exponential backoff. The Janitor workflow runs 4 times daily to check pipeline health. This is not paranoia — it's the baseline assumption that things will break, and the system should handle it.
+The system expects failures. Every API call has a fallback. Every processing step has a timeout with zombie recovery. Failed operations queue for retry with exponential backoff. The legacy Janitor workflow was merged into the consolidated health monitor (`core/pulse/pipeline.py`), which runs with the Sentinel schedule and checks DLQ, error logs, LLM degradation, and orphan rows. This is not paranoia — it's the baseline assumption that things will break, and the system should handle it.
 
 ## Design Values
 

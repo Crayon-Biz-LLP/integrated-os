@@ -85,9 +85,7 @@ The briefing AI has a 2-day task horizon and a 14-day creation window:
 
 - Tasks with reminder dates >48 hours away are hidden from the AI (prevents noise)
 - Tasks created more than 14 days ago are excluded (prevents stale backlog from polluting)
-- Weekend vs. weekday smart filtering based on organization_name:
-  - Personal/Ashraya tasks are visible on weekends
-  - Work tasks (SOLVSTRAT, CRAYON, QHORD) are de-emphasized on weekends
+- Weekend vs. weekday smart filtering: on weekends only tasks whose org entity is in the tenant's **personal/life set** pass through (`user_settings.personal_orgs`, `resolve_personal_orgs()` — M2/M6 de-personalization; the hardcoded SOLVSTRAT/CRAYON/QHORD list is gone). Weekday evenings apply the inverse filter.
 
 ## The Nag Logic
 
@@ -99,7 +97,7 @@ Tasks untouched (no update to `updated_at`) for 7+ days are surfaced in the AI c
 
 ## Drift Detection
 
-The `detect_drift()` RPC checks if an organization or project has been updated 3+ times in the last 48 hours. The briefing calls `detect_drift(org_name)` for each active org and flags excessive update frequency as a potential bottleneck.
+The `detect_drift()` RPC (wrapped in `core/lib/temporal_lineage.py`, still called from `briefing.py`) checks if an org-entity (a graph node of type `organization`) has been updated 3+ times in the last 48 hours and flags it as a potential bottleneck.
 
 ## Revenue-Critical Bolding
 

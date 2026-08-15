@@ -25,7 +25,7 @@ flowchart LR
         EA --> R[Send Response send_telegram]
     end
 
-    subgraph Async["Async Vercel-safe Queue"]
+    subgraph Async["Async Cold-Start-Safe Queue"]
         R --> EQ[Enrichment Queue pending_enrichment_jobs]
         EQ --> GE[Graph Edges pending_graph_edges HITL]
         EQ -.-> IM[Index Memory retrieval index queue]
@@ -49,10 +49,14 @@ flowchart LR
 |---|---|
 | **Single routing path** | All paths route through `plan_actions() → execute_planned_actions()` |
 | **No legacy pipeline** | `process_single_dump` — fully removed |
-| **Queue-based enrichment** | Survives Vercel cold kills (not fire-and-forget) |
+| **Queue-based enrichment** | Survives serverless cold starts (not fire-and-forget) |
 | **HITL for graph edges** | All edges go through `pending_graph_edges` approval table |
-| **State machine guards** | On ALL status transitions across 16 tables |
+| **State machine guards** | On ALL status transitions |
 | **DLQ with escalation** | 3 retries before escalation |
+| **Tenant-scoped auth** | Incoming chat must match the bound tenant (`users.telegram_chat_id`); test harness uses `TEST_CHAT_IDS` allow-list, default-off |
+| **Direction-aware** | Own-sends (email/Teams/Outlook) filtered via `direction` — never surface as inbound |
+| **Snooze-aware** | Items can be snoozed (`snooze_count/snoozed_until/snooze_feedback`) and escalate via `awaiting_reply` |
+| **Decisions ledger** | Every approve/reject/snooze/undo persists to `decisions` with learn features |
 
 ## File Map
 

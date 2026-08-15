@@ -1,5 +1,23 @@
 # Rhodey OS — Complete Product Brief for Mobile App Design
 
+> ## ⚠️ HISTORICAL BUILD SPEC — facts below are dated
+> This document is the **original build brief given to Lovable (Jul 2026)** that
+> produced the first Rhodey app. The app has since been built and evolved far
+> beyond it. Treat the *design philosophy* (anti-chatbot surface, judgment over
+> volume, calm briefing) as current DNA — but these claims are **stale**:
+> - "No multi-tenancy, no login screens" — **wrong since M3**: the app has
+>   Google / email-OTP **sign-in onboarding**, per-tenant isolation, personas,
+>   home-screen modes, and per-item undo.
+> - `https://integrated-os.vercel.app` + `X-API-Key` auth — the backend moved
+>   to **Modal** and auth is **OTP/Google sign-in**, not an API-key paste.
+> - "The app does NOT show a transcript" — the shipped app **does** render chat
+>   bubbles for the query surface (a deliberate later decision); the briefing
+>   surface remains the home.
+> - The 7 "life domains" (SOLVSTRAT/QHORD/…/CRAYON) — organizations were
+>   dropped (db/75); routing is now entity/tenant-based, de-personalized.
+> For the verified, current picture see `01-executive-summary.md`,
+> `03-architecture-overview.md`, and `rhodey_app/README.md`.
+
 ## Note for Lovable
 
 This document describes a complete AI-powered Personal Operating System called **Rhodey OS** (codename: Integrated-OS). Your task is to design and build the **mobile companion app** (Flutter) that serves as the primary interface for this system. The app is NOT a chatbot. It is a **living briefing surface** — an executive assistant's dashboard that feels aware, structured, and calm. Read the entire document carefully to understand the philosophy before writing any code.

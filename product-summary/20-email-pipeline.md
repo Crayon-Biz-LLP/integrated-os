@@ -145,3 +145,7 @@ WHERE channel = 'email'
   AND suggested_title IS NULL
   AND subject IS NOT NULL;
 ```
+
+## Update (2026-08-15): Direction-Awareness
+
+The email pipeline is now **direction-aware** (`core/webhook/email.py`): inbound processing filters on `direction = 'incoming'`, and **your own sends never surface as inbound items**. Emails the tenant sent (or that were already processed with an outbound direction) are excluded from task/decision surfaces — no more "you emailed yourself → Rhodey suggests a task" loops. The same direction field flows through `raw_dumps` and `messages`, so every channel (email/Teams/Outlook) shares the rule.

@@ -1,5 +1,10 @@
 # 21. Frontend Dashboard
 
+> ## ⚠️ PARKED (decision D3, 2026-08-15)
+> The Next.js dashboard is **parked** — not part of active gates, not
+> maintained for new features. The Flutter app is the primary surface
+> (doc 48/76). Verify anything here against code before relying on it.
+
 ## Technology Stack
 
 | Layer | Technology |

@@ -1,70 +1,43 @@
-Integrated-OS 🛰️
+# Integrated-OS
 
-Integrated-OS is a proprietary "Executive Command" system designed to act as an AI-powered Chief of Staff. It bridges the gap between raw input (voice, text, images via Telegram) and strategic execution (Google Calendar, Google Tasks, and Supabase). It is specifically tuned for high-velocity environments, focusing on revenue-critical tasks and strategic "Seasons."
-🏗️ Core Architecture
+A proprietary "Executive Command" system — an AI-powered Chief of Staff. It turns raw input (voice, text, images, email, Teams, WhatsApp) into tasks, syncs with Google Calendar/Tasks, and delivers judgment-timed briefings that exercise judgment about what matters now.
 
-The system operates as a triangular engine:
+## 🏗️ Core Architecture
 
-    Intake: A FastAPI-based webhook receiver for Telegram.
+- **Runtime:** FastAPI (Python 3.11+) deployed on **Modal**. Supabase (Postgres) for storage, Upstash Redis for the rate limiter and the test-suite sandbox lock.
+- **Intake:** A webhook receiver (`core/webhook/`) handling **Telegram, email, Teams, Outlook, and WhatsApp-via-Beeper** — with direction-awareness (your own sends never surface as inbound items).
+- **Intelligence:** A Gemini processing layer (`core/llm/`) that classifies intent (Task / Note / Research / Noise), extracts entities, and renders briefings. `gemini-3.5-flash-lite` for classification, `gemini-3.6-flash` for synthesis.
+- **The Pulse:** The scheduled brain (`core/pulse/`) — a briefing engine with an agent loop, calendar conflict guard, hybrid (vector + graph) memory recall, and Google two-way sync.
+- **Multi-tenant:** Every tenant is isolated behind a tenant-aware client (`owner_id` scoping, RLS-granted roles) — see `product-summary/` for the M3 design.
+- **Learning loop:** Every decision — approve/reject/snooze/correct — persists to the `decisions` ledger and trains subsystem patterns, so "Not now" never silently resets.
+- **The app:** A Flutter client (`rhodey_app/`) with onboarding, personas, home-screen modes (proceed/decide/sprint/catch-up/wrap), an approval surface with per-item undo, and a Telegram-independent reply path.
+- **The agents:** Specialized workers (`core/agents/`) — e.g., the research agent that browses the live web and returns a dossier into your staging area.
 
-    Intelligence: A Gemini-powered processing layer that classifies intent (Tasks, Notes, Research).
+## 🧭 Where to go from here
 
-    The Pulse: A scheduled briefing engine that syncs calendars and delivers SITREPs (Situation Reports).
+| Need | Doc |
+|---|---|
+| Product vision & mindset (read first) | `product-summary/00-vision-and-mindset.md` |
+| Verified reference | `product-summary/99-architecture-reference.md` |
+| Database schema (59 tables, live-verified) | `product-summary/05-database-schema.md` |
+| Test suite & gates (fast/nightly) | `tests/README.md`, `plans/75-comprehensive-test-plan.md` |
+| Session history | `session-notes/` |
 
-🧩 Component Breakdown
-1. core/webhook/handler.py (The Intake)
+## 🚀 Quick-Start Setup
 
-This is the system's "ears." It handles real-time communication from Telegram.
+Populate a `.env` file with:
 
-    Multimodal Processing: It can "see" and "hear." It processes photos (OCR), audio (transcription), and documents to extract tasks without requiring manual typing.
+- **AI:** `GEMINI_API_KEY`
+- **Database:** `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`
+- **Communication:** `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
+- **Google Auth:** `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REFRESH_TOKEN`
+- **Security:** `PULSE_SECRET` (authorizes cron jobs)
 
-    Stealth Routing: Automatically assigns inputs to specific entities (e.g., SOLVSTRAT, CRAYON, PERSONAL) using a "Stealth Status" report that confirms logging without cluttering the chat with technical metadata.
+## 🧪 Testing
 
-    Intent Classification: Uses gemini-3.5-flash-lite to distinguish between a "Task", "Note", or "Noise". Also utilizes real-time Incremental Entity Extraction to update the Knowledge Graph during ingestion.
+```bash
+python3 scripts/run_tests.py --tier fast   # hermetic tiers: L0–L2-mock + app
+python3 scripts/run_tests.py --tier nightly  # live tiers: L2-live–L4 + coverage + leak guard
+```
 
-2. core/pulse/engine.py (The Engine)
-
-This is the system's "brain" and "executor." It runs on a schedule via GitHub Actions.
-
-    The Pulse Engine: Uses an Agent Loop with a ToolRegistry to process tasks, create entities, and write memories. Synthesizes the state into a dry, punchy Telegram briefing using a Context Hydration Engine.
-
-    Calendar Guard: It checks for conflicts before booking time on Google Calendar. If a new task overlaps with an existing meeting, it flags a "Snooze Conflict."
-
-    Hindsight Memories & Session Context: Performs a hybrid search (Vector + Graph) to recall past lessons relevant to active tasks. Features Exponential Recency Decay, Graph Centrality (hub detection), and Session Memory (cross-pulse continuity).
-
-    Google Sync: Two-way synchronization between Supabase and Google Tasks/Calendar.
-
-3. core/agents/research_agent.py (The Intern)
-
-A specialized worker that handles "Delegated" tasks. When you ask the system to research a competitor or a tool, this agent uses the Jina AI search engine to browse the live web and synthesize a "Research Dossier" back into your staging area.
-🤖 How "Agents" Interact with the Core
-
-The "Agents" in Integrated-OS are not just chatbots; they are functional modules triggered by the Intelligence Layer:
-
-    Trigger: You send a Telegram message: "Research the new pricing for Qhord's competitors."
-
-    Classification: webhook/handler.py identifies the intent as DELEGATE and drops a record into the agent_queue.
-
-    Execution: The agents/research_agent.py (running as a separate GitHub Worker) picks up the queue item, crawls the web, and generates a dossier.
-
-    Feedback: The result is injected back into raw_dumps, and pulse/engine.py summarizes the findings in your next scheduled SITREP.
-
-🚀 Quick-Start Setup
-1. Environment Variables
-
-You will need to populate a .env file with the following:
-
-    AI: GEMINI_API_KEY
-
-    Database: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
-
-    Communication: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-
-    Google Auth: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN
-
-    Security: PULSE_SECRET (A custom string to authorize cron jobs)
-
-🧭 Strategic Note
-
-Integrated-OS is governed by a "Season Context" stored in core_config. The AI uses this to prioritize tasks that align with your current 3–6 month goals (e.g., debt recovery or scaling a specific product). Any task not aligning with the "North Star" is deprioritized in the briefings.
-# Trigger redeploy
+The pre-push hook runs the fast tier automatically. Live layers serialize behind the Redis sandbox lock and self-heal via clean-slate pre-delete.

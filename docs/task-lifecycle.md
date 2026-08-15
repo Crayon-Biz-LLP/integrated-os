@@ -38,6 +38,13 @@ stateDiagram-v2
 | `Todo` | `Cancelled` (series) | `recurrence IS NOT NULL` | Series ended. Recurrence=null. |
 | `Done` | `Todo` | Was completed <30 min ago | Reopens. Google Tasks→needsAction. |
 
+## Beyond Status: Snooze, Direction & Undo (2026-08-15)
+
+- **Snooze** — `snooze_count` / `snoozed_until` / `snooze_feedback` on `tasks`: snoozing is a first-class state (not a status hack), and overdue snoozes escalate through `core/services/awaiting_reply.py`.
+- **Direction** — `direction` (`inbound`/`outbound`/`waiting_on`) records who owns the action; the Pulse surfaces commitment bottlenecks ("waiting_on Marcus").
+- **Undo** — `Done → Todo` reopens with side-effect reversal through the `undo_*` decision flow (`tests/unit/test_decision_undo.py`); undo is itself a ledger decision (doc 71).
+- **Tenant scoping** — every task carries `owner_id`; all lifecycle ops go through the tenant facade (doc 70).
+
 ## File Map
 
 | Component | Key Files |

@@ -1,110 +1,154 @@
 # 3. Architecture Overview
 
-## Architecture (5 Layers + Infrastructure)
+> Updated 2026-08-15. The older platform / Python-version / Telegram-deprecation /
+> organization-level-brain claims below have been corrected — see
+> `99-architecture-reference.md` for the definitive reference.
 
-Integrated-OS operates as 5 vertical pipeline layers atop a shared infrastructure layer:
+## Architecture (5 Layers + Infrastructure)
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │                    INGESTION LAYER                           │
-│  Telegram │ WhatsApp │ Email │ Outlook │ Teams │ Calls       │
+│  Telegram │ WhatsApp (Beeper) │ Email │ Outlook │ Teams      │
 │  → classify() → url_filter() → plan_actions()               │
-│  Unified ingest() contract for all channels                 │
+│  Unified ingest() contract — direction-aware (own-sends      │
+│  never surface)                                             │
 ├──────────────────────────────────────────────────────────────┤
 │                    PROCESSING LAYER                          │
 │  Action Planner → Executor → create_*_direct / update_*     │
 │  Entity linker (resolve BEFORE creation)                    │
 │  Enrichment queue (pending_enrichment_jobs)                 │
-│  DLQ consumer │ State machine guards │ Compensate on fail   │
+│  DLQ consumer │ Typed contracts │ Compensate on fail        │
 ├──────────────────────────────────────────────────────────────┤
 │                    INTELLIGENCE LAYER                        │
-│  Associative retrieval (7 signals + PPR)                   │
-│  Knowledge graph (HITL for all edges)                       │
+│  Hybrid retrieval (vector + graph, multi-signal)            │
+│  Knowledge graph (HITL for all edges, per-item undo)        │
 │  Context registry (6 strategies, entity-grounded)           │
-│  Brain synthesis / Pattern detection / Memory clustering    │
+│  Decisions ledger + subsystem learning loop                 │
 ├──────────────────────────────────────────────────────────────┤
 │                    PRESENTATION LAYER                        │
-│  Pulse Engine (single LLM call, write-behind)              │
+│  Pulse (single LLM call, write-behind)                     │
 │  Decision Pulse (AI-free, pending approvals)                │
 │  Sentinel (meeting alarms + piggybacks)                     │
-│  Health monitor (consolidated)                              │
+│  Health monitor (consolidated) + app_intelligence (Intel)   │
 ├──────────────────────────────────────────────────────────────┤
 │                    SURFACE LAYER                             │
-│  Telegram bot (active, planning deprecation)                │
-│  Web UI Dashboard (Next.js 16 / React 19)                   │
-│  Flutter Mobile App (Rhodey)                                │
+│  Telegram (primary) │ Email │ Teams │ Beeper/WhatsApp        │
+│  Flutter app (Rhodey) — onboarding, personas, home modes,    │
+│  voice, per-item undo, Telegram-independent reply path       │
+│  Next.js dashboard (parked)                                 │
 └──────────────────────────────────────────────────────────────┘
 
 ╔══════════════════════════════════════════════════════════════╗
 ║              INFRASTRUCTURE (Cross-Cutting)                   ║
-║  Database (Supabase/PostgREST) │ Google Calendar/Tasks       ║
-║  Gmail/Outlook │ Telegram │ FCM Push                         ║
-║  GitHub Actions │ cron-job.org │ Modal (backend)             ║
-║  Upstash Redis (cache)                                      ║
+║  Modal (deploy) │ Supabase/PostgREST │ Upstash Redis         ║
+║  Google Calendar/Tasks/Gmail │ Microsoft Graph (Outlook)     ║
+║  Telegram Bot API │ FCM Push │ GitHub Actions (22 workflows) ║
 ╚══════════════════════════════════════════════════════════════╝
 ```
 
+## Multi-Tenant Layer (M3, cross-cutting)
+
+Since M3 (Aug 2026) every tenant is isolated end-to-end:
+
+- **`core/services/db.py`** — `TenantAwareClient` + `tenant_table()` inject the
+  caller's `owner_id` on every write and filter on every read; `tenant_scope`
+  context manager sets the ambient tenant; `_GLOBAL_RPCS` (e.g. `run_sql`) are
+  the only non-scoped surface.
+- **Sign-in** — Google / email-OTP (`core/services/auth.py`, `otp_email.py`)
+  replaced the API-key paste; per-tenant **LLM spend caps** (`llm_spend`,
+  `users.monthly_credit_usd`).
+- **DB grants** — reworked in db/87–91: anon revoked, per-tenant roles,
+  owner-scoped RPC matrix (verified by `tests/tenants/test_db_isolation.py`).
+
 ## System Components
 
-### API Layer (Modal Serverless Function)
-A single Python FastAPI application (`api/index.py` deployed via `infra/modal_app.py`) handles all HTTP traffic on Modal. Routes serve Telegram webhooks, the Pulse briefing engine, frontend API proxying, health checks, and diagnostic endpoints. The webhook has a 295s timeout (vs Vercel's 60s limit under the old deployment).
+### API Layer (Modal)
+A single Python FastAPI application (`api/index.py`, deployed via
+`infra/modal_app.py`) handles all HTTP traffic on Modal (Python 3.11). Routes
+serve Telegram webhooks, the Pulse briefing engine, `/api/` endpoints for the
+app (auto-decisions, confirm/reject/undo, pulse-cron), health checks, and
+diagnostics.
 
 ### Webhook Handler (`core/webhook/`)
-The primary entry point for real-time data. Processes Telegram updates through a pipeline: dedup → auth → multimodal dispatch → shortcode resolution → clarification handling → intent classification → routing. URL quarantine at ingress (`url_filter.py`) routes bare URLs directly to resources table with no LLM call.
+Primary entry point for real-time data. Pipeline: dedup → **auth**
+(incoming chat must match the bound tenant chat; `TEST_CHAT_IDS` allow-list for
+the test harness, default-off) → multimodal dispatch → shortcode resolution →
+clarification handling → intent classification → routing. URL quarantine at
+ingress (`url_filter.py`). `email.py` handles the email/Teams/Outlook side.
 
 ### Action Pipeline (`core/actions/`)
-Replaced the legacy 3-headed architecture (Webhook + Quick Process cron + Pulse Engine staging sorter) with a single typed Action pipeline:
-- **`planner.py`**: Single LLM call resolves user intent into typed `Action` objects (create_task, close_task, reschedule, cancel_recurring, etc.) using a multi-source candidate pool (active tasks + recurring tasks + 14-day calendar window)
-- **`executor.py`**: Executes actions through `create_task_direct()` / `create_note_direct()` / `update_task_status()` — direct DB operations, no legacy piping
-- **`models.py`**: Typed `Action` and `Operation` dataclasses
+Replaced the legacy 3-headed architecture with a single typed Action pipeline:
+- **`planner.py`** — single LLM call resolves intent into typed `Action`
+  objects using a multi-source candidate pool
+- **`executor.py`** — typed contracts, PATCH semantics, deterministic
+  scheduling, parallel LLM pipelines with a no-retry contract
+- **`models.py`** — typed `Action` / `Operation` dataclasses
 
-### Pulse Engine (`core/pulse/`)
-A scheduled intelligence cycle using a **single LLM call** (no agent loop) with write-behind pattern. Formerly a 1500-line `engine.py` with agent loop + staging sorter, now 6 focused modules:
-- `briefing.py` — Single LLM call, parallel context assembly (Phase 1 + Phase 2 via `asyncio.gather`)
+### Pulse (`core/pulse/`)
+Scheduled intelligence using a **single LLM call** with write-behind:
+- `briefing.py` — single LLM call, parallel context assembly, direction-aware
 - `decision_pulse.py` — AI-free pending approvals
-- `sentinel.py` — Meeting alarms + 7 piggyback maintenance jobs
-- `pipeline.py` — Consolidated health monitor
-- `models.py` — Clean data contracts
-- `run_logger.py` — Pulse run tracking
+- `sentinel.py` — meeting alarms + piggyback maintenance jobs
+- `pipeline.py` — consolidated health monitor
+- `graph.py` — knowledge-graph decisions (node/edge approve/reject) with
+  decision-time learn features persisted via `core/decisions.py`
+- `run_logger.py` — pulse run tracking
 
-### Skills (`core/skills/`)
-Standalone batch scripts run via GitHub Actions CI: archive/journal ingest, email ingest (Gmail + Outlook), graph backfill, brain synthesis, DLQ consumer.
+### Decisions & Learning Loop (`core/decisions.py`)
+Every user decision — approve / reject / snooze / confirm / undo — persists to
+the `decisions` table with `metadata.learn_features` (the exact decision-time
+feature dict) and trains `subsystem_patterns` / `subsystem_telemetry` per
+subsystem. Undo emits an `undo_correction` that demotes the pattern. This is
+the product's core promise: "Not now" trains, never resets.
 
-### Agents (`core/agents/`)
-Autonomous workers: research agent (Jina AI web search), actions directory (Action Planner). Legacy agents (janitor, cleanup, quick process) all removed — their functions absorbed by the consolidated health monitor, enrichment queue, and sentinel piggybacks.
+### Skills, Agents & Services
+- **Skills** (`core/skills/`) — standalone batch scripts (archive/journal
+  ingest, email ingest, graph backfill, brain synthesis, DLQ consumer).
+- **Agents** (`core/agents/`) — research agent (web search → dossier); legacy
+  janitor/cleanup/quick-process agents removed.
+- **Services** (`core/services/`) — `auth`, `persona`, `onboarding`,
+  `briefing_refresh` (silent push briefings), `awaiting_reply` (snooze
+  escalation ladder), `message_voice`, `outlook_service`, `google_service`,
+  `push_notification`, `inbox_feed`, `llm`, `db`.
 
 ### Frontend (`frontend/`)
-Next.js 16 / React 19 dashboard with 10+ modules, Supabase auth, PixiJS v8 NeuralDisc (3D spherical graph visualization — replaced legacy D3.js), shadcn/ui design system, and OKLCH color tokens.
+Next.js / React dashboard — **parked (D3)**. Not part of active gates.
 
-### Mobile (Flutter)
-Full Rhodey app (`rhodey_app/`) with 12 screens, 5 models, 3 services, 4 widgets. Firebase integration with FCM push notifications. In-app update system with version check/download/install. TTS for Rhodey responses. Voice mic button on home screen. Horizon/Traces home screen design with warm stone palette.
+### Mobile — Rhodey (`rhodey_app/`)
+Flutter app: onboarding (Google / email-OTP sign-in), persona layer, home-screen
+modes (proceed/decide/sprint/catch-up/wrap), inbox with quick confirmations +
+selection-mode batch approve/reject + **per-item undo**, today/history/entities
+screens, voice capture with a Telegram-independent reply path, FCM push, and an
+in-app update system.
 
 ## Data Flow (End to End)
 
 ```
-Telegram Message / Web UI / Flutter App
+Telegram / Beeper / Email / Teams / Flutter App
     → api/index.py (FastAPI proxy)
     → url_filter.py (URL quarantine at ingress)
     → classifier (Gemini Flash Lite — intent + entity)
     → Route by Intent:
         TASK/COMPLETION/NOTE → plan_actions()
-            → execute_planned_actions()
-            → create_task_direct / create_note_direct (with entity resolution BEFORE creation)
-            → enrichment_queue (graph edges, entities, embeddings — survives Vercel cold kills)
+            → execute_planned_actions() (typed contracts)
+            → create_task_direct / create_note_direct (entity resolution BEFORE creation)
+            → enrichment_queue (graph edges, entities, embeddings)
             → Google Calendar sync + Google Tasks sync
+            → decision recorded + subsystem pattern trained
         QUERY → interrogate_brain()
-            → Anaphora resolution (resolve pronouns via active_anchor)
-            → Parallel context fetch (associative retrieval, graph, calendar, memories, emails, etc.)
+            → Anaphora resolution (resolve pronouns via conversation_threads.active_anchor)
+            → Parallel context fetch (associative retrieval, graph, calendar, memories, emails)
             → Gemini reasoning (streaming)
         DAILY_BRIEF → handle_daily_brief()
         CLARIFICATION_NEEDED → handle_clarification()
         NOISE → silent ack
-    → Telegram/FCM push/Task response
+    → Telegram / FCM push / in-app response
 
-Scheduled Pulse (via GitHub Actions/cron-job.org)
-    → Briefing (3-7x daily): build context → single LLM call → Telegram
-    → Decision Pulse (every 30min): pending approvals → inline keyboard → Telegram
-    → Sentinel (every 5min): check upcoming events → nudge → piggyback maintenance
+Scheduled Pulse (Modal cron + cron-job.org)
+    → Briefing (3-7x daily): build context → single LLM call → Telegram/app
+    → Decision Pulse (every 30min): pending approvals → inline keyboard
+    → Sentinel (every 5min): upcoming events → nudge → piggyback maintenance
     → Health monitor (every 2h): DLQ, error logs, LLM degradation, orphan sweep
 ```
 
@@ -112,23 +156,19 @@ Scheduled Pulse (via GitHub Actions/cron-job.org)
 
 | Layer | Technology |
 |-------|-----------|
-| Runtime | Python 3.12 (backend), Node.js (frontend) |
+| Runtime | Python 3.11 (backend), Dart/Flutter (mobile), Node.js (frontend, parked) |
 | Backend Framework | FastAPI |
-| Frontend Framework | Next.js 16 App Router |
-| Mobile | Flutter (Dart) |
+| Mobile | Flutter (Rhodey) |
 | Database | Supabase (PostgreSQL + pgvector) |
-| LLM | Gemini 3.5 Flash (synthesis), Gemini 3.1 Flash Lite (classification), Gemini Embedding 2 |
-| LLM Fallback | Gemma 4, OpenRouter |
+| LLM | Gemini 3.6 Flash (synthesis), Gemini 3.5 Flash Lite (classification) |
 | Search | Jina AI (web search for research agent) |
-| Distributed Cache | Upstash Redis (REST API) |
+| Distributed Cache | Upstash Redis (rate limiter, test sandbox lock) |
 | Calendar | Google Calendar API, Microsoft Graph API (Outlook) |
 | Tasks | Google Tasks API |
 | Email | Gmail API, Microsoft Graph API (Outlook) |
-| Messaging | Telegram Bot API |
+| Messaging | Telegram Bot API, Beeper bridge (WhatsApp), Teams |
 | Push | Firebase Cloud Messaging (FCM) |
-| Auth | HMAC-SHA256 + API Key + PULSE_SECRET + Supabase Service Role |
-| CI/CD | GitHub Actions (8+ workflows) + cron-job.org |
-| Hosting | Modal (serverless functions) + Vercel (frontend static export) |
+| Auth | Google / email-OTP sign-in + service role + PULSE_SECRET (cron) |
+| CI/CD | GitHub Actions (22 workflows) + cron-job.org; test gates (fast/nightly) |
+| Hosting | Modal (serverless functions) |
 | Document Extraction | PyMuPDF (PDF), python-docx (DOCX), openpyxl (XLSX), python-pptx (PPTX) |
-| Data Visualization | PixiJS v8 WebGL (NeuralDisc), D3.js (graph) |
-| UI Framework | shadcn/ui + Radix UI + Tailwind v4 |

@@ -91,18 +91,18 @@ The graph is stored in two tables:
 
 | Type | Created By | Metadata |
 |------|-----------|----------|
-| `person` | Graph approval flow (pending → approved) | people_id, source |
+| `person` | Graph approval flow (pending → approved) | source |
 | `organization` | Graph approval flow | source |
-| `project` | Graph approval flow | project_id, organization_name |
+| `project` | Graph approval flow | project_id, organization_id |
 | `place` | Backfill extraction | source |
 | `animal` | Backfill extraction | source |
 | `concept` | Concept sweep batch + HITL approval | Deduped via 85%+ similarity check |
 
-**Concept Fluidity (Synaptic Plasticity):** Abstract `concept` nodes were re-introduced after the June ontology overhaul. They are extracted via `concept_sweep_batch.py` from historical memories and flow through the same HITL pipeline as person/org/project nodes. A proactive `find_similar_node()` check at 85%+ similarity offers a 1-click `[Merge into this]` button, preventing label drift.
+**Concept Fluidity (Synaptic Plasticity):** Abstract `concept` nodes were re-introduced after the June ontology overhaul. They are extracted via `concept_sweep_batch.py` from historical memories and flow through `pending_nodes` (the current approval staging table — `pending_graph_nodes` was renamed/dropped in db/35). A proactive similarity check at 85%+ offers a 1-click `[Merge into this]` button, preventing label drift. **Concept edge types were removed** — see below.
 
 **Removed types that stay removed:** `emotional_state`, `resource`, `task`, `practice`, `cluster` — these were either junk drawers or have dedicated tables.
 
-### Edge Types (16 core + 3 concept)
+### Edge Types (validated matrix)
 
 | Relationship | Source → Target | Valid For |
 |-------------|----------------|-----------|
@@ -123,17 +123,11 @@ The graph is stored in two tables:
 | `MEMBER_OF` | Person → Organization | Formal membership |
 | `SERVES_AT` | Person → Organization | Ministry / volunteer role |
 
-**Banned types (removed):** `RELATES_TO`, `BELONGS_TO`, `AUTHORED`, `FEELS`, `INVOLVES`, `OWNS` — these were catch-all junk drawers. `OWNS` is still used programmatically by the node approval flow (Danny → OWNS → Project), but is excluded from the extraction prompt.
+**Banned types (removed):** `BELONGS_TO`, `AUTHORED`, `FEELS`, `OWNS` — catch-all junk drawers (`OWNS` is still used programmatically by the node approval flow, but excluded from the extraction prompt). `RELATES_TO` and `ASSOCIATED_WITH` are **not** banned wholesale — they are scoped to specific pairs in `VALID_EDGE_MATRIX` (e.g. task→person RELATES_TO, practice→practice ASSOCIATED_WITH).
 
-### Concept Edge Types (3 types)
+### Concept Edge Types (REMOVED)
 
-In addition to the 16 core types, `concept` nodes have their own relationship vocabulary:
-
-| Relationship | Source → Target | Purpose |
-|-------------|----------------|---------|
-| `EVOKES` | Concept → Concept | One concept reminds the system of another |
-| `RELATES_TO` | Concept → Concept | General thematic connection |
-| `ASSOCIATED_WITH` | Concept → Entity | Abstract concept linked to a concrete entity |
+The old `EVOKES` / concept `RELATES_TO` / concept `ASSOCIATED_WITH` vocabulary is **gone** — `VALID_EDGE_MATRIX` (`core/lib/graph_rules.py`) carries the comment "Conceptual fluidity (removed concept rows)" and has zero concept-pair entries. Concept *nodes* are still extracted by the sweep batch, but they get no dedicated edge types.
 
 ### Human-in-the-Loop Approval Pipeline
 
@@ -180,17 +174,17 @@ The backfill pipeline processes memories with the following constraints:
 
 **Text-anchoring validation:** After LLM extraction, every node label is verified against the source text (case-insensitive substring match). Hallucinated labels are dropped with an audit warning, along with their edges.
 
-### People Table Linkage
+### People Table (REMOVED)
 
-The `people` table now has a `graph_node_id` FK → `graph_nodes.id` for person-type nodes. This bridges the two registries — the graph knows the relationship (Marcus → CLIENT_OF → Equisoft), the people table knows the context (role, strategic_weight, last_interaction_date). 89/99 people records were backfilled via label matching.
+The `people` table is **dropped** (db/75). Person entities live entirely in `graph_nodes` (type `person`) — relationships via `graph_edges`, context via `graph_nodes.metadata`. The old `people.graph_node_id` FK bridge no longer exists.
 
 ### Graph Integrity Safeguards
 
 1. **Guard A: Orphaned BELONGS_TO edge cleanup** — When a task's project_id changes, stale edges are deleted before new ones are inserted.
 2. **Guard B: Text-anchoring validation** — Node labels must appear verbatim in source text.
 3. **HITL: Pending approval** — All edges and high-risk nodes (person, organization, project, concept) require manual approval before reaching the live graph.
-4. **Guard D: Dedup** — Unique index on `lower(trim(label))` prevents label-drift re-insertion in `pending_graph_nodes`.
-5. **Concept Fluidity:** Abstract `concept` nodes are supported but never auto-created. They flow through `pending_graph_nodes` with 85%+ similarity dedup detection and 1-click merge confirmation. Concept edge types (`EVOKES`, `RELATES_TO`, `ASSOCIATED_WITH`) are part of the `VALID_EDGE_MATRIX`.
+4. **Guard D: Dedup** — Unique index on `lower(trim(label))` prevents label-drift re-insertion in `pending_nodes`.
+5. **Concept Fluidity:** Abstract `concept` nodes are supported but never auto-created. They flow through `pending_nodes` with 85%+ similarity dedup detection and 1-click merge confirmation. No concept edge types remain in `VALID_EDGE_MATRIX`.
 
 ### Session Memory (Cross-Pulse Continuity)
 
@@ -282,7 +276,7 @@ Two cache tiers, both in Upstash Redis, fail-open on Redis error:
 
 ### Feature Flags (Env Vars)
 
-Five per-site flags control which read paths use associative retrieval. All are set to `true` in production (Vercel env vars):
+Five per-site flags control which read paths use associative retrieval. All are set to `true` in production (core/retrieval/config.py):
 
 | Flag | Path Activated | Purpose |
 |------|----------------|---------|

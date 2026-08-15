@@ -14,3 +14,7 @@ Adds Firebase Cloud Messaging push notifications to the Rhodey Flutter app. Ever
 - `core/webhook/telegram.py` — Push wire in send_telegram
 - `api/briefing.py` — latest_response field
 - `rhodey_app/lib/services/notification_service.dart` — onPushReceived callback
+
+## Update (2026-08-15): Silent Push Briefings (`briefing_refresh`)
+
+Aug 11 added **`core/services/briefing_refresh.py`** (+ `briefing_schedule.py`, `briefing_sections.py`): briefings are pushed to the app **silently** — a background FCM push tells Rhodey to refresh its briefing surface without needing a Telegram round-trip. The app's inbox/today surfaces stay live even when the user hasn't opened Telegram. This is part of the Telegram-independent reply path (doc 04 §Mobile).

@@ -1,6 +1,12 @@
 # Rhodey OS — System Specification
 > Use this document with `/speckit.specify` when defining new features or changes.
 
+> ⚠️ **Status (2026-08-15):** This spec's "as of" date is Jul 20. Since then:
+> multi-tenant shipped (M3), sign-in is OTP/Google (M11–M14), personas (M15/M18),
+> home-screen modes, the decisions ledger/learning loop, and the comprehensive
+> test suite all landed. See `product-summary/` (docs 70–76) for the current
+> state; the spec is the historical design.
+
 ---
 
 ## Current System State (as of Jul 20, 2026)

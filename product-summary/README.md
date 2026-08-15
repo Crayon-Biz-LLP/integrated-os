@@ -45,7 +45,7 @@ An AI-powered Personal Operating System — an Executive Command Center for one 
 | [17-canonical-brain-synthesis.md](17-canonical-brain-synthesis.md) | Canonical pages, brain synthesis, entity mapping from journal |
 | [28-clarification-loop-guards.md](28-clarification-loop-guards.md) | Entity grounding guards, URL quarantine (clarification question loop retired — plans/73: queue-native HITL + silent expiry gate + briefing check-in) |
 | [29-conversation-threads-and-workflows.md](29-conversation-threads-and-workflows.md) | Persistent threads, workflow state engine, cross-turn context (current, implemented) |
-| [60-thread-and-memory-architecture.md](60-thread-and-memory-architecture.md) | **Thread & memory redesign (PROPOSED)** — tiered memory model, topic-scoped sessions, transcript demotion, close-extraction |
+| [60-thread-and-memory-architecture.md](60-thread-and-memory-architecture.md) | **Thread & memory redesign (IMPLEMENTED — Aug 2026)** — transcript demoted to input log; topic-scoped, auto-titled general sessions; shipped-vs-pending map in §6 |
 | [30-context-registry-truth-boundary.md](30-context-registry-truth-boundary.md) | Context registry (entity-grounded retrieval, 6 strategies) + truth boundary (claim validation) |
 | [31-decision-audit.md](31-decision-audit.md) | Structured decision audit, `/why` command, 4-stage reasoning trace |
 
@@ -88,12 +88,26 @@ An AI-powered Personal Operating System — an Executive Command Center for one 
 | [99-lovable-product-brief.md](99-lovable-product-brief.md) | High-level product brief for external audiences |
 | [22b-normalized-label-fix.md](22b-normalized-label-fix.md) | normalized_label column for PostgREST-compatible case-insensitive graph node dedup |
 
-## Recent & Missing Docs
+## Recent Docs
 
 | File | What It Covers |
 |------|---------------|
-| [14-infrastructure.md](14-infrastructure.md) | Modal deployment, cron jobs, environment variables (NEW) |
-| [15-recent-enhancements.md](15-recent-enhancements.md) | Recent bug fixes and enhancements (NEW) |
+| [14-infrastructure.md](14-infrastructure.md) | Modal deployment, cron jobs, environment variables |
+| [15-recent-enhancements.md](15-recent-enhancements.md) | Recent bug fixes and enhancements |
+| [61-action-pipeline-hardening.md](61-action-pipeline-hardening.md) | Action pipeline hardening — typed contracts, PATCH semantics, deterministic time, provider shape |
+| [62-pulse-outage-rate-limiter-starvation.md](62-pulse-outage-rate-limiter-starvation.md) | Pulse rate-limiter self-feeding starvation fix |
+
+## Multi-Tenant, Learning Loop & Test Suite
+
+| File | What It Covers |
+|------|---------------|
+| [70-multi-tenant-architecture.md](70-multi-tenant-architecture.md) | M3 tenant-aware data layer — owner scoping, tenant_scope, MAX_TENANTS, db/78–84 |
+| [71-decisions-learning-loop.md](71-decisions-learning-loop.md) | Decisions ledger + learning loop — subsystem patterns, undo-training, confirm signals (vision #4) |
+| [72-test-suite-and-gates.md](72-test-suite-and-gates.md) | Test suite — 13 aspects, runner, fast/nightly CI, leak guard, sandbox contract |
+| [73-home-screen-modes.md](73-home-screen-modes.md) | Home-screen mode system — proceed/decide/sprint/catch_up/wrap, app_intelligence, focal item |
+| [74-tenant-lifecycle-signin.md](74-tenant-lifecycle-signin.md) | Tenant lifecycle — spend caps, Google/OTP sign-in, self-serve sign-up, snooze escalation |
+| [75-persona-layer.md](75-persona-layer.md) | Persona layer — M15 vocabulary, M18 Layer-3 knowledge, Phase 2B surfaces |
+| [76-app-approval-surface.md](76-app-approval-surface.md) | App approval surface — Quick Confirmations, batch approve/reject, Beeper reply flow |
 
 ---
 
@@ -101,5 +115,6 @@ An AI-powered Personal Operating System — an Executive Command Center for one 
 
 - **Session notes** — `session-notes/` — Chronological records of development sessions
 - **Plans** — `plans/` — Future implementation plans and migration roadmaps
-- **Architecture diagrams** — `docs/` — Archify-generated SVG architecture diagrams
+- **Architecture & ops docs** — `docs/` — architecture overview, webhook pipeline, task lifecycle, cutover runbook, scheduler map, beeper, thread-aware classification, test inventory
+- **Test suite** — `tests/README.md` — how to run the suite (fast/nightly tiers, aspects, live-DB contract)
 - **Speckit** — `.speckit/` — Spec-driven development artifacts (constitution, plan, specify)

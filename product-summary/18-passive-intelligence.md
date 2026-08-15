@@ -6,15 +6,11 @@ Integrated-OS has multiple passive intelligence systems that discover patterns, 
 
 The serendipity engine (`memory.py:259-320`) actively hunts for non-obvious connections across domains. Three discovery layers:
 
-### Layer 1: Cross-Domain Keyword Bridges
+### Layer 1: Graph Multi-Hop Discovery
 
-Finds words >4 characters that appear in 2+ task titles from different organization_names.
+Seeds `find_serendipity_paths` (PostgreSQL Recursive CTE, depth-3) with the graph nodes of active tasks, detected practice/pattern terms, and people/resource labels. Surfaces unexpected 2nd- and 3rd-degree links between today's tasks and historical projects, people, or resources.
 
-Example:
-- SOLVSTRAT task: "Prepare Qhord pricing review"
-- PERSONAL note: "Read book on pricing strategy"
-
-The engine detects the keyword "pricing" bridging work and personal domains, and surfaces this as a serendipitous connection.
+Example: a task's graph node connects to a person who also links to an unrelated resource — the engine surfaces that hidden bridge. (The older "cross-domain keyword bridges across organization_names" description predates the org-tag removal, db/75.)
 
 ### Layer 2: People-in-Resources
 
@@ -121,10 +117,10 @@ The bot maintains per-conversation working memory that persists across messages 
 
 ### Active Anchor
 
-The system tracks the primary entity being discussed (person or project) in the conversation's `active_anchor`. This is stored in the session's `conversations.metadata` and scopes:
+The system tracks the primary entity being discussed (person or project) in the conversation's `active_anchor`. This is stored on the **`conversation_threads.active_anchor`** column (thread redesign, Aug 5 — not `conversations.metadata`) and scopes:
 
 - **Tactical map traversal**: `hybrid_search_graph()` receives the anchor's graph node ID directly (exact-match lookup), avoiding fuzzy label search that could hit a different node.
-- **Proactive signal checks**: `check_proactive_signals()` queries email drafts, pending tasks, and WhatsApp for items matching the anchor name.
+- **Proactive signal checks**: *(removed)* — the old `check_proactive_signals()` / `core/pulse/proactive.py` no longer exist; proactive nudges now live in `awaiting_reply` (snooze escalation) and the Sentinel piggybacks.
 - **Serendipity engine seeding**: The anchor's graph node is added to `start_node_ids` in `find_serendipity_paths`.
 
 The anchor is resolved via three steps:
@@ -134,14 +130,12 @@ The anchor is resolved via three steps:
 
 The anchor is cleared after 15 minutes of inactivity or when a new `DAILY_BRIEF` intent is detected.
 
-### Proactive Signals
+### Proactive Signals (removed)
 
-In parallel with every query response, `check_proactive_signals()` (`core/pulse/proactive.py`) checks:
-- `email_drafts` for pending drafts mentioning the anchor
-- `messages` for suggested tasks linked to the anchor
-- `messages` for unapproved messages mentioning the anchor
-
-All checks run with a 1.5-second `asyncio.wait_for` timeout to avoid tail latency. Results are appended to the Telegram response as a `💡` proactive note.
+The old `check_proactive_signals()` / `core/pulse/proactive.py` were removed — no `💡` proactive note is appended to query responses anymore. Proactive behavior now ships through:
+- `core/services/awaiting_reply.py` — the snooze/escalation ladder for pending questions
+- `core/pulse/sentinel.py` — S1 proactive delegation alerts + the piggyback maintenance jobs
+- `core/services/message_voice.py` — proactive copy for composed messages
 
 ### Source Selection Heuristics
 

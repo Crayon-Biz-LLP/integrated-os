@@ -1,5 +1,11 @@
 # 10. Task-to-Organization Assignment & People Linking
 
+> ## ⚠️ SUPERSEDED — decommissioned feature (kept for history)
+> The project/people assignment features described here are **decommissioned**
+> (Jul 2026): `organizations`/`people` tables dropped (db/75), the projects
+> feature is dormant (X1 decision, 2026-08-15 — see `05-database-schema.md`),
+> and routing is now entity/tenant-based. Kept as a historical record.
+
 ## The Organization Assignment Cascade
 
 When the Pulse AI generates a new task with an `organization_name`, the engine resolves it via the Action Planner (`core/actions/planner.py`). The `projects` table was decommissioned — task routing now uses the `organizations` table with graph-node fallback.

@@ -18,7 +18,7 @@
 │                      PROCESSING LAYER                            │
 │  Action Planner → Executor → create_*_direct / update_*          │
 │  Entity linker (resolve BEFORE creation)                        │
-│  Enrichment queue (Vercel-safe, queue-based)                     │
+│  Enrichment queue (cold-start-safe, queue-based)                 │
 │  DLQ consumer │ State machine guards │ Compensate on fail        │
 ├──────────────────────────────────────────────────────────────────┤
 │                      INTELLIGENCE LAYER                          │
@@ -55,7 +55,7 @@
 | Principle | Meaning |
 |---|---|
 | **Unified pipeline** | ALL input channels route through 1 pipeline: classify → url_filter → plan_actions |
-| **DB-backed state** | Every session/user state lives in the database — survives Vercel cold restarts |
+| **DB-backed state** | Every session/user state lives in the database — survives serverless cold starts |
 | **Queue-based enrichment** | No fire-and-forget async tasks. Every side-effect is a queue job with 3-retry dead-letter cycle |
 | **Formal state machines** | All 16+ tables have documented valid transitions enforced by `guard_is_valid_transition()` |
 | **Entity-grounded retrieval** | Every query is anchored to a real person, org, or project — prevents hallucination |
@@ -173,13 +173,13 @@ text → _resolve_project_and_org_id(text)
       → (project_id, organization_id, resolved_org_name)
 ```
 
-### Enrichment Queue (Vercel-Safe)
+### Enrichment Queue (Cold-Start-Safe)
 
 Every side-effect (graph edges, entity extraction, embeddings) runs through a **queue-based** pattern:
 
 ```
 create_task_direct()
-  ├── INSERT task (synchronous, survives Vercel)
+  ├── INSERT task (synchronous, survives cold starts)
   └── INSERT pending_enrichment_job (synchronous)
         └── sentinel piggyback processes within ~5 min
               └── write_graph_edges_for_task()
@@ -189,7 +189,7 @@ create_task_direct()
 
 | Before (broken) | After (safe) |
 |---|---|
-| `loop.create_task(enrich(...))` — killed by Vercel on return | `enqueue_enrichment(...)` — synchronous DB insert, survives cold kills |
+| `loop.create_task(enrich(...))` — killed by the serverless runtime on return | `enqueue_enrichment(...)` — synchronous DB insert, survives cold starts |
 | No retry — silent failure | 3-retry dead-letter lifecycle |
 | No visibility | `pending_enrichment_jobs` table with status tracking |
 
@@ -389,7 +389,7 @@ Every table has documented valid status transitions in `core/lib/state_machines.
 
 **16 tables covered:** raw_dumps, tasks, memories, messages, pending_nodes, merge_proposals, pending_graph_edges, graph_nodes, graph_edges, conversations, conversation_threads, decisions, email_drafts, pending_retrieval_index_jobs, pending_graph_clarifications, agent_queue, call_recordings, retrieval_index_runs.
 
-### DB-Backed State (Survives Vercel Cold Kills)
+### DB-Backed State (Survives Cold Starts)
 
 | What | Table | Type |
 |---|---|---|
@@ -499,10 +499,10 @@ docs_service = get_docs_service(creds)  # For Notebook LM sync
 | **Average response time** | ~34s (across 15 verified queries) |
 | **Fastest query** | 25s (schedule queries) |
 | **Slowest query** | 50s (general — all 17 sections loaded) |
-| **Timeout rate** | 0% (15/15 under 60s Vercel limit) |
+| **Timeout rate** | 0% (15/15 under the serverless limit) |
 | **Hallucination rate** | 0% verified |
-| **E2E tests** | 22 scenarios, all passing |
-| **State machines** | 16 tables formally documented |
+| **E2E tests** | 865 pytest + 62 Flutter (incl. on-device); 22 UAT scenarios absorbed as L4 |
+| **State machines** | Formal guards on all status transitions |
 | **Dead code removed** | ~700+ lines across 7 files |
 | **Test artifacts cleaned** | ~1,094 rows across 21 tables |
 | **Graph dedup** | 1,235 task nodes → 170 unique |

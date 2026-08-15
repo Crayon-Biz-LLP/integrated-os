@@ -24,9 +24,14 @@ These are **not** product documentation — they are dev history. For product do
 | [47-classification-context-boundary.md](47-classification-context-boundary.md) | Jul 3 | Bounded classify context |
 | [49-rhodey-surface-ux.md](49-rhodey-surface-ux.md) | Jul 10 | Rhodey Surface v1-v3 |
 | [53-architecture-stabilization.md](53-architecture-stabilization.md) | Jul 15 | DB-backed state, state machines |
-| [54-hardening-trigger-fix.md](54-hardening-trigger-fix.md) | Jul 15 | Trigger fix, graph cleanup, push fix |
+| [54-hardening-trigger-fix-graph-cleanup-push-fix.md](54-hardening-trigger-fix-graph-cleanup-push-fix.md) | Jul 15 | Trigger fix, graph cleanup, push fix |
 | [55-root-cause-enforcement.md](55-root-cause-enforcement.md) | Jul 15 | 4W1H commit enforcement |
 | [59-post-uat-cleanup.md](59-post-uat-cleanup.md) | Jul 17 | UAT test data cleanup |
 | [60-hybrid-document-extraction.md](60-hybrid-document-extraction.md) | Jul 18 | PyMuPDF, DOCX, XLSX extraction |
 | [61-optimization-voice-gap-fixes.md](61-optimization-voice-gap-fixes.md) | Jul 19 | Parallelization, streaming, voice overhaul |
 | [62-thread-anchoring-awareness-layer.md](62-thread-anchoring-awareness-layer.md) | Jul 20 | Person routing, eager summaries, auto-archive |
+| [69-documentation-restructure.md](69-documentation-restructure.md) | Jul 27 | Docs restructure — product-summary / session-notes / plans / AGENTS.md |
+| [70-thread-lifecycle-redesign.md](70-thread-lifecycle-redesign.md) | Aug 5 | Thread lifecycle redesign — transcript demoted to input log |
+| [72-persona-l3-knowledge.md](72-persona-l3-knowledge.md) | Aug 9 | M18c — persona is Layer-3 knowledge (ContextProvider accessors) |
+| [74-aug10-14-wave.md](74-aug10-14-wave.md) | Aug 10–14 | Security audit, action hardening, beeper cutover, quick confirmations, direction-awareness, per-item undo |
+| [73-test-suite-session.md](73-test-suite-session.md) | Aug 15 | Comprehensive test suite build + ledger X1–X5 + bugs caught |

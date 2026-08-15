@@ -92,6 +92,19 @@ rhodey_app/lib/
 | `rhodey_app/lib/screens/today_screen.dart` | Search interface |
 | `rhodey_app/theme/app_theme.dart` | Design system |
 
+## Update (2026-08-15): What Changed Since This Doc
+
+The screen/module list above is the *original* architecture; the shipped app adds:
+
+- **Onboarding** — `screens/onboarding/` (Google / email-OTP sign-in, persona setup, how-Rhodey-works primer). Sign-in is OTP/Google — no API-key paste (doc 74).
+- **Home modes** — `adaptive_home_screen.dart` now renders the five home modes (proceed/decide/sprint/catch_up/wrap) from `PulseOutput.home_mode` + `app_intelligence` (doc 73).
+- **Persona** — vocabulary picker + per-tenant persona on every surface (doc 75).
+- **Approval surface** — Quick Confirmations, selection-mode + channel batch approve/reject, real priority buckets, draft editing, voice-rendered acks, and **per-item undo** (doc 76).
+- **New screens/widgets** — `quick_capture_overlay.dart`, `entities_screen.dart`, `how_rhodey_works_screen.dart`, `demo_replay_screen.dart`, `settings_screen.dart`, chat bubbles in `widgets/chat_bubble.dart`.
+- **Telegram-independent replies** — `core/services/reply_delivery.py` + `message_voice.py` (app no longer needs Telegram to reply).
+
+For the verified current map see `rhodey_app/README.md`.
+
 ## Related Docs
 
 - [Push Notifications](38-push-notifications.md)

@@ -5,6 +5,25 @@ Updated whenever something is removed or fundamentally changes.
 
 ---
 
+## 2026-08-15 — Comprehensive Test Suite, Docs Re-Baseline, Dead-Schema Drop
+
+### Added: the test suite (plans/75, commit `70719b8`)
+- 865 pytest + 62 Flutter tests; 13 aspect markers with marker-presence lint; unified runner (`scripts/run_tests.py`) with fast (~5 min) / nightly (~20 min) tiers; CI + pre-push hook wired; migration replay (94/94); webhook auth negatives; UAT as L4; fail-closed cross-tenant leak guard.
+- Sandbox contract: per-run chat allocation, Redis sandbox lock (cross-machine serialization), clean-slate pre-delete (X4/X5).
+
+### Added: learning-loop ledger (X2/X3)
+- `core/decisions.py` — `record_decision(..., metadata=)` persists decision-time `learn_features`; graph/edge approve-reject sites train `subsystem_patterns`; undo demotes; per-item confirmations against real subsystems (`emit_confirmed_observation`).
+
+### Removed: dead schema (db/101)
+- Dropped `entity_briefs`, `project_organizations`, `retrieval_config`, `retrieval_triples`, `retrieval_passage_triple_links` + `match_canonical_pages`/`match_logs` RPCs (verified dead; earlier: `people`/`organizations` db/75, `goals` db/34, `pending_graph_nodes` db/35). `projects` kept dormant (X1 decision).
+
+### Fixed
+- Onboarding Sign-in unreachable on a real device (on-device integration test caught it).
+- Leak-guard `raw_dumps.text` blind spot (column is `content`).
+- Docs re-baselined against the live 59-table schema + current architecture (plans/76).
+
+---
+
 ## 2026-08-14 — Clarifier Question Flow Retired (plans/73)
 
 ### Removed: graph clarification questions

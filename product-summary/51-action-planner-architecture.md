@@ -6,7 +6,7 @@ Rhodey's single-intent routing architecture has been upgraded with a universal A
 In **Phase 52 (Holistic Architecture Completion)**, the Action Planner became the **single unified pipeline** for all task/note/completion operations — replacing the three-headed architecture (Webhook + Quick Process cron + Pulse Engine staging sorter). All 6 former `process_single_dump` callers now route through `plan_actions()` → `execute_planned_actions()`.
 
 ## Motivation & Crash Fix
-The legacy completion matcher had a fatal flaw: if no open task matched the input, it entered a degradation path (`compute_pattern_confidence`) which relied on `SlidingWindowLimiter`. This limiter used a synchronous `threading.Lock` over a synchronous Redis HTTP check, blocking the async event loop and causing a silent 60-second Vercel timeout on unmatched complex requests (like cancelling a recurring series that was already marked 'done' for the week).
+The legacy completion matcher had a fatal flaw: if no open task matched the input, it entered a degradation path (`compute_pattern_confidence`) which relied on `SlidingWindowLimiter`. This limiter used a synchronous `threading.Lock` over a synchronous Redis HTTP check, blocking the async event loop and causing a silent serverless timeout on unmatched complex requests (like cancelling a recurring series that was already marked 'done' for the week).
 
 The Action Planner eliminates this degradation path entirely by shifting the matching responsibility to a multi-source planner that always returns typed actions (or `no_op`).
 
@@ -48,4 +48,13 @@ To give the LLM the correct context to resolve ambiguity (e.g., "Cancel the Armo
 
 ## Resilience Enhancements
 - **Async Locks**: Rate limiters now use `asyncio.Lock` and `asyncio.to_thread()` for Redis checks, preventing event loop starvation.
-- **Vercel Timeout Net**: The top-level `process_webhook()` is now wrapped in `asyncio.wait_for(..., timeout=55)`. If the request hits 55s, Rhodey intercepts the kill signal, returns a 200 OK to Telegram, and asynchronously sends a "still thinking" placeholder to the user, preventing silent deaths and preserving the audit trail.
+- **Webhook Timeout Net**: The top-level `process_webhook()` is now wrapped in `asyncio.wait_for(..., timeout=55)`. If the request hits 55s, Rhodey intercepts the kill signal, returns a 200 OK to Telegram, and asynchronously sends a "still thinking" placeholder to the user, preventing silent deaths and preserving the audit trail.
+
+## Update (2026-08-15): Action-Pipeline Hardening
+
+The pipeline was hardened in the Aug 13 action-pipeline wave (see `61-action-pipeline-hardening.md`):
+- **Typed contracts** — `core/actions/models.py`: every operation is a typed per-op subclass with strict field validation, so the executor is unchanged when ops are added.
+- **PATCH semantics** — `core/actions/executor.py`: updates are **deltas only, never write None** (`_build_patch` builders, Phase 3). A time-only change doesn't clobber other fields.
+- **Deterministic scheduling** — timezone-anchored against real capture times (`created_at`), no `datetime.now(...)` fallbacks that would warp relative contexts when processing is delayed.
+- **Provider shape** — LLM output is validated to the expected provider shape before execution.
+- **Learning loop** — every executed action records a decision (doc 71), so action outcomes train the subsystem patterns.

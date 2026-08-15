@@ -179,10 +179,18 @@ The system implements a native control layer directly in `generate_content_with_
 1. **Structured JSON Outputs**: The LLM is instructed to return valid JSON for all structured operations (classification, query responses, enrichment). If JSON parsing fails, the system falls back to deterministic safe text rather than raw `.text.strip()`.
 2. **Jittered Backoff**: If API calls fail, the retry loop applies `asyncio.sleep()` with an exponential backoff + random jitter. This prevents hammering the Gemini API and triggering 429 Rate Limits.
 3. **Workload Profiles**: Each type of LLM call has its own timeout and retry profile (INTERACTIVE=55s, SYNTHESIS=300s, BATCH=300s, EMBEDDING=120s).
-4. **Vercel-Friendly**: Built purely with native `async`/`await` primitives, ensuring zero event-loop blocking during the 60s serverless execution window.
+4. **Serverless-Friendly**: Built purely with native `async`/`await` primitives, ensuring zero event-loop blocking during the serverless execution window.
 
 > The original `ToolRegistry` and `run_agent_loop` multi-turn agent loop (used by the legacy pulse engine) was removed in Part 61 (ToolRegistry dead code cleanup). Structured operations are now handled by the **Action Planner** (`core/actions/`).
 
 ## History
 
 - **June 2026**: Consolidated all duplicated LLM infrastructure into `core/llm/`. Removed 17 redundant Supabase client creations, 3 Google credential factories, 2 fallback chains, 2 retry wrappers, and 6 model constant definitions. Added multi-key failover (3 API keys). Unified fallback chain with single rate limiter acquisition.
+
+## Update (2026-08-15): Rate-Limiter Self-Feeding Starvation Fix
+
+The shared limiter could starve itself: a sentinel burst would consume the shared `flash` pool and hang pulse briefings (and vice-versa) — the workload feeding the limiter was also the one waiting on it. Fixed in `core/lib/rate_limiter.py`:
+- **Dedicated sentinel pool** — `sentinel_flash_limiter` (own prefix, own keys). Sentinel bursts can no longer starve pulse briefings and the two workloads fail independently.
+- **No self-feeding** — a workload never acquires the pool it is itself consuming; workers no longer hang waiting on their own demand.
+
+See `62-pulse-outage-rate-limiter-starvation.md` for the full incident write-up.

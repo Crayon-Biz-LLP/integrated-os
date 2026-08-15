@@ -1,5 +1,10 @@
 # 11. People & Project Auto-Creation
 
+> ## ⚠️ SUPERSEDED — decommissioned feature (kept for history)
+> People/project auto-creation is **decommissioned**: `people`/`organizations`
+> dropped (db/75), `projects` dormant (X1 decision). See
+> `05-database-schema.md`. Kept as a historical record.
+
 ## Project Auto-Creation (AI-Gated — Decommissioned)
 
 **The `projects` table and its write pipeline were decommissioned in Phase 2 (July 2026).** Projects are no longer created via a `new_projects` JSON array. Instead, project-type graph nodes are created on-demand through entity linking and the Pulse AI prompt.

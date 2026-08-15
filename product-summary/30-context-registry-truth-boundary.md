@@ -80,7 +80,7 @@ Three critical functions now return deterministic safe text on JSON parse failur
 ## Phase 9 — Pre-Flight Context Fix (Jun 30, 2026)
 
 ### The Gap
-Handover memories (IDs 1092, 1093) were never indexed for associative retrieval — zero rows in `retrieval_passages`, `retrieval_phrase_nodes`, `retrieval_index_runs`. Root cause: `schedule_index_memory` used `asyncio.create_task(index_memory(...))` which is killed when Vercel serverless returns a response (~2s) before the 15s LLM extraction completes. Additionally, `RETRIEVAL_INDEXING_ENABLED` defaults to `false` (all retrieval features OFF per `config.py`).
+Handover memories (IDs 1092, 1093) were never indexed for associative retrieval — zero rows in `retrieval_passages`, `retrieval_phrase_nodes`, `retrieval_index_runs`. Root cause: `schedule_index_memory` used `asyncio.create_task(index_memory(...))` which is killed when the serverless function returns a response (~2s) before the 15s LLM extraction completes. Additionally, `RETRIEVAL_INDEXING_ENABLED` defaults to `false` (all retrieval features OFF per `config.py`).
 
 Since `associative_enabled=true` in production, `search_memories_compat` called `associative_retrieve()` which queries retrieval tables — not `memories.embedding` directly. New memories were invisible to the sentinel's pre-flight context.
 
@@ -167,4 +167,4 @@ Pre-flight for "Recurring meeting with Equisoft" now surfaces:
 | `tests/unit/test_context_registry.py` | 7 | Unit | Gate logic, isolation, neutral context, pre-flight isolation |
 | `tests/unit/test_actions.py` | 6 | Unit | Render, validate, lifecycle |
 
-Run: `LIVE_DB=true PYTHONPATH=. pytest -c /dev/null -o asyncio_mode=auto tests/sim/ tests/unit/ -v`
+Run: `python3 scripts/run_tests.py --tier fast` (the old `pytest -c /dev/null` invocation was retired in the Phase 4 test-suite build — see `tests/README.md`).

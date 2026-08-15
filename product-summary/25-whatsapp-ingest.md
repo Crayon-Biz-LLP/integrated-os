@@ -1,5 +1,10 @@
 # WhatsApp Ingest
 
+> ## ⚠️ SUPERSEDED — MacroDroid path replaced by the Beeper bridge (Aug 11, 2026)
+> The MacroDroid capture flow described below is **no longer the active path**.
+> WhatsApp now arrives via the **Beeper bridge** — see
+> `docs/beeper-messaging-layer.md` (current). Kept for history.
+
 ## Overview
 Ingests WhatsApp messages as a new input channel, separate from the email pipeline. Uses Android's notification listener (via MacroDroid) to capture messages and forward them to a Modal endpoint for Gemini classification and approval routing.
 

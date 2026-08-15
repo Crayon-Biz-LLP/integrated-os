@@ -6,8 +6,8 @@
 flowchart TB
     subgraph S0["Surface Layer"]
         direction LR
-        S1["🟡 Telegram Bot\n(active use, planning deprecation)\nPrimary input today\nInline keyboards + notifications\n→ Deprecate to alert-only"]
-        S2["🟢 Web UI (Next.js)\nDashboard, Tasks, Emails,\nGraph, Calendar, Clusters"]
+        S1["🟢 Telegram Bot\n(PRIMARY — active)\nInline keyboards + notifications\nEmail / Teams / Beeper-WhatsApp"]
+        S2["🟡 Web UI (Next.js)\nDashboard — PARKED (D3)"]
         S3["🟢 Flutter App (Rhodey)\nHome feed, Today, Inbox,\nTalk/Voice, Push notifications"]
     end
 
@@ -32,7 +32,7 @@ flowchart TB
         P3["Entity Linker\nresolve org/project\nBEFORE create"]
         P4["Enrichment Queue\npending_enrichment_jobs\natomic claim / retry / DLQ"]
         P5["DLQ Consumer\n3-retry dead letter\nescalation"]
-        P6["State Guards\n16 state machines\nvalid transitions only"]
+        P6["State Guards\nstate machines\nvalid transitions only"]
         P1 --> P2
         P2 --> P3
         P2 -.-> P4
@@ -83,22 +83,24 @@ flowchart TB
 | Decision | Rationale |
 |---|---|
 | **Single Action Planner path** | No legacy dispatch / quick_process / staging sorter — one code path for all task/note operations |
-| **Enrichment queue (not fire-and-forget)** | `pending_enrichment_jobs` with atomic claim — survives Vercel cold kills |
+| **Enrichment queue (not fire-and-forget)** | `pending_enrichment_jobs` with atomic claim — survives serverless cold starts |
 | **All graph edges through HITL** | `pending_graph_edges` approval table — no silent edge creation |
 | **Pulse Engine: single LLM call** | No agent loop, write-behind pattern — eliminates runaway loops |
 | **Entity resolution BEFORE creation** | Deterministic linker resolves org/project before DB write, not post-hoc |
-| **Formal state machines** | 16 tables with documented valid transitions — guards on all status changes |
-| **Surface deprecation path** | Telegram → alert-only. Web UI + Flutter app become full interaction surfaces |
+| **Formal state machines** | Documented valid transitions — guards on all status changes |
+| **Multi-tenant facade** | `owner_id` injection + tenant_scope; webhook resolves tenant per chat (see product-summary/70) |
+| **Direction-aware ingest** | Own-sends (email/Teams/Outlook) never surface as inbound items |
+| **Primary surface** | Telegram + Flutter app. The dashboard is parked (D3) — no deprecation of Telegram |
 
 ## Architecture Data Flow
 
 ```
-User (via Telegram / Web UI / Flutter App)
+User (via Telegram / Beeper-WhatsApp / Email / Teams / Flutter App)
     │
     ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │                       SURFACE LAYER                               │
-│  Telegram (deprecating) · Web UI · Flutter App                    │
+│  Telegram (primary) · Email · Teams · Beeper · Flutter App        │
 │  All surface → REST API → api/index.py (FastAPI)                  │
 └────────────────────────────────┬─────────────────────────────────┘
                                  │

@@ -1,6 +1,10 @@
 # Rhodey OS — Task Backlog (Spec Kit Format)
 > Ordered by priority. Dependencies listed. Each task is self-contained.
 
+> ⚠️ **Status (2026-08-15):** Backlog is Jul 27-era — pre-M3 multi-tenant,
+> pre-test-suite, pre-db/101. Many entries are done or superseded. The live
+> roadmap is `plans/`; this file is historical backlog.
+
 ---
 
 ## Completed Work (Parts 58-61)

@@ -1,5 +1,13 @@
 # Decision Audit (/why)
 
+> ## ⚠️ SUPERSEDED — pre-ledger /why doc
+> This describes the original `/why` audit (pre-2026-08-15). The decision
+> system has since grown a **`decisions` ledger + learning loop** (see
+> `03-architecture-overview.md` §Decisions, `05-database-schema.md` §Decisions
+> & Learning Loop): every decision persists with `metadata.learn_features` and
+> trains `subsystem_patterns`, and `/undo` emits correcting demotions. Kept for
+> history.
+
 Rhodey OS includes a transparent decision auditing system that allows the user to interrogate the bot about its most recent response. This is critical for debugging hallucinations, context leaks, and misclassifications in production without needing to query the database manually.
 
 ## How it works

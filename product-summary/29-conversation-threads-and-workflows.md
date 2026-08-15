@@ -1,5 +1,11 @@
 # 29. Conversation Threads & Workflow Engine
 
+> ## ⚠️ SUPERSEDED — thread redesign shipped (Aug 5, 2026)
+> The thread/workflow design here predates the thread-lifecycle redesign.
+> The current design is **`60-thread-and-memory-architecture.md` (IMPLEMENTED)** —
+> including `conversation_threads.active_anchor` and the thread state machine.
+> Kept for history.
+
 How Rhodey maintains conversational persistence across turns, enabling follow-up replies hours or days later without losing context.
 
 > **UPDATE (Aug 2026):** Thread *routing* (workflow/entity/general) is unchanged, but thread

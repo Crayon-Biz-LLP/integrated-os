@@ -1,17 +1,34 @@
 # rhodey_app
 
-A new Flutter project.
+The Flutter client for Integrated-OS — Rhodey, your Chief of Staff in your pocket.
 
-## Getting Started
+## What it does
 
-This project is a starting point for a Flutter application.
+- **Onboarding** — sign-in via Google / email-OTP (no API-key pasting), persona setup, and a "how Rhodey works" primer.
+- **Home modes** — the front door adapts to where you are in your day: proceed / decide / sprint / catch-up / wrap.
+- **Inbox & approvals** — quick confirmations with type filtering, selection-mode batch approve/reject, channel batch approve, and **per-item undo** (side-effects reversed via the `undo_*` decision flow).
+- **Today / history / entities** — the day's plan, past decisions and audit, and the knowledge-graph entities Rhodey knows about.
+- **Voice & quick capture** — a Telegram-independent reply path: Rhodey can hear and render acknowledgments without needing Telegram at all.
+- **Settings** — persona, notification, and account management.
 
-A few resources to get you started if this is your first Flutter project:
+## Layout
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+```
+lib/
+  main.dart          # entry point
+  screens/           # inbox, today, history, entities, adaptive_home, onboarding/, settings, ...
+  services/          # API client, auth, push, briefing
+  models/            # typed models for tasks, decisions, briefings, entities
+  widgets/           # chat bubbles, decision cards, mode switchers
+  voice/             # speech capture + rendering
+  theme/             # app theming
+```
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+## Testing
+
+```bash
+flutter test                                        # unit + widget tests
+flutter test integration_test -d <device>           # on-device E2E (onboarding flow)
+```
+
+The full app suite (including the on-device integration tests) is wired into the repo's test gate — see `tests/README.md` and `plans/75-comprehensive-test-plan.md`.
