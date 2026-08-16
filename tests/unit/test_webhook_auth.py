@@ -12,7 +12,6 @@ Covers the production auth boundary in core/webhook/handler.py:
 
 import contextlib
 import os
-from unittest.mock import patch
 
 import pytest
 
