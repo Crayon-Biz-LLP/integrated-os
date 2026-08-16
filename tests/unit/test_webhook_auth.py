@@ -10,6 +10,7 @@ Covers the production auth boundary in core/webhook/handler.py:
   matrix — the leak UAT chat-impersonation used to rely on).
 """
 
+import contextlib
 import os
 from unittest.mock import patch
 
@@ -20,15 +21,39 @@ from core.webhook.handler import _chat_authorized
 pytestmark = pytest.mark.webhook
 
 
+@contextlib.contextmanager
 def _with_env(owner: str | None, test_chats: str | None):
-    return patch.dict(
-        os.environ,
-        {k: v for k, v in {
-            "TELEGRAM_CHAT_ID": owner,
-            "TEST_CHAT_IDS": test_chats,
-        }.items() if v is not None},
-        clear=False,
-    )
+    """Run with TELEGRAM_CHAT_ID / TEST_CHAT_IDS set EXACTLY as given.
+
+    `None` means the variable is REMOVED from the environment — not left
+    untouched. The old `patch.dict(..., clear=False)` helper only added keys,
+    so under the nightly env (which sets TEST_CHAT_IDS for the UAT bypass)
+    the "env unset" tests saw the ambient value and the fail-closed
+    assertions broke. This makes each test hermetic: it establishes its own
+    conditions regardless of what the surrounding pytest session set.
+    """
+    def _apply():
+        old = {}
+        for key, value in (("TELEGRAM_CHAT_ID", owner), ("TEST_CHAT_IDS", test_chats)):
+            old[key] = os.environ.get(key)
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        return old
+
+    def _restore(old):
+        for key, prev in old.items():
+            if prev is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = prev
+
+    old = _apply()
+    try:
+        yield
+    finally:
+        _restore(old)
 
 
 # ── Owner chat always authorized ──────────────────────────────────────────

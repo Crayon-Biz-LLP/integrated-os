@@ -1,0 +1,88 @@
+name: Diag — CI connectivity probe
+
+# Throwaway diagnostic (2026-08-16): the nightly's live suites fail with
+# httpx.ConnectError [Errno 111] on the runner while the same suites pass
+# locally — the runner appears unable to reach the database. This probe
+# settles WHY with facts, read-only: masked env presence, a raw TCP connect
+# to the SUPABASE_URL host, and the REAL supabase-py client probe the suites
+# themselves use. No writes, no side effects — delete after the question is
+# answered (plans/75 §16).
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Probe — env presence (masked)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+        run: |
+          python - <<'EOF'
+          import os, urllib.parse
+          for name in ("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "TELEGRAM_BOT_TOKEN", "UPSTASH_REDIS_REST_URL"):
+              v = os.environ.get(name, "")
+              if not v:
+                  print(f"{name}: NOT SET")
+                  continue
+              if name in ("SUPABASE_URL", "UPSTASH_REDIS_REST_URL"):
+                  u = urllib.parse.urlsplit(v)
+                  print(f"{name}: set (scheme={u.scheme} host={u.hostname} port={u.port or 'default'})")
+              else:
+                  print(f"{name}: set, length={len(v)}, prefix={v[:6]}...")
+          EOF
+
+      - name: Probe — raw TCP to SUPABASE_URL host
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        run: |
+          python - <<'EOF'
+          import os, socket, urllib.parse
+          u = urllib.parse.urlsplit(os.environ["SUPABASE_URL"])
+          host, port = u.hostname, u.port or (443 if u.scheme == "https" else 80)
+          try:
+              with socket.create_connection((host, port), timeout=15):
+                  print(f"TCP connect {host}:{port} — OK")
+          except Exception as e:
+              print(f"TCP connect {host}:{port} — FAILED {type(e).__name__}: {e}")
+          EOF
+
+      - name: Probe — real supabase-py client (the exact suite probe)
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+        run: |
+          python - <<'EOF'
+          import os
+          import httpx
+          from supabase import create_client
+          from supabase.lib.client_options import SyncClientOptions
+          try:
+              c = create_client(
+                  os.environ["SUPABASE_URL"],
+                  os.environ["SUPABASE_SERVICE_ROLE_KEY"],
+                  options=SyncClientOptions(httpx_client=httpx.Client(timeout=30.0)),
+              )
+              res = c.table("users").select("id").limit(1).execute()
+              data = res.data
+              print(f"supabase probe: .data is {type(data).__name__} (real list? {isinstance(data, list)})")
+              if isinstance(data, list):
+                  print(f"  rows returned: {len(data)}")
+          except Exception as e:
+              print(f"supabase probe FAILED: {type(e).__name__}: {e}")
+          EOF
