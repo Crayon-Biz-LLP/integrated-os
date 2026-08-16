@@ -10,6 +10,13 @@
 /// Regenerate after an INTENTIONAL visual change:
 ///     cd rhodey_app && flutter test --update-goldens test/goldens/
 ///
+/// Goldens are PER-PLATFORM (test/flutter_test_config.dart): Linux CI
+/// compares against `*.linux.png` because the widget-test engine prefers the
+/// system emoji font on Linux (issue #84631) and ignores FontLoader fonts for
+/// emoji there. After a visual change, regenerate the macOS master locally
+/// AND dispatch `.github/workflows/generate_linux_goldens.yml` to refresh the
+/// Linux master — see the config file's header for the exact flow.
+///
 /// Note: widget goldens render with the test framework's default Ahem font
 /// (solid blocks) — they pin LAYOUT/STRUCTURE, not typography. That is the
 /// stable, CI-safe contract; real-font rendering is an integration_test
@@ -17,7 +24,6 @@
 library;
 
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -26,14 +32,15 @@ import 'package:rhodey_app/theme/app_theme.dart';
 import 'package:rhodey_app/widgets/rich_card_content.dart';
 
 /// Committed test asset: Google Noto Emoji, MONOCHROME outline build
-/// (SIL OFL 1.1). Loaded via FontLoader so every platform renders the emoji
-/// in the goldens from these exact bytes — platform emoji fonts (Noto Color
-/// Emoji vs Apple) caused the pixel diff. NB: the engine's widget-test
-/// rasterizer does NOT shape CBDT color-bitmap fonts (NotoColorEmoji.ttf
-/// silently no-ops), so the color build cannot be used here; the monochrome
-/// outline build shapes fine and renders REAL emoji glyphs, identically on
-/// every platform. Real color-emoji rendering stays an integration_test
-/// concern (plans/75 §19 X8).
+/// (SIL OFL 1.1). Loaded via FontLoader so the emoji in the goldens render
+/// from these exact bytes on macOS (and any platform without a system emoji
+/// font). NB: the engine's widget-test rasterizer does NOT shape CBDT
+/// color-bitmap fonts (NotoColorEmoji.ttf silently no-ops), so the color
+/// build cannot be used here; the monochrome outline build shapes fine and
+/// renders REAL emoji glyphs. On Linux the engine prefers the SYSTEM emoji
+/// font instead (issue #84631) — that platform's rendering is pinned by its
+/// own `*.linux.png` master (see test/flutter_test_config.dart). Real color-
+/// emoji rendering stays an integration_test concern (plans/75 §19 X8).
 const _emojiFontAsset = 'test/goldens/NotoEmoji-Regular.ttf';
 
 /// Family name under which the emoji font is registered for this test.

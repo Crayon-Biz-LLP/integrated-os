@@ -1,0 +1,55 @@
+name: Generate Linux goldens
+
+# One-off maintenance job: regenerate the per-platform golden masters
+# (briefing_card.linux.png, task_ack_card.linux.png) on the ubuntu runner and
+# upload them as artifacts.
+#
+# WHY: goldens are per-platform (see rhodey_app/test/flutter_test_config.dart).
+# The widget-test engine prefers the SYSTEM emoji font on Linux (issue
+# #84631), so Linux masters differ from macOS masters and must be generated on
+# a Linux host. This is the ONLY path that produces them.
+#
+# How to use:
+#   1. Commit an intentional visual change to a golden card (macOS master
+#      regenerated locally via `flutter test --update-goldens test/goldens/`).
+#   2. Dispatch this workflow manually (Actions tab → "Generate Linux goldens"
+#      → Run workflow). It runs against the latest main.
+#   3. Download the `linux-goldens` artifact, drop the *.linux.png files next
+#      to the macOS masters, commit them, push. CI's fast tier then compares
+#      Linux against the refreshed masters.
+on:
+  workflow_dispatch:
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # Flutter version pinned to match the fast-tier job and the dev machine:
+      # golden rendering is SDK-sensitive, so a Flutter bump is a deliberate,
+      # reviewed golden update.
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.5'
+          channel: stable
+          cache: true
+
+      - name: Flutter pub get
+        run: cd rhodey_app && flutter pub get
+
+      # Update mode writes *.linux.png via the platform-aware comparator
+      # (flutter_test_config.dart) — it never touches the macOS masters.
+      - name: Regenerate goldens on Linux
+        run: cd rhodey_app && flutter test --update-goldens test/goldens/
+
+      - name: Upload Linux goldens
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-goldens
+          path: rhodey_app/test/goldens/*.linux.png
+          if-no-files-found: error
