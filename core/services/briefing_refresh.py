@@ -89,13 +89,20 @@ async def trigger_briefing_refresh(source: str = "action") -> dict:
 
     # ── Debounce: a rebuild happened within the cache TTL → the cached
     # payload is already fresh enough; just nudge the app to re-fetch.
+    # "Never rebuilt" (last is None) is ALWAYS eligible: the sentinel cannot
+    # be a timestamp like 0.0 because time.monotonic() is seconds since BOOT
+    # — on a host booted < 120s ago (fresh CI runner, quick container
+    # restart) a 0.0 sentinel made the FIRST rebuild look debounced and
+    # silently swallowed it. Explicit None keeps first-call behavior
+    # independent of machine uptime.
     now = time.monotonic()
-    if now - _last_rebuild.get(uid, 0.0) < _REFRESH_DEBOUNCE_SECONDS:
+    last = _last_rebuild.get(uid)
+    if last is not None and now - last < _REFRESH_DEBOUNCE_SECONDS:
         try:
             await send_silent_push({"type": "briefing_refresh"})
             audit_log_sync(
                 "briefing_refresh", "INFO",
-                f"[{source}] debounced (rebuilt {(now - _last_rebuild.get(uid, 0.0)):.0f}s ago) — nudge sent",
+                f"[{source}] debounced (rebuilt {(now - last):.0f}s ago) — nudge sent",
             )
         except Exception as e:
             audit_log_sync("briefing_refresh", "WARNING", f"[{source}] debounced nudge failed: {e}")
@@ -179,7 +186,11 @@ def fire_briefing_refresh(source: str = "action") -> None:
     """
     uid = get_tenant() or "legacy"
     now = time.monotonic()
-    if now - _last_rebuild.get(uid, 0.0) >= _REFRESH_DEBOUNCE_SECONDS:
+    last = _last_rebuild.get(uid)
+    # Never rebuilt (last is None) is always due — same boot-time sentinel
+    # fix as trigger_briefing_refresh: a 0.0 sentinel would wrongly treat the
+    # first call as debounced on a host booted < 120s ago.
+    if last is None or now - last >= _REFRESH_DEBOUNCE_SECONDS:
         # A rebuild is due — invalidate synchronously so the self-heal
         # guarantee holds even if the process dies before the task runs.
         _cache_invalidate(briefing_cache_key())

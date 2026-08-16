@@ -150,6 +150,30 @@ def test_retry_gives_up_and_audits_error_after_two_failures():
     audit.assert_any_call("briefing_refresh", "ERROR", ANY)
 
 
+def test_first_rebuild_after_fresh_boot_is_never_debounced(monkeypatch):
+    """Regression: the debounce sentinel must not depend on machine boot time.
+
+    time.monotonic() is seconds since BOOT. The old sentinel (0.0) made the
+    FIRST trigger look debounced on any host booted < 120s ago — a fresh CI
+    runner swallowed its rebuild silently (no build_briefing call, success
+    True). Pin monotonic to a tiny value and assert the rebuild runs.
+    """
+    monkeypatch.setattr(mod.time, "monotonic", lambda: 10.0)  # booted 10s ago
+    with (
+        patch.object(mod, "tenant_aware_client", return_value=MagicMock()),
+        patch("core.lib.redis_cache.cache_delete"),
+        patch("core.lib.redis_cache.cache_set"),
+        patch("core.services.push_notification.send_silent_push", new=AsyncMock()),
+        patch("api.briefing.build_briefing", new=AsyncMock(return_value=_briefing_payload())) as build,
+        patch.object(mod, "audit_log_sync"),
+    ):
+        result = _run(mod.trigger_briefing_refresh(source="task_status_change"))
+
+    assert result["success"] is True
+    assert result.get("debounced") is not True
+    build.assert_awaited_once()
+
+
 def test_fire_briefing_refresh_safe_without_running_loop():
     """T4: fire_briefing_refresh from a sync context logs and skips — no raise."""
     with (
