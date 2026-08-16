@@ -300,6 +300,30 @@ PlannedAction = Annotated[
 PLAN_ACTION_ADAPTER = TypeAdapter(PlannedAction)
 
 
+def inject_deterministic_title(action: dict, title: str, text: str) -> dict:
+    """Phase 2 backstop (invariant #2): if the LLM produced a create_task or
+    create_event action with NO title (the S2 flake class — the Gemini planner
+    intermittently omits the title, and a title-less create is blocked at the
+    executor gate, silently degrading the request to a fallback note), re-read
+    the raw text deterministically and inject the title before validation.
+
+    Prefers the classifier-extracted title, falling back to the raw message
+    text. When the action carries a non-empty title (or is not a create op)
+    the action is returned unchanged.
+    """
+    op = action.get("operation")
+    if op not in ("create_task", "create_event"):
+        return action
+    params = action.get("params") or {}
+    if (params.get("title") or "").strip():
+        return action
+    params = dict(params)
+    params["title"] = (title or "").strip() or text
+    action = dict(action)
+    action["params"] = params
+    return action
+
+
 def inject_deterministic_delta(action: dict, text: str) -> dict:
     """Phase 2 backstop (invariant #2): if the LLM produced a time-bearing
     action with NO time (the Aug 12 silent-ack class — live LLM flake seen in

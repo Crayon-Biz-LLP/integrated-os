@@ -288,19 +288,12 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
         conversation_history=conversation_history
     )
 
-    # D5: Rate limit check before LLM call (fail-open on Redis failure)
-    # M6: per-tenant key so one tenant's volume can't starve another's
-    # classification (legacy: shared key when no tenant context). Cap stays
-    # 15/min per tenant — unchanged from the old global 15/min for Danny.
-    try:
-        from core.llm.budget import CLASSIFY_RPM, current_tenant, tenant_llm_limiter
-        wait = tenant_llm_limiter(current_tenant(), max_calls=CLASSIFY_RPM)._get_wait_secs()
-        if wait > 3:
-            audit_log_sync("webhook", "WARNING", f"Classification rate limited (wait={wait:.1f}s), returning safe hold")
-            cache_set(cache_key, SAFE_HOLD_CLASSIFICATION, ttl=300)
-            return SAFE_HOLD_CLASSIFICATION
-    except Exception:
-        pass  # Fail-open: if limiter is unavailable, proceed with LLM call
+    # Rate limiting is handled by the global legacy limiter inside
+    # generate_content_with_fallback (bounded wait — never drops). The M6
+    # per-tenant gate was removed 2026-08-16: it returned SAFE_HOLD instantly
+    # under burst, silently vaulting messages that would have been fine after
+    # a brief wait. Re-introduce per-tenant limiting when paid subscriptions
+    # ship (tenant_llm_limiter in core/llm/budget.py).
 
     try:
         resp = await generate_content_with_fallback(

@@ -12,8 +12,7 @@ from .retry import DeadlineBudget, get_jittered_backoff
 from .providers import call_gemini, call_openrouter
 from .instrument import log_llm_outcome
 from .budget import (
-    WARN_THRESHOLD, credit_remaining, current_tenant, tenant_llm_limiter,
-    resolve_monthly_credit,
+    WARN_THRESHOLD, credit_remaining, current_tenant, resolve_monthly_credit,
 )
 from core.lib.audit_logger import audit_log_sync
 
@@ -54,20 +53,16 @@ async def generate_content_with_fallback(
         log_llm_outcome(resp, outcome, prompt=prompt)
         return resp
 
-    # ── M6 cost controls: per-tenant rate limit + monthly credit (entry gate) ──
+    # ── M6 cost controls: monthly credit (entry gate) ──
+    # Note: the per-tenant RATE limiter gate was removed 2026-08-16. The
+    # global legacy limiter (flash_lite/flash_3_5 in core/lib/rate_limiter.py)
+    # already throttles the entire OS with bounded waits; the per-tenant gate
+    # dropped requests instantly under burst (silent no-task flakes, S2).
+    # Re-introduce per-tenant limiting when paid subscriptions ship — the
+    # tenant_llm_limiter machinery remains in core/llm/budget.py.
     uid = current_tenant()
     if uid:
-        # 1) Per-tenant calls/min — block (not just wait) when saturated so
-        #    one tenant can't monopolize the shared account.
-        try:
-            wait = tenant_llm_limiter(uid)._get_wait_secs()
-            if wait > 10:
-                audit_log_sync("llm_budget", "WARNING",
-                               f"LLM rate limit exceeded for tenant {uid} (wait={wait:.1f}s)")
-                return _create_degraded_response("rate_limit_exceeded", Outcome.SAFE_HOLD_EMITTED)
-        except Exception:
-            pass  # fail-open: limiter unavailable
-        # 2) Per-user MONTHLY credit (table-driven; cycle = signup day). Soft
+        # Per-user MONTHLY credit (table-driven; cycle = signup day). Soft
         #    warn near the limit (keep serving), hard block at 0 (safe hold).
         #    One credit_remaining() call feeds both decisions (single SUM).
         try:

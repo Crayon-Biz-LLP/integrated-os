@@ -8,6 +8,7 @@ from core.actions.models import (
     NeedsClarification,
     PLAN_ACTION_ADAPTER,
     inject_deterministic_delta,
+    inject_deterministic_title,
     validation_missing_fields,
 )
 from core.services.db import tenant_aware_client
@@ -232,6 +233,13 @@ async def plan_actions(text: str, title: str = "", entity: str = "", active_anch
             # raw text is re-read deterministically and the delta injected — so
             # a "defer by 7 days" flake can never be asked about or dropped.
             a = inject_deterministic_delta(a, text)
+
+            # Title backstop (same invariant): the LLM intermittently emits
+            # create_task/create_event with no title — a title-less create is
+            # blocked at the executor gate and the request silently degrades to
+            # a fallback note (the S2 flake class). Re-read the text
+            # deterministically instead of dropping the request.
+            a = inject_deterministic_title(a, title, text)
 
             # Phase 1 fail-closed (invariant #3): every action must satisfy its
             # per-op schema before it can reach the executor. A malformed action

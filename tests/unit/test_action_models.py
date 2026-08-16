@@ -25,6 +25,7 @@ from core.actions.models import (
     UpdateMetadataAction,
     action_param_error,
     inject_deterministic_delta,
+    inject_deterministic_title,
     validation_missing_fields,
 )
 pytestmark = pytest.mark.decision
@@ -272,6 +273,47 @@ def test_inject_modify_recurring():
     a = {"operation": "modify_recurring", "target_id": "2466", "params": {}}
     out = inject_deterministic_delta(a, "push the weekly sync back a week")
     assert out["params"]["time_delta"] == {"amount": 1, "unit": "weeks", "direction": "later"}
+
+
+# ── inject_deterministic_title: Phase 2 backstop for the LLM title flake ──
+
+
+def test_inject_title_when_llm_dropped_title():
+    """The S2 flake class: the Gemini planner intermittently emits
+    create_task with params: {} — the backstop injects the classifier title so
+    the action validates and executes instead of being blocked at the
+    executor gate and silently degraded to a fallback note."""
+    a = {"operation": "create_task", "params": {}}
+    out = inject_deterministic_title(a, "Follow up with Amita", "[UAT] Remind me to follow up with Amita next week")
+    assert out["params"]["title"] == "Follow up with Amita"
+    act = _validate(out)  # the injected action now passes the typed contract
+    assert act.params["title"] == "Follow up with Amita"
+
+
+def test_inject_title_falls_back_to_raw_text():
+    """No classifier title → raw message text is used, so the request is
+    never dropped for lack of a title."""
+    a = {"operation": "create_event", "params": {}}
+    out = inject_deterministic_title(a, "", "Team sync at 3pm")
+    assert out["params"]["title"] == "Team sync at 3pm"
+
+
+def test_inject_title_keeps_explicit_title():
+    a = {"operation": "create_task", "params": {"title": "Book flights"}}
+    out = inject_deterministic_title(a, "Fallback", "Book flights to Goa")
+    assert out["params"]["title"] == "Book flights"
+
+
+def test_inject_title_ignores_non_create_ops():
+    a = {"operation": "close_task", "target_id": "5", "params": {}}
+    assert inject_deterministic_title(a, "X", "text") is a
+
+
+def test_inject_title_blank_title_triggers():
+    """Whitespace-only title is treated as missing."""
+    a = {"operation": "create_task", "params": {"title": "   "}}
+    out = inject_deterministic_title(a, "Real title", "text")
+    assert out["params"]["title"] == "Real title"
 
 
 # ── validation_missing_fields: real-field extraction for the learning loop ──

@@ -34,22 +34,6 @@ async def test_c3_safe_hold_on_llm_failure():
     assert 'Message vaulted safely' in result['receipt']
 
 
-@pytest.mark.asyncio
-async def test_c3_safe_hold_on_rate_limit():
-    set_trace_id("sim-c3-ratelimit")
-
-    with patch('core.llm.budget.tenant_llm_limiter') as mock_limiter:
-        mock_limiter.return_value._get_wait_secs.return_value = 5.0
-        result = await classify_intent(
-            text="[SIM_TEST] Rate limited message",
-            context=[],
-            ist_hour=14
-        )
-
-    assert result == SAFE_HOLD_CLASSIFICATION
-    assert result['intent'] == 'NOTE'
-
-
 @requires_live_db
 @pytest.mark.asyncio
 async def test_k2_routing_workflow_priority():
