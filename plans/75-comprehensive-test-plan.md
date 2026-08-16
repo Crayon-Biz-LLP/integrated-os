@@ -1,6 +1,29 @@
-# 75 — Comprehensive Test Plan (v2.16)
+# 75 — Comprehensive Test Plan (v2.17)
 
 ## Changelog
+- v2.17: **Nightly pipeline honesty + fault-injection proof (Phase 1) + api floor calibration.**
+  (1) **The nightly was SILENTLY RED** — `nightly.yml` ran the runner
+  through `| tail -60` without `set -o pipefail`, so the step always exited
+  0 and the job reported success while `nightly tier: FAILED` sat in the
+  log. The pipe is removed (full output streams to the run log) and
+  `pipefail` stays as a guard; `notify_failure` becomes live again.
+  (2) **Fault-injection pass — the suite bites (5/5).** Re-injected each
+  real production bug one at a time and required the suite to go RED:
+  debounce-sentinel revert → fresh-boot regression test · planner title
+  backstop removal → 3 title-injection tests · golden comparator wrong-
+  platform routing → both goldens (original 2.36%/0.83% pixel signatures)
+  · rate limiter disabled → test_sliding_window_fallback · tenant-1 token
+  planted in shared code → residue gate (exit 1, exact file+line). All
+  reverted; tree byte-clean. Caveat: DB-level RLS isolation is
+  database-enforced (migration-level injection would be the deeper proof —
+  parked). (3) **api coverage floor calibrated** — the v2.14 "floors
+  closed" claim was incomplete: api measured 12% (api/index.py 12%,
+  api/briefing.py 10%) against the unvalidated default 20. Set
+  `API_COV_FLOOR=10` (measured-baseline pattern, like core 23→20) with the
+  measurement documented in nightly.yml; closing the real gap is §16 D6.
+  (4) **Open:** the CI nightly completes in ~60s vs ~14min locally — live
+  suites appear to SKIP on CI. After the pipefix lands, dispatch and verify
+  per-layer counts (does the deep tier actually run?).
 - v2.16: **X4 residual CLOSED — cross-machine sandbox lock.** The one
   remaining race (marker-title sweeps crossing truly-concurrent runs, e.g.
   nightly cron vs a local live run) is now structurally impossible:
@@ -816,6 +839,7 @@ marker-presence lint (new) is a separate L0 check; both run in fast.
 | D3 | Dashboard future: refactor to admin panel? | Parked (v2.0). Revisit when the refactor starts; logic tests only, no visual-design tests | Phase 3 dashboard items |
 | D4 | Learning-loop test design | **RESOLVED (v2.5).** The loop END is a two-phase contract, and the tests prove it in both directions: (1) persist — a decision flows through emit_observation → subsystem_patterns rolling counter; (2) re-run — compute_pattern_confidence on the SAME features returns a DIFFERENT recommendation than before the decisions (review → approve at MIN_PATTERN_OBSERVATIONS=3; corrections past MAX_ERROR_RATE=0.5 demote back). Implemented: unit/learning_loop (escalation boundary, demotion, stateful two-phase loop, undo-trains, fail-open) + sim/learning_loop_live (real-DB two-phase flip + undo demotion). The design also surfaced + fixed a real vision-#4 trust-breaker: undo paths emitted NO learning signal, so a wrong auto-approve's pattern stayed strong. Fix in v2.5 (learn_features on decisions + emit_undo_correction from every undo path). | ✅ closed |
 | D5 | `TEST_TENANT_UID` source of truth | CI sets it explicitly; local resolves the `Test` user row. Both paths already exist in `resolve_test_tenant_uid()` | Phase 1 |
+| D6 | api-layer coverage gap — measured 2026-08-16: api/index.py 12%, api/briefing.py 10%, TOTAL api 12% (default floor 20 was never validated) | **ACTION (v2.17):** floor calibrated to `API_COV_FLOOR=10` (measured-baseline pattern, like core 23→20). Real fix: lift api ≥20 to restore the default — target `api/briefing.py` (the live briefing builder, 741 stmts) and the highest-value `api/index.py` handler paths. | Not blocking; tracked follow-up |
 
 ---
 

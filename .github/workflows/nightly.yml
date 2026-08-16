@@ -57,7 +57,20 @@ jobs:
           # Webhook test-chat bypass — default-off fail-closed (plans/75 §7).
           # Present ONLY here; prod never sets it, so the gate stays closed.
           TEST_CHAT_IDS: "909999999"
-        run: python scripts/run_tests.py nightly --live --coverage 2>&1 | tail -60
+          # api coverage floor: calibrated to the measured baseline
+          # (2026-08-16: api/index.py 12%, api/briefing.py 10%, TOTAL api
+          # 12%) — same measured-baseline pattern core uses (23%→20). The
+          # default 20 was never validated against api; lifting api back to
+          # the default is tracked follow-up (plans/75 §16 D6).
+          API_COV_FLOOR: "10"
+        # Exit code must reach GitHub: the old `| tail -60` pipe (no
+        # pipefail) always exited 0 — the nightly was silently RED while
+        # the job reported success. No pipe at all: full output streams to
+        # the run log (pytest -q keeps it compact), and a failure fails the
+        # step. pipefail stays as a guard if a pipe is ever re-added.
+        run: |
+          set -o pipefail
+          python scripts/run_tests.py nightly --live --coverage
 
   notify_failure:
     runs-on: ubuntu-latest
