@@ -46,3 +46,8 @@ rhodey_app/android/build/reports/
 
 # IntelliJ IDEA project files (machine-specific)
 .idea/
+
+# pytest-cov artifacts (fast tier measures coverage on every push)
+.coverage
+.coverage.*
+htmlcov/

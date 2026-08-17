@@ -75,9 +75,12 @@ jobs:
         # step. pipefail stays as a guard if a pipe is ever re-added.
         # --layer deep = the deterministic live core (tenants/clusters/root/
         # migrations replay); the LLM-paced layers run weekly (weekly-deep.yml).
+        # No --coverage: the coverage floors now live on the FAST tier (full
+        # mock suite, every push) where they were calibrated — the deep layer
+        # measures only a subset (core 15%/api 9%) and would false-fail them.
         run: |
           set -o pipefail
-          python scripts/run_tests.py nightly --live --coverage --layer deep
+          python scripts/run_tests.py nightly --live --layer deep
 
   notify_failure:
     runs-on: ubuntu-latest
