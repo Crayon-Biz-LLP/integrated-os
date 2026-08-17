@@ -398,7 +398,7 @@ async def _send_draft_reply(draft_id: int) -> tuple:
             gmail_service.users().messages().send(userId='me', body=send_body).execute()
         except Exception as gmail_error:
             audit_log_sync("webhook", "ERROR", f"Gmail send failed for draft {draft_id}: {gmail_error}")
-            print("Status remains 'sent' to prevent double-send attempts.")
+            supabase.table('email_drafts').update({'status': 'failed'}).eq('id', draft_id).execute()
             return (False, str(gmail_error))
 
         await _emit_draft_observation('approval', 'confirmed', draft['draft_body'])
@@ -406,6 +406,7 @@ async def _send_draft_reply(draft_id: int) -> tuple:
 
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"Draft send error for draft {draft_id}: {e}")
+        supabase.table('email_drafts').update({'status': 'failed'}).eq('id', draft_id).execute()
         return (False, str(e))
 
 async def send_outlook_draft(draft: dict) -> tuple:
@@ -450,6 +451,7 @@ async def send_outlook_draft(draft: dict) -> tuple:
                 from core.skills.outlook_token_helper import refresh_outlook_token
                 result = refresh_outlook_token(write_back=True)
                 if not result:
+                    supabase.table('email_drafts').update({'status': 'failed'}).eq('id', draft['id']).execute()
                     return (False, "Outlook token expired and could not be refreshed for this account.")
                 access_token = result["access_token"]
                 headers["Authorization"] = f"Bearer {access_token}"
@@ -463,11 +465,12 @@ async def send_outlook_draft(draft: dict) -> tuple:
                     return (True, None)
 
             audit_log_sync("webhook", "ERROR", f"Outlook send failed for draft {draft['id']}: HTTP {response.status_code}: {response.text}")
-            audit_log_sync("webhook", "INFO", "Status remains 'sent' to prevent double-send attempts.")
+            supabase.table('email_drafts').update({'status': 'failed'}).eq('id', draft['id']).execute()
             return (False, f"HTTP {response.status_code}: {response.text}")
 
     except Exception as e:
         audit_log_sync("webhook", "ERROR", f"Outlook send error for draft {draft['id']}: {e}")
+        supabase.table('email_drafts').update({'status': 'failed'}).eq('id', draft['id']).execute()
         return (False, str(e))
 
 async def handle_ed_command(text: str, chat_id: int):
