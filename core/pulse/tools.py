@@ -139,12 +139,13 @@ async def create_task_direct(
                 audit_log_sync("tools", "WARNING", f"Calendar sync failed for task {task_id}: {cal_e}")
 
         # Google Tasks sync — persist returned ID for downstream completion sync
-        try:
-            g_task_id = sync_to_google(get_tasks_service(), title=title, task_id=None, status="needsAction", due_at=deadline or reminder_at, explicit_time=has_explicit_time)
-            if g_task_id:
-                supabase.table('tasks').update({'google_task_id': g_task_id}).eq('id', task_id).execute()
-        except Exception as gt_e:
-            audit_log_sync("tools", "WARNING", f"Google Tasks sync failed: {gt_e}")
+        if deadline or reminder_at:
+            try:
+                g_task_id = sync_to_google(get_tasks_service(), title=title, task_id=None, status="needsAction", due_at=deadline or reminder_at, explicit_time=has_explicit_time)
+                if g_task_id:
+                    supabase.table('tasks').update({'google_task_id': g_task_id}).eq('id', task_id).execute()
+            except Exception as gt_e:
+                audit_log_sync("tools", "WARNING", f"Google Tasks sync failed: {gt_e}")
 
         # Enrichment: queue graph edges + entity extraction
         from core.lib.enrichment_queue import enqueue_enrichment

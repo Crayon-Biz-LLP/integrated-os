@@ -276,6 +276,14 @@ async def compensate_action(action: Action, supabase):
             tid = action.params.get("_created_task_id")
             if tid:
                 try:
+                    task_row = supabase.table("tasks").select("google_task_id, google_event_id").eq("id", int(tid)).limit(1).execute()
+                    if task_row.data:
+                        td = task_row.data[0]
+                        from core.services.google_service import delete_google_task, delete_calendar_event
+                        if td.get("google_task_id"):
+                            delete_google_task(td["google_task_id"])
+                        if td.get("google_event_id"):
+                            delete_calendar_event(td["google_event_id"])
                     supabase.table("tasks").update({"is_current": False}).eq("id", int(tid)).execute()
                     audit_log_sync("executor", "INFO", f"Rolled back create_task {tid}")
                 except Exception as e:
