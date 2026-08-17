@@ -273,9 +273,9 @@ Output format for top_focal_item:
 ```json
 {{
   "type": "task",           // "task", "graph_node", "graph_edge", or other
-  "item_id": "123",         // task ID or pending item ID from the data
-  "title": "Fill the bank forms",
-  "reason": "Blocking the fund transfer — the bank is waiting on these forms.",
+  "item_id": "{ctx.sample_task_id}",         // task ID or pending item ID from the data
+  "title": "{ctx.sample_task_title}",
+  "reason": "{ctx.sample_task_reason}",
   "urgency": "critical",    // "critical", "important", "normal"
   "action_label": "I'll do it"
 }}

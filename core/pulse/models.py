@@ -59,6 +59,9 @@ class BriefingContext:
     urgency_lists: str = ""
     universal_task_map: str = "None"
     dependency_context: str = "None"
+    sample_task_id: str = "123"
+    sample_task_title: str = "Complete the pending report"
+    sample_task_reason: str = "This is blocking the next phase of the project."
 
     # Intelligence
     calendar_context: str = ""

@@ -1199,7 +1199,15 @@ async def _process_pulse_impl(auth_secret: str = None, request_id: str = None, t
         # ═══════════════════════════════════════
 
         from core.pulse.models import BriefingContext
+        
+        sample_task = filtered_tasks[0] if filtered_tasks else {}
+        st_id = str(sample_task.get("id", "123"))
+        st_title = str(sample_task.get("title", "Review the new project brief"))
+        
         ctx = BriefingContext(
+            sample_task_id=st_id,
+            sample_task_title=st_title,
+            sample_task_reason=f"This is blocking the next phase of {st_title}.",
             season_config=season_config,
             briefing_mode=briefing_mode,
             current_time_str=current_time_str,
