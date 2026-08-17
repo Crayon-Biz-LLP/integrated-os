@@ -133,8 +133,16 @@ def pytest_args(layer: str | None, coverage: bool, verbose: bool) -> list[str]:
         "clusters": "tests/clusters",
         "tenants": "tests/tenants",
         "root": "tests/test_api.py tests/test_retrieval.py tests/test_rate_limiter.py",
+        # The deterministic live core — the CI nightly's budget. Excludes the
+        # LLM-paced layers (sim cognitive + UAT L4) which run weekly
+        # (weekly-deep.yml) because they can't fit a 30-min job. Migrations
+        # replay needs pgvector (nightly.yml installs it).
+        "deep": "tests/tenants tests/clusters tests/test_api.py tests/test_retrieval.py "
+                "tests/test_rate_limiter.py tests/test_migrations_replay.py",
     }.get(layer, "tests/")
-    args = [sys.executable, "-m", "pytest", target]
+    # split() so multi-path targets become real argv entries (pytest does NOT
+    # split a single space-separated argument).
+    args = [sys.executable, "-m", "pytest", *target.split()]
     if coverage:
         args += [
             "--cov=core",
@@ -247,8 +255,8 @@ def main() -> int:
     )
     parser.add_argument("tier", nargs="?", default="fast",
                         help="fast | nightly | all | e2e | <aspect>")
-    parser.add_argument("--layer", choices=["unit", "sim", "clusters", "tenants", "root"],
-                        help="scope pytest to one directory")
+    parser.add_argument("--layer", choices=["unit", "sim", "clusters", "tenants", "root", "deep"],
+                        help="scope pytest to one directory/preset (deep = deterministic live core)")
     parser.add_argument("--coverage", action="store_true",
                         help="attach pytest-cov (nightly artifact, not a push gate)")
     parser.add_argument("--no-app", action="store_true",

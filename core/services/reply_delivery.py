@@ -28,22 +28,31 @@ def _persist_to_raw_dumps(message_text: str, intent: str = None, ack_title: str 
         # unscoped insert would 400 in tenant mode (breaking the app's
         # conversation history) or land under the wrong owner. The facade
         # injects owner_id from the active tenant context.
-        from core.services.db import tenant_aware_client
+        #
+        # Cron/script senders (health alerts, research notices) carry no
+        # tenant context — resolve it via channel_tenant_scope() (oldest
+        # active user) so the app-history write lands under the right owner
+        # instead of failing closed and silently dropping the reply. This is
+        # the same boundary pattern every ingest entry (webhook, teams,
+        # email, beeper) uses. If the scope still can't resolve, the facade
+        # fails closed and the ERROR below remains the canary.
+        from core.services.db import tenant_aware_client, channel_tenant_scope
         supabase = tenant_aware_client()
         metadata = {'type': 'bot_response'}
         if intent:
             metadata['intent'] = intent
         if ack_title:
             metadata['title'] = ack_title
-        supabase.table('raw_dumps').insert({
-            'content': message_text[:3000],  # Cap at 3000 chars for DB
-            'status': 'completed',
-            'direction': 'outgoing',
-            'sender': 'system',
-            'message_type': 'response',
-            'source': 'telegram_bot',
-            'metadata': metadata,
-        }).execute()
+        with channel_tenant_scope():
+            supabase.table('raw_dumps').insert({
+                'content': message_text[:3000],  # Cap at 3000 chars for DB
+                'status': 'completed',
+                'direction': 'outgoing',
+                'sender': 'system',
+                'message_type': 'response',
+                'source': 'telegram_bot',
+                'metadata': metadata,
+            }).execute()
     except Exception as e:
         # In tenant mode, a TenantRequiredError means a caller forgot its
         # tenant scope — that's a real bug (the app's conversation history
@@ -62,6 +71,7 @@ async def deliver_outbound_reply(
     notify_push: bool = True,
     intent: str = None,
     ack_title: str = None,
+    persist_app: bool = True,
 ) -> int:
     """Deliver a bot reply to the app — no Telegram involved.
 
@@ -77,13 +87,18 @@ async def deliver_outbound_reply(
             raw_dumps metadata so the app renders the right card without
             parsing the (voice-rendered) text.
         ack_title: The bare entity title (task/note/event name) for that card.
+        persist_app: Whether to touch the app channel at all (raw_dumps
+            persist + push). False = admin-only alert (Telegram only) — the
+            health-check alert path, per product decision: system alerts are
+            for the admin on Telegram, never the app.
 
     Returns:
         Number of devices pushed (0 if push skipped or failed).
     """
-    _persist_to_raw_dumps(message_text, intent=intent, ack_title=ack_title)
+    if persist_app:
+        _persist_to_raw_dumps(message_text, intent=intent, ack_title=ack_title)
 
-    if not notify_push:
+    if not notify_push or not persist_app:
         return 0
 
     try:

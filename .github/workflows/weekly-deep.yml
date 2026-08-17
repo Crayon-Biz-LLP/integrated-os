@@ -1,0 +1,75 @@
+name: Weekly Deep — LLM Layers
+
+on:
+  schedule:
+    # Sunday 01:30 UTC — the LLM-paced deep verification (sim cognitive +
+    # UAT L4) that cannot fit the nightly's 45-min budget. Nightly covers the
+    # deterministic live core (--layer deep); this is the slow half.
+    - cron: '30 1 * * 0'
+  workflow_dispatch:
+
+jobs:
+  deep:
+    runs-on: ubuntu-latest
+    # Real Gemini latency: sim ~10 min local, UAT 22 scenarios slower on CI.
+    # 240 min = 4h ceiling, well inside GitHub's 360-min hosted-runner max.
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install pgvector (migration replay)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-16-pgvector
+
+      # LLM layers via the unified runner, sequentially (the X4 sandbox lock
+      # serializes live runs — parallel jobs would fail-closed against each
+      # other). No --coverage: the coverage floors are measured over the
+      # deterministic nightly set; a sim/e2e-only measurement would fail the
+      # api floor for the wrong reason. The env-contract guard refuses to
+      # start unless the Test tenant resolves and secrets are real.
+      - name: LLM layers — sim + UAT L4 (live, TEST tenant only)
+        id: deep
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
+          GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_KEY_3 }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PULSE_SECRET: ${{ secrets.PULSE_SECRET }}
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+          # Webhook test-chat bypass — default-off fail-closed (plans/75 §7).
+          # Present ONLY here; prod never sets it, so the gate stays closed.
+          TEST_CHAT_IDS: "909999999"
+        run: |
+          set -o pipefail
+          python scripts/run_tests.py nightly --live --layer sim
+          python scripts/run_tests.py e2e --live
+
+  notify_failure:
+    runs-on: ubuntu-latest
+    needs: deep
+    if: failure()
+    steps:
+      - name: Notify on failure
+        run: |
+          echo "⚠️ Weekly deep suite (LLM layers) FAILED at $(date)"
+          echo "Check logs: https://github.com/${{ github.repository }}/actions"
+          echo "Nightly (deterministic core) is unaffected — this is the LLM-path verification."

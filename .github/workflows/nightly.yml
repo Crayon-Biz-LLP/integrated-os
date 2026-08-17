@@ -10,7 +10,12 @@ on:
 jobs:
   nightly:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Deterministic live core (--layer deep) only: the LLM-paced suites
+    # (sim cognitive + UAT L4) moved to weekly-deep.yml — they cannot fit
+    # a nightly budget and were reddening this job at 3am (3x 30-min
+    # timeouts, Aug-17). 45 min = deep's ~5 min local + CI overhead + the
+    # migrations-replay local cluster.
+    timeout-minutes: 45
 
     steps:
       - name: Checkout Code
@@ -68,9 +73,11 @@ jobs:
         # the job reported success. No pipe at all: full output streams to
         # the run log (pytest -q keeps it compact), and a failure fails the
         # step. pipefail stays as a guard if a pipe is ever re-added.
+        # --layer deep = the deterministic live core (tenants/clusters/root/
+        # migrations replay); the LLM-paced layers run weekly (weekly-deep.yml).
         run: |
           set -o pipefail
-          python scripts/run_tests.py nightly --live --coverage
+          python scripts/run_tests.py nightly --live --coverage --layer deep
 
   notify_failure:
     runs-on: ubuntu-latest

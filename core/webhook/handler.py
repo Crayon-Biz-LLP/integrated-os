@@ -765,7 +765,7 @@ async def _process_webhook(update: dict):
         if _graph_approve_match:
             try:
                 _sc = _graph_approve_match.group(1)
-                pending_item = maybe_single_safe(supabase.table('pending_nodes').select('id, label, node_type:type').eq('id', int(_sc)))
+                pending_item = maybe_single_safe(supabase.table('pending_nodes').select('id, label, type:node_type').eq('id', int(_sc)))
                 if pending_item and pending_item.data:
                     ptype = pending_item.data.get('type')
                     label = pending_item.data.get('label')
@@ -819,7 +819,7 @@ async def _process_webhook(update: dict):
             try:
                 _sc = int(_graph_direct_match.group(1))
                 _value = _graph_direct_match.group(2)
-                pending_item = maybe_single_safe(supabase.table('pending_nodes').select('id, label, type').eq('id', _sc))
+                pending_item = maybe_single_safe(supabase.table('pending_nodes').select('id, label, type:node_type').eq('id', _sc))
                 if not pending_item or not pending_item.data:
                     await send_telegram(chat_id, "Couldn't find that pending item.")
                     clear_session(chat_id)
@@ -1008,7 +1008,7 @@ async def _process_webhook(update: dict):
         if re.search(r'[gG]\d+', text):
             try:
                 # Fetch pending items
-                pending_res = supabase.table('pending_nodes').select('id, label, type, source_text').eq('status', 'pending').execute()
+                pending_res = supabase.table('pending_nodes').select('id, label, type:node_type, source_text').eq('status', 'pending').execute()
                 pending_items = pending_res.data or []
                 
                 if pending_items:

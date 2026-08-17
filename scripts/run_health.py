@@ -62,7 +62,11 @@ async def main():
     telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
     if telegram_chat_id:
         alert = "⚠️ Rhodey Health Check:\n" + "\n".join(issues)
-        await send_telegram(int(telegram_chat_id), alert)
+        # Admin-only alert: Telegram, never the app channel (product decision —
+        # system alerts are for the admin; persist_app=False skips the raw_dumps
+        # persist + FCM push entirely, which also avoids the unscoped-write
+        # failure this script used to hit).
+        await send_telegram(int(telegram_chat_id), alert, persist_app=False)
 
     # Exit with error code so GHA knows something's wrong
     sys.exit(1)

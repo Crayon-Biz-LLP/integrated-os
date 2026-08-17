@@ -262,12 +262,32 @@ async def _upsert_passage(passage: Passage) -> Optional[int]:
             "index_version": passage.index_version,
             "metadata": passage.metadata,
         }
+        # Atomic upsert: the unique index (owner_id, source_fingerprint,
+        # passage_index, index_version) is the arbiter. The old read-then-
+        # insert raced concurrent runs (backfill vs live indexing): both saw
+        # no row, both inserted, one hit a duplicate-key ERROR and its passage
+        # was dropped (Aug-17 audit: "upsert_passage failed ... duplicate key").
+        # ignore_duplicates turns the conflict into a no-op instead of an
+        # exception; on conflict the existing id is fetched below, so both
+        # racers end up with the same correct passage id (idempotent outcome).
         result = supabase.table("retrieval_passages") \
-            .insert(row) \
+            .upsert(row, on_conflict="owner_id,source_fingerprint,passage_index,index_version",
+                    ignore_duplicates=True) \
             .execute()
 
         if result and result.data:
             return result.data[0]["id"]
+
+        # Conflict — a concurrent run already inserted this exact passage key.
+        existing = supabase.table("retrieval_passages") \
+            .select("id") \
+            .eq("source_fingerprint", passage.source_fingerprint) \
+            .eq("passage_index", passage.passage_index) \
+            .eq("index_version", passage.index_version) \
+            .maybe_single() \
+            .execute()
+        if existing and existing.data:
+            return existing.data["id"]
         return None
 
     except Exception as e:

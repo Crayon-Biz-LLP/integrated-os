@@ -327,9 +327,12 @@ Context:
                                 sweep_lines.append(f"  • {t['title']} ({days_old}d old)")
                             except Exception:
                                 sweep_lines.append(f"  • {t.get('title', 'Untitled')}")
-                    # Pending graph nodes
+                    # Pending graph nodes. NB: the column is node_type (db/34);
+                    # the `type:node_type` alias keeps the old output key. The
+                    # previous bare `type` selected a non-existent column and
+                    # 42703'd the whole weekly sweep (Aug-16 audit).
                     pg_res = supabase.table('pending_nodes') \
-                        .select('id, label, type') \
+                        .select('id, label, type:node_type') \
                         .eq('status', 'pending') \
                         .order('created_at', desc=True) \
                         .limit(10) \

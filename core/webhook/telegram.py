@@ -24,7 +24,7 @@ def _chunk_message(text: str, max_len: int = 4000) -> list[str]:
         text = text[split_at:].lstrip()
     return chunks
 
-async def send_telegram(chat_id: int, message_text: str, show_keyboard: bool = True, inline_keyboard: list = None, skip_validation: bool = False, notify_push: bool = True, intent: str = None, ack_title: str = None):
+async def send_telegram(chat_id: int, message_text: str, show_keyboard: bool = True, inline_keyboard: list = None, skip_validation: bool = False, notify_push: bool = True, intent: str = None, ack_title: str = None, persist_app: bool = True):
     import re
     # M4: app-only tenants have no Telegram chat id (users.telegram_chat_id
     # NULL) — skip gracefully instead of failing the pulse. The Android app
@@ -74,7 +74,7 @@ async def send_telegram(chat_id: int, message_text: str, show_keyboard: bool = T
         # per token on timeout) delays the Telegram message — acceptable,
         # because the app is the primary channel.
         from core.services.reply_delivery import deliver_outbound_reply
-        await deliver_outbound_reply(message_text, notify_push=notify_push, intent=intent, ack_title=ack_title)
+        await deliver_outbound_reply(message_text, notify_push=notify_push, intent=intent, ack_title=ack_title, persist_app=persist_app)
 
         # Optional Telegram channel — skip gracefully when creds are absent
         # (the app already received the reply above).
