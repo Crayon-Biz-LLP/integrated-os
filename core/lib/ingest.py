@@ -172,8 +172,19 @@ async def ingest(
     if tracking_id:
         row["message_id"] = tracking_id
 
-    # Check channel_specific_data for danny_decision override (e.g. dedup_decision from email ingest)
+    # Extract sender mapping (emails merge regression fix)
     csd = channel_specific_data or {}
+    
+    # If this channel provided a direct sender mapping, hoist it to the row
+    sender_val = csd.get("sender_email") or csd.get("sender_phone") or csd.get("sender_id")
+    if sender_val:
+        row["sender_id"] = sender_val
+        
+    sender_name_val = csd.get("sender_name")
+    if sender_name_val:
+        row["sender_name"] = sender_name_val
+
+    # Check channel_specific_data for danny_decision override (e.g. dedup_decision from email ingest)
     explicit_dd = csd.get("danny_decision")  # 'skipped', 'merged', or None
 
     if classification == "fyi":
