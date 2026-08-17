@@ -119,11 +119,13 @@ def _ensure_briefing_opening(briefing_text: str, briefing_mode: str, opening_lin
     #    the punctuation-normalised token so a near-match ("Morning check:" vs
     #    "Morning check.") never produces a doubled headline.
     first = lines[0].rstrip('.:') if lines else ''
+    first_lower = first.lower()
     mode_key = briefing_mode.strip().rstrip('.:')
-    if not first or mode_key not in first:
+    mode_key_lower = mode_key.lower()
+    if not first or mode_key_lower not in first_lower:
         lines = [briefing_mode, ''] + lines
-    elif first != mode_key:
-        idx = lines[0].find(mode_key)
+    elif first_lower != mode_key_lower:
+        idx = lines[0].lower().find(mode_key_lower)
         if idx != -1:
             end_idx = idx + len(mode_key)
             remainder = lines[0][end_idx:].strip('.:- \t*')
@@ -1553,13 +1555,7 @@ async def _process_pulse_impl(auth_secret: str = None, request_id: str = None, t
 
         # ── After-action report ──
         try:
-            after_action = await generate_after_action_report()
-            if after_action:
-                supabase.table('memories').insert({
-                    'content': after_action,
-                    'memory_type': 'after_action_report',
-                    'source': 'pulse_engine'
-                }).execute()
+            await generate_after_action_report()
         except Exception as e:
             audit_log_sync("pulse", "WARNING", f"After-action report failed: {e}")
 
