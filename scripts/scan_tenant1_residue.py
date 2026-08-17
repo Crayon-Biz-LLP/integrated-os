@@ -18,6 +18,18 @@ Blocklist sources (live DB, best-effort):
     flavor words, URLs) so the gate still works when the DB is unreachable
     (CI without secrets) and catches things not yet in the DB.
 
+Derivation filter (hardened 2026-08-17): every DERIVED token is dropped at
+derivation time if its lowercase form is an ordinary English word
+(scripts/common_english_words.txt — the bounded authority). Tenant-authored
+area/domain names are frequently ordinary words ("Errands", "Work"), and a
+scan hit on an ordinary word is NOT evidence of a leak. The STATIC
+supplement is deliberately curated distinctive tokens and is immune to this
+filter. The STOPLIST remains as the domain-flavor supplement (e.g.
+"prayer") for words too flavor-specific for the common list. Residual gap:
+a tenant org literally named an ordinary word (the "Apple" case) cannot be
+resolved by word-matching — that is closed by the data-driven invariant
+(tenant-visible strings come from DB rows), not by this gate.
+
 Scanned trees: core/, api/, rhodey_app/lib/, frontend/src/ — every place
 whose strings reach another tenant's screen or model call. NOT scanned:
 tests/ (goldens are tenant-1's by design), scripts/ (seed/migration scripts
@@ -61,6 +73,9 @@ STATIC_BLOCKLIST: list[str] = [
 
 # Common English words that appear as graph labels / domain names — they are
 # NOT evidence of a leak (a tenant can legitimately have a "Family" domain).
+# The primary authority for this judgment is now the COMMON_WORDS list below
+# (bounded, scripts/common_english_words.txt); STOPLIST remains as the
+# domain-flavor supplement for words too specific for the common list.
 STOPLIST: set[str] = {
     "work", "home", "personal", "family", "finance", "finances", "business",
     "ideas", "schedule", "done", "team", "school", "health", "test", "church",
@@ -83,6 +98,22 @@ ALLOW_FILES: set[str] = {
     "core/skills/call_ingest.py",           # Danny-only channel (his Drive) — static routing prompt
     "core/skills/whatsapp_ingest.py",       # Danny-only channel — static routing prompt
     "core/retrieval/seed_eval_gold.py",     # tenant-1 seed source (his eval-gold rows)
+}
+
+# ── Common-word authority (hardened M17, 2026-08-17) ────────────────────
+# Bounded list of ordinary English words that plausibly appear as tenant
+# area/domain names. Any DERIVED token whose lowercase form is here is
+# dropped at derivation time — an ordinary word in tenant data is not
+# evidence of a leak. This list is bounded (English's common vocabulary does
+# not grow with the tenant count) and is the primary filter; STOPLIST is the
+# supplement for domain-flavor words (e.g. "prayer"). The STATIC_BLOCKLIST
+# (curated distinctive tokens) is immune to this filter.
+_COMMON_WORDS_PATH = ROOT / "scripts" / "common_english_words.txt"
+COMMON_WORDS: set[str] = {
+    w.lower()
+    for line in _COMMON_WORDS_PATH.read_text(encoding="utf-8").splitlines()
+    if line.strip() and not line.lstrip().startswith("#")
+    for w in line.split()
 }
 
 # Whole-token allowlist — identifiers that are schema/history, not content.
@@ -169,7 +200,8 @@ def derive_blocklist(offline: bool) -> tuple[list[str], bool]:
     (offline flag or DB failure), in which case the static supplement alone
     is used and the run still fails loudly on it.
     """
-    tokens: set[str] = set(STATIC_BLOCKLIST)
+    tokens: set[str] = set(STATIC_BLOCKLIST)  # immune to the common-word filter
+    derived: set[str] = set()
     live = False
     if not offline:
         try:
@@ -180,13 +212,13 @@ def derive_blocklist(offline: bool) -> tuple[list[str], bool]:
             for r in db.table("users").select("name").execute().data:
                 name = (r.get("name") or "").strip()
                 if name and name.lower() not in STOPLIST:
-                    tokens.add(name)
+                    derived.add(name)
             try:
                 for r in db.table("person_aliases").select("alias, canonical_name").execute().data:
                     for k in ("alias", "canonical_name"):
                         v = (r.get(k) or "").strip()
                         if v and v.lower() not in STOPLIST:
-                            tokens.add(v)
+                            derived.add(v)
             except Exception:
                 pass  # table optional
             for r in db.table("user_settings").select("domains, personal_orgs").execute().data:
@@ -199,11 +231,11 @@ def derive_blocklist(offline: bool) -> tuple[list[str], bool]:
                 for dom in doms:
                     n = (dom.get("name") or "").strip() if isinstance(dom, dict) else str(dom).strip()
                     if n:
-                        tokens.add(n)
+                        derived.add(n)
                 for org in (r.get("personal_orgs") or []):
                     org = str(org).strip()
                     if org:
-                        tokens.add(org)
+                        derived.add(org)
             try:
                 for r in (
                     tenant_aware_client()
@@ -215,12 +247,17 @@ def derive_blocklist(offline: bool) -> tuple[list[str], bool]:
                 ):
                     url = (r.get("content") or "").strip()
                     if url:
-                        tokens.add(url)
+                        derived.add(url)
             except Exception:
                 pass
             live = True
         except Exception as e:  # pragma: no cover - CI without secrets
             print(f"⚠️  DB derivation unavailable ({type(e).__name__}); using static supplement only.")
+    # Hardened derivation filter: ordinary English words in tenant data are
+    # NOT evidence of a leak — drop them at derivation time, before they ever
+    # become blocklist tokens. Bounded authority (COMMON_WORDS) does not grow
+    # with tenant count; the curated STATIC_BLOCKLIST stays immune.
+    tokens |= {t for t in derived if t.lower() not in COMMON_WORDS}
     return _clean_tokens(tokens), live
 
 

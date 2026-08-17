@@ -1,0 +1,59 @@
+# Common English words — the bounded authority for the residue-gate
+# derivation filter (M17 hardened fix, 2026-08-17).
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# The residue gate derives blocklist tokens from tenant data (users.name,
+# person_aliases, user_settings.domains / personal_orgs). Tenant-authored
+# area/domain names are frequently ORDINARY English words ("Errands",
+# "Work", "Groceries") — and such words legitimately appear in shared code
+# (UI copy, presets, prompts). A scan hit on an ordinary word is NOT
+# evidence of a leak, exactly like the STOPLIST's stated purpose.
+#
+# This list is the BOUNDED authority for that judgment: any DERIVED token
+# whose lowercase form is here is dropped at derivation time, before it ever
+# becomes a blocklist token. It is intentionally a *common-word* list —
+# English's ordinary vocabulary does not grow with the tenant count, so this
+# stays small and stable no matter how many tenants join.
+#
+# NOT in this list: proper nouns (names, orgs, domains, URLs) — those stay
+# in the static supplement and are never filtered. If a tenant's distinctive
+# org name is also an ordinary word (the "Apple" gap), this filter cannot
+# resolve the ambiguity — that residual is closed by the data-driven
+# invariant (all tenant-visible strings come from DB rows), not by this list.
+#
+# Keeping this list tight matters: every word here is a free pass. Only add
+# words that are genuinely ordinary English and plausibly usable as a
+# tenant area/domain name.
+#
+# Categories below are organizational only — the loader reads every line.
+
+# Life / household / personal areas
+work home personal family finance finances business ideas schedule done team
+school health test church volunteer volunteers event community prayer strategy
+operations accounts admin company client vendor product tech platform middleware
+governance legal tax bills insurance banking corporate errands groceries shopping
+chores cleaning cooking meals dinner lunch breakfast kids childcare daycare pets
+vet garden yard lawn maintenance repairs utilities rent mortgage savings
+investments retirement budget expenses income spending travel trips vacation
+holiday flights hotels packing leisure hobbies fitness gym workout sports
+entertainment movies music books reading learning courses classes training
+projects tasks appointments reminders errand
+
+# Business / professional areas
+meetings calls emails messages reports clients customers suppliers partners
+projects campaigns marketing sales leads pipeline proposals quotes invoices
+contracts hiring recruiting interviews onboarding payroll staffing teams
+collaboration strategy planning review feedback goals objectives milestones
+deliverables deadlines priorities execution growth revenue profit costs
+budgets forecasting analytics metrics dashboards operations logistics supply
+quality assurance support service delivery research development design
+engineering architecture infrastructure security compliance audit
+governance risk management
+
+# Generic / misc (commonly used as personal areas)
+general personal other various daily weekly monthly annual quarterly
+important urgent high low medium normal routine misc admin adminstration
+inbox draft drafts archive archive archived history notes note todo
+todos backlog planning lists ideas thoughts journal journaling reference
+resources documents files media uploads downloads
