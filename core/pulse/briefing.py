@@ -122,6 +122,13 @@ def _ensure_briefing_opening(briefing_text: str, briefing_mode: str, opening_lin
     mode_key = briefing_mode.strip().rstrip('.:')
     if not first or mode_key not in first:
         lines = [briefing_mode, ''] + lines
+    elif first != mode_key:
+        idx = lines[0].find(mode_key)
+        if idx != -1:
+            end_idx = idx + len(mode_key)
+            remainder = lines[0][end_idx:].strip('.:- \t*')
+            if remainder:
+                lines = [briefing_mode, '', remainder] + lines[1:]
     # 2) The line right after the headline must be narrative, not a section.
     anchor = 1
     while anchor < len(lines) and not lines[anchor]:
