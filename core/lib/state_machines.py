@@ -235,13 +235,6 @@ WORKFLOW_TRANSITIONS = {
     "cancelled": set(),  # terminal
 }
 
-WORKFLOW_TYPES = {
-    "calendar_event",       # Batch enrichment from calendar
-    "task_creation",        # Creating a task
-    "task_closure",         # Closure confirmation
-    "completion_match",     # Completion disambiguation
-}
-
 
 # ═══════════════════════════════════════════════════════════════════════
 # 9. decisions

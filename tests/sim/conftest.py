@@ -395,7 +395,7 @@ def seed_test_data():
     wf_res = supabase.table('conversation_workflows').insert({
         'thread_id': thread_id,
         'chat_id': thread_chat_id,
-        'workflow_type': 'awaiting_disambiguation_confirmation',
+        'workflow_type': 'batch',
         'payload': {},
         'awaiting_user_input': True,
         'status': 'active',

@@ -149,9 +149,9 @@ def test_gmail_send_fallback_threading_when_original_unfetchable(monkeypatch):
     assert any(call.args[1] == "WARNING" for call in audit.call_args_list)
 
 
-def test_gmail_send_failure_keeps_status_sent(monkeypatch):
-    """Double-send guard: once flipped to 'sent', a failed API call does NOT
-    revert — the draft is never retried blindly."""
+def test_gmail_send_failure_marks_status_failed(monkeypatch):
+    """Double-send guard: once flipped to 'sent', a failed API call marks the draft
+    as 'failed' rather than lying to the user that it was sent."""
     monkeypatch.setenv("GMAIL_SENDER_EMAIL", "danny@rhodey.ai")
     service = _gmail_service(original_headers=[{"name": "Message-ID", "value": "<orig123@acme.com>"}],
                              send_error=Exception("gmail 500"))
@@ -166,8 +166,13 @@ def test_gmail_send_failure_keeps_status_sent(monkeypatch):
 
     assert ok is False
     assert "gmail 500" in str(err)
-    # status was set to 'sent' and never reverted — no second update
-    supabase.table.return_value.update.assert_called_once_with({"status": "sent"})
+    
+    # status was set to 'sent' then 'failed'
+    update_calls = supabase.table.return_value.update.call_args_list
+    assert len(update_calls) == 2
+    assert update_calls[0][0][0] == {"status": "sent"}
+    assert update_calls[1][0][0] == {"status": "failed"}
+    
     # no 'confirmed' observation for a message that never shipped
     emit.assert_not_awaited()
 

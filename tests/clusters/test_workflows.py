@@ -68,10 +68,10 @@ async def test_workflow_yes_reply():
     w_res = supabase.table('conversation_workflows').insert({
         'chat_id': chat_id,
         'thread_id': thread_id,
-        'workflow_type': 'calendar_event',
+        'workflow_type': 'batch',
         'status': 'active',
         'awaiting_user_input': True,
-        'payload': {'title': 'Test Event'}
+        'payload': {'signals': [{'type': 'deadline', 'task_title': 'Test Event'}]}
     }).execute()
     
     w_id = w_res.data[0]['id']
@@ -109,10 +109,10 @@ async def test_workflow_unrelated_note_stays_active():
     w_res = supabase.table('conversation_workflows').insert({
         'chat_id': chat_id,
         'thread_id': thread_id,
-        'workflow_type': 'calendar_event',
+        'workflow_type': 'batch',
         'status': 'active',
         'awaiting_user_input': True,
-        'payload': {'title': 'Test Event'}
+        'payload': {'signals': [{'type': 'deadline', 'task_title': 'Test Event'}]}
     }).execute()
     
     w_id = w_res.data[0]['id']
@@ -144,8 +144,8 @@ async def test_multiple_workflows_fall_open():
     ]).execute()
     
     w_res = supabase.table('conversation_workflows').insert([
-        {'chat_id': chat_id, 'thread_id': thread_id_1, 'workflow_type': 'calendar_event', 'status': 'active', 'awaiting_user_input': True},
-        {'chat_id': chat_id, 'thread_id': thread_id_2, 'workflow_type': 'task_creation', 'status': 'active', 'awaiting_user_input': True}
+        {'chat_id': chat_id, 'thread_id': thread_id_1, 'workflow_type': 'batch', 'status': 'active', 'awaiting_user_input': True},
+        {'chat_id': chat_id, 'thread_id': thread_id_2, 'workflow_type': 'batch', 'status': 'active', 'awaiting_user_input': True}
     ]).execute()
     
     try:
@@ -170,9 +170,9 @@ def test_resolve_thread_unrelated_entity_falls_through():
     
     w_res = supabase.table('conversation_workflows').insert({
         'chat_id': chat_id, 'thread_id': thread_id,
-        'workflow_type': 'task_creation', 'status': 'active',
+        'workflow_type': 'batch', 'status': 'active',
         'awaiting_user_input': True,
-        'payload': {'title': 'Amico contract review'}
+        'payload': {'signals': [{'type': 'deadline', 'task_title': 'Amico contract review'}]}
     }).execute()
     w_id = w_res.data[0]['id']
     
@@ -197,9 +197,9 @@ def test_resolve_thread_filler_yes_resumes_workflow():
     
     w_res = supabase.table('conversation_workflows').insert({
         'chat_id': chat_id, 'thread_id': thread_id,
-        'workflow_type': 'task_creation', 'status': 'active',
+        'workflow_type': 'batch', 'status': 'active',
         'awaiting_user_input': True,
-        'payload': {'title': 'Amico contract review'}
+        'payload': {'signals': [{'type': 'deadline', 'task_title': 'Amico contract review'}]}
     }).execute()
     w_id = w_res.data[0]['id']
     
@@ -227,9 +227,9 @@ async def test_check_resume_skips_llm_on_topic_mismatch(mock_llm):
     
     w_res = supabase.table('conversation_workflows').insert({
         'chat_id': chat_id, 'thread_id': thread_id,
-        'workflow_type': 'task_creation', 'status': 'active',
+        'workflow_type': 'batch', 'status': 'active',
         'awaiting_user_input': True,
-        'payload': {'title': 'Amico contract review'}
+        'payload': {'signals': [{'type': 'deadline', 'task_title': 'Amico contract review'}]}
     }).execute()
     w_id = w_res.data[0]['id']
     
@@ -260,9 +260,9 @@ async def test_check_resume_lowercase_entity_no_overlap(mock_llm):
 
     w_res = supabase.table('conversation_workflows').insert({
         'chat_id': chat_id, 'thread_id': thread_id,
-        'workflow_type': 'task_creation', 'status': 'active',
+        'workflow_type': 'batch', 'status': 'active',
         'awaiting_user_input': True,
-        'payload': {'title': 'Amico contract review'}
+        'payload': {'signals': [{'type': 'deadline', 'task_title': 'Amico contract review'}]}
     }).execute()
     w_id = w_res.data[0]['id']
 
@@ -290,9 +290,9 @@ async def test_check_resume_short_entity_no_overlap(mock_llm):
 
     w_res = supabase.table('conversation_workflows').insert({
         'chat_id': chat_id, 'thread_id': thread_id,
-        'workflow_type': 'task_creation', 'status': 'active',
+        'workflow_type': 'batch', 'status': 'active',
         'awaiting_user_input': True,
-        'payload': {'title': 'Amico contract review'}
+        'payload': {'signals': [{'type': 'deadline', 'task_title': 'Amico contract review'}]}
     }).execute()
     w_id = w_res.data[0]['id']
 
@@ -317,9 +317,9 @@ def test_resolve_thread_sentence_start_non_entity_passes():
 
     w_res = supabase.table('conversation_workflows').insert({
         'chat_id': chat_id, 'thread_id': thread_id,
-        'workflow_type': 'task_creation', 'status': 'active',
+        'workflow_type': 'batch', 'status': 'active',
         'awaiting_user_input': True,
-        'payload': {'title': 'Amico contract review'}
+        'payload': {'signals': [{'type': 'deadline', 'task_title': 'Amico contract review'}]}
     }).execute()
     w_id = w_res.data[0]['id']
 
@@ -351,9 +351,9 @@ async def test_check_resume_mixed_topic_with_workflow_entity(mock_llm):
 
     w_res = supabase.table('conversation_workflows').insert({
         'chat_id': chat_id, 'thread_id': thread_id,
-        'workflow_type': 'task_creation', 'status': 'active',
+        'workflow_type': 'batch', 'status': 'active',
         'awaiting_user_input': True,
-        'payload': {'title': 'Amico contract review'}
+        'payload': {'signals': [{'type': 'deadline', 'task_title': 'Amico contract review'}]}
     }).execute()
     w_id = w_res.data[0]['id']
 

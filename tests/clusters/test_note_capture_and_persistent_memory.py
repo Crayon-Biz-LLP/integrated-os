@@ -108,9 +108,9 @@ class TestNoteCaptureCorrectness:
             }).execute()
 
             w_res = supabase.table('conversation_workflows').insert({
-                'chat_id': chat_id, 'thread_id': thread_id, 'workflow_type': 'calendar_event',
+                'chat_id': chat_id, 'thread_id': thread_id, 'workflow_type': 'batch',
                 'status': 'active', 'awaiting_user_input': True,
-                'payload': {'title': 'Test Event'}, 'expires_at': _ts(hours=23)
+                'payload': {'signals': [{'type': 'deadline', 'task_title': 'Test Event'}]}, 'expires_at': _ts(hours=23)
             }).execute()
             w_id = w_res.data[0]['id']
 
@@ -197,9 +197,9 @@ class TestWorkflowContinuity:
             }).execute()
 
             w_res = supabase.table('conversation_workflows').insert({
-                'chat_id': chat_id, 'thread_id': thread_id, 'workflow_type': 'calendar_event',
+                'chat_id': chat_id, 'thread_id': thread_id, 'workflow_type': 'batch',
                 'status': 'active', 'awaiting_user_input': True,
-                'payload': {'title': '[TEST] B5 Delayed Event'}, 'expires_at': _ts(hours=23)
+                'payload': {'signals': [{'type': 'deadline', 'task_title': '[TEST] B5 Delayed Event'}]}, 'expires_at': _ts(hours=23)
             }).execute()
             w_id = w_res.data[0]['id']
 
@@ -242,15 +242,15 @@ class TestWorkflowContinuity:
             ]).execute()
 
             supabase.table('conversation_workflows').insert({
-                'chat_id': chat_id, 'thread_id': thread_id_1, 'workflow_type': 'calendar_event',
+                'chat_id': chat_id, 'thread_id': thread_id_1, 'workflow_type': 'batch',
                 'status': 'active', 'awaiting_user_input': True,
-                'payload': {'title': 'Expired Event'}, 'expires_at': _ts_ago(hours=1)
+                'payload': {'signals': [{'type': 'deadline', 'task_title': 'Expired Event'}]}, 'expires_at': _ts_ago(hours=1)
             }).execute()
 
             w2_res = supabase.table('conversation_workflows').insert({
-                'chat_id': chat_id, 'thread_id': thread_id_2, 'workflow_type': 'calendar_event',
+                'chat_id': chat_id, 'thread_id': thread_id_2, 'workflow_type': 'batch',
                 'status': 'active', 'awaiting_user_input': True,
-                'payload': {'title': 'Valid Event'}, 'expires_at': _ts(hours=23)
+                'payload': {'signals': [{'type': 'deadline', 'task_title': 'Valid Event'}]}, 'expires_at': _ts(hours=23)
             }).execute()
             w2_id = w2_res.data[0]['id']
 
@@ -278,9 +278,9 @@ class TestWorkflowContinuity:
             }).execute()
 
             w_res = supabase.table('conversation_workflows').insert({
-                'chat_id': chat_id, 'thread_id': thread_id, 'workflow_type': 'calendar_event',
+                'chat_id': chat_id, 'thread_id': thread_id, 'workflow_type': 'batch',
                 'status': 'active', 'awaiting_user_input': True,
-                'payload': {'title': 'Cancel Test'}, 'expires_at': _ts(hours=23)
+                'payload': {'signals': [{'type': 'deadline', 'task_title': 'Cancel Test'}]}, 'expires_at': _ts(hours=23)
             }).execute()
             w_id = w_res.data[0]['id']
 
@@ -704,9 +704,9 @@ class TestEndToEnd:
 
             # Step 4: Thread A — workflow clarification
             w1_res = supabase.table('conversation_workflows').insert({
-                'chat_id': chat_id, 'thread_id': thread_a_id, 'workflow_type': 'calendar_event',
+                'chat_id': chat_id, 'thread_id': thread_a_id, 'workflow_type': 'batch',
                 'status': 'active', 'awaiting_user_input': True,
-                'payload': {'title': '[TEST] H19 Meeting with Equisoft'},
+                'payload': {'signals': [{'type': 'deadline', 'task_title': '[TEST] H19 Meeting with Equisoft'}]},
                 'expires_at': _ts(hours=23)
             }).execute()
             w1_id = w1_res.data[0]['id']
@@ -730,9 +730,9 @@ class TestEndToEnd:
 
             # Step 7: Thread A — second workflow, explicit cancel
             w2_res = supabase.table('conversation_workflows').insert({
-                'chat_id': chat_id, 'thread_id': thread_a_id, 'workflow_type': 'task_creation',
+                'chat_id': chat_id, 'thread_id': thread_a_id, 'workflow_type': 'batch',
                 'status': 'active', 'awaiting_user_input': True,
-                'payload': {'title': '[TEST] H19 Task to Cancel'},
+                'payload': {'signals': [{'type': 'deadline', 'task_title': '[TEST] H19 Task to Cancel'}]},
                 'expires_at': _ts(hours=23)
             }).execute()
             w2_id = w2_res.data[0]['id']

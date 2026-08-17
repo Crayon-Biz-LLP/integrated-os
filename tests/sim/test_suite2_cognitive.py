@@ -47,7 +47,7 @@ async def test_k2_routing_workflow_priority():
 
     supabase.table('conversation_workflows').insert({
         'chat_id': chat_id, 'thread_id': thread_id,
-        'workflow_type': 'calendar_event', 'status': 'active',
+        'workflow_type': 'batch', 'status': 'active',
         'awaiting_user_input': True
     }).execute()
 

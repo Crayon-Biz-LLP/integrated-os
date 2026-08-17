@@ -7,7 +7,6 @@ from core.llm.config import WorkloadProfile
 from core.webhook.classify import CLASSIFICATION_MODEL
 from core.webhook.telegram import send_telegram
 from core.lib.conversation import log_exchange, _check_topic_overlap
-from core.models import ActionResult, accumulate_action
 from core.pulse.tools import create_task_direct
 from core.pulse.graph import process_graph_pending_decision
 import re
@@ -403,6 +402,11 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
                         f"Failed to auto-approve org (pending_id={pending_id}): {e}")
 
             signals_list = payload.get("signals", [])
+            
+            # If confirmed via deterministic bypass, approve all signals
+            if not signal_decisions and decision == "confirm":
+                signal_decisions = [{"index": i, "decision": "confirm"} for i in range(len(signals_list))]
+
             # Cache active tasks once for task_closure matching
             active_tasks = []
             for sd in signal_decisions:
@@ -448,28 +452,6 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
                         from core.pulse.tools import update_task_status
                         for t in matching:
                             update_task_status(task_id=t["id"], status="done")
-
-        elif w_type in ("deadline", "calendar_event"):
-            title = payload.get("task_title") or payload.get("proposed_title") or payload.get("title", "New Task")
-            reminder_at = payload.get("reminder_at")
-            result = await create_task_direct(title=title, reminder_at=reminder_at)
-            task_id = result.get("task_id")
-            accumulate_action(ActionResult(
-                action_type="task_create",
-                status="executed" if task_id else "failed",
-                entity_id=task_id, human_label=title))
-
-        elif w_type == "task_creation" or w_type == "awaiting_actionable_confirmation":
-            title = payload.get("title", "New Item")
-            result = await create_task_direct(title=title)
-            task_id = result.get("task_id")
-            accumulate_action(ActionResult(
-                action_type="task_create",
-                status="executed" if task_id else "failed",
-                entity_id=task_id, human_label=title))
-                
-        elif w_type == "awaiting_disambiguation_confirmation":
-            pass # No database mutation, just acknowledging.
 
         await send_telegram(chat_id, reply_text)
         log_exchange(thread_id, 'user', 'WORKFLOW_REPLY', text, chat_id)
