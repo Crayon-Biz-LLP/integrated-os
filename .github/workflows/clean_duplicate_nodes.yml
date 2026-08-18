@@ -9,7 +9,11 @@ on:
 jobs:
   dedupe:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 5 of 7 recent runs were cancelled at the old 15-min limit — the dedup
+    # pass scans every live graph node (largest tenant ~3.3k, was 54k before
+    # backfill_graph scoped to is_current=True). 60 min matches the graph
+    # backfill's budget.
+    timeout-minutes: 60
 
     steps:
       - name: Checkout Code

@@ -697,7 +697,63 @@ Context:
         except Exception as z_err:
             audit_log_sync("sentinel", "WARNING", f"Zombie recovery error (non-critical): {z_err}")
 
-        # Memory sweep, index queue, and retry-failed-runs deferred to maintenance.py (daily mode)
+        # --- PIGGYBACK: Maintenance sweeps (wired here — maintenance.py has
+        # no other caller) ---
+        # Index queue + retry-failed + raw-dump cleanup + edge expiry were
+        # "deferred to maintenance.py (daily mode)" — but nothing ever invoked
+        # maintenance.py, so new memories were never indexed, stale raw_dumps
+        # never auto-cleaned, and stale graph edges never expired. Run them
+        # here (the sentinel already runs per-tenant). Each is idempotent;
+        # frequency-gated via audit-log dedup like the zombie sweep.
+        try:
+            from core.pulse.maintenance import (
+                run_graph_edge_expiry, run_index_queue, run_raw_dump_cleanup,
+                run_retry_failed_runs, run_weekly_housekeeping,
+            )
+            # Index queue: every cycle, capped — matches the documented
+            # "sentinel piggyback every ~5 min" design (no-op when retrieval
+            # indexing is disabled).
+            await run_index_queue(max_jobs=3)
+
+            # Raw dump cleanup: stale pending/staged >24h → abandoned, at
+            # most once per 30 min.
+            last_maint = supabase.table('audit_logs') \
+                .select('id') \
+                .eq('service', 'maintenance') \
+                .ilike('message', '%Raw dump cleanup%') \
+                .gte('created_at', (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()) \
+                .limit(1) \
+                .execute()
+            if not last_maint.data:
+                run_raw_dump_cleanup()
+
+            # Retry failed index runs: at most once per hour.
+            last_maint = supabase.table('audit_logs') \
+                .select('id') \
+                .eq('service', 'maintenance') \
+                .ilike('message', '%Retry sweep%') \
+                .gte('created_at', (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()) \
+                .limit(1) \
+                .execute()
+            if not last_maint.data:
+                await run_retry_failed_runs()
+
+            # Graph edge expiry (90 days): at most once per day.
+            last_maint = supabase.table('audit_logs') \
+                .select('id') \
+                .eq('service', 'maintenance') \
+                .ilike('message', '%Graph edge expiry%') \
+                .gte('created_at', (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()) \
+                .limit(1) \
+                .execute()
+            if not last_maint.data:
+                run_graph_edge_expiry()
+
+            # Weekly housekeeping: self-deduped (20h) inside the function.
+            run_weekly_housekeeping()
+        except Exception as maint_err:
+            audit_log_sync("sentinel", "WARNING",
+                           f"Maintenance piggyback error (non-critical): {maint_err}")
 
         # --- PIGGYBACK: T4 Orphan recurring calendar events ---
         try:

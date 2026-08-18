@@ -7,12 +7,12 @@ import json
 from contextlib import nullcontext as _nullcontext
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
+from datetime import datetime, timezone, timedelta
 
 from core.lib.people_utils import normalize_person_name, is_blocklisted_person
 from core.lib.audit_logger import audit_log_sync
 from core.lib.graph_rules import resolve_alias, normalize_label, resolve_root_label
 from core.services.db import (
-    channel_tenant_scope,
     get_tenant,
     maybe_single_safe,
     tenant_aware_client,
@@ -27,6 +27,12 @@ supabase = tenant_aware_client()
 
 
 BATCH_SIZE = 50  # Process more memories per batch
+# Scheduled runs only graph-link memories from the last N days. The full
+# history backlog is mostly rows with no extractable entities; grinding
+# through hundreds of LLM extractions every run blew the 25-min job timeout.
+# A full deep pass is still available via BACKFILL_FULL=1 (or manual
+# workflow_dispatch without the env var).
+BACKFILL_WINDOW_DAYS = 30
 MEMORY_TYPES = [
     "Journal", "note", "outcome", "reflection", "relationship_note"
 ]
@@ -45,7 +51,7 @@ def with_retry(fn, retries=3, base_delay=1, label="operation"):
                 audit_log_sync("backfill_graph", "CRITICAL", f"{label} failed after {retries} attempts.")
                 raise e
 
-def fetch_all_paginated(table_name: str, select_str: str = "*", in_filter_col=None, in_filter_val=None):
+def fetch_all_paginated(table_name: str, select_str: str = "*", in_filter_col=None, in_filter_val=None, eq_filters: dict = None):
     all_rows = []
     start = 0
     page_size = 1000
@@ -53,6 +59,8 @@ def fetch_all_paginated(table_name: str, select_str: str = "*", in_filter_col=No
         query = supabase.table(table_name).select(select_str)
         if in_filter_col and in_filter_val:
             query = query.in_(in_filter_col, in_filter_val)
+        for eq_col, eq_val in (eq_filters or {}).items():
+            query = query.eq(eq_col, eq_val)
         
         try:
             res = with_retry(
@@ -101,7 +109,16 @@ def fetch_memories():
     print(f"    Total memories in DB: {len(total_memories) if total_memories else 0}")
     
     memories = fetch_all_paginated("memories", "id, content, memory_type, metadata, created_at", "memory_type", MEMORY_TYPES)
-    
+
+    # Incremental window: scheduled runs only extract memories from the last
+    # BACKFILL_WINDOW_DAYS. Ancient unprocessed rows (mostly never-extractable
+    # content with no entities) made a run grind through hundreds of LLM
+    # extractions and blow the job timeout. BACKFILL_FULL=1 bypasses the
+    # window for on-demand deep backfills.
+    if BACKFILL_WINDOW_DAYS and not os.getenv("BACKFILL_FULL"):
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=BACKFILL_WINDOW_DAYS)).isoformat()
+        memories = [m for m in (memories or []) if m.get("created_at", "") >= cutoff]
+
     # URL FILTER: Strip out any memory that contains a URL
     filtered_memories = [m for m in (memories or []) if 'http://' not in str(m.get('content', '')).lower() and 'https://' not in str(m.get('content', '')).lower()]
     
@@ -155,11 +172,12 @@ def _check_pending_label_exists(label: str) -> bool:
     return False
 
 def fetch_graph_entities():
-    nodes = fetch_all_paginated("graph_nodes", "id, label, type, metadata, canonical_id")
+    nodes = fetch_all_paginated("graph_nodes", "id, label, type, metadata, canonical_id",
+                                eq_filters={"is_current": True})
     return {row["label"]: {"id": row.get("canonical_id") or row["id"], "type": row["type"]} for row in (nodes or [])}
 
 def fetch_known_entities() -> set:
-    nodes = fetch_all_paginated("graph_nodes", "label, type")
+    nodes = fetch_all_paginated("graph_nodes", "label, type", eq_filters={"is_current": True})
     return {
         row["label"].lower()
         for row in (nodes or [])
@@ -815,9 +833,28 @@ def run_backfill():
             })
         if guaranteed_sentinels:
             try:
+                # Dedupe against existing rows FIRST: the batch insert below
+                # fails wholesale when ANY row hits the unique constraint
+                # (idx_pending_graph_edges on source_text), so a memory already
+                # sentineled by a prior run silently dropped the sentinels of
+                # every memory in its batch — leaving them "unprocessed" and
+                # re-extracted (LLM calls) on every subsequent run.
+                existing_srcs = set()
                 for i in range(0, len(guaranteed_sentinels), 100):
-                    batch_sentinels = guaranteed_sentinels[i:i+100]
-                    supabase.table("pending_graph_edges").insert(batch_sentinels).execute()
+                    batch = guaranteed_sentinels[i:i+100]
+                    srcs = [g["source_text"] for g in batch]
+                    res = supabase.table("pending_graph_edges") \
+                        .select("source_text") \
+                        .in_("source_text", srcs) \
+                        .execute()
+                    existing_srcs.update(r["source_text"] for r in (res.data or []))
+                to_insert = [g for g in guaranteed_sentinels if g["source_text"] not in existing_srcs]
+                if to_insert:
+                    for i in range(0, len(to_insert), 100):
+                        supabase.table("pending_graph_edges").insert(to_insert[i:i+100]).execute()
+                    audit_log_sync("backfill_graph", "INFO",
+                                   f"Inserted {len(to_insert)} guaranteed sentinels "
+                                   f"({len(existing_srcs)} already present)")
             except Exception as e:
                 audit_log_sync("backfill_graph", "WARNING", f"Failed to insert guaranteed sentinels: {e}")
                 
@@ -873,7 +910,9 @@ def backfill_emotion_edges():
         
         danny_id = danny_res.data["id"]
         
-        es_nodes = fetch_all_paginated("graph_nodes", "id, label", in_filter_col="type", in_filter_val=["emotional_state"])
+        es_nodes = fetch_all_paginated("graph_nodes", "id, label",
+                                       in_filter_col="type", in_filter_val=["emotional_state"],
+                                       eq_filters={"is_current": True})
         if not es_nodes:
             return
             
@@ -918,7 +957,9 @@ def backfill_orphaned_tasks():
         print("No tasks found.")
         return
     
-    existing_task_nodes = fetch_all_paginated("graph_nodes", "id, metadata", in_filter_col="type", in_filter_val=["task"])
+    existing_task_nodes = fetch_all_paginated("graph_nodes", "id, metadata",
+                                              in_filter_col="type", in_filter_val=["task"],
+                                              eq_filters={"is_current": True})
     task_node_task_ids = set()
     for node in (existing_task_nodes or []):
         meta = _normalize_meta(node.get("metadata"))
@@ -961,7 +1002,9 @@ def backfill_orphaned_tasks():
     # Person linking is driven by live person-type graph nodes — the old
     # `people` mirror table was dropped in migration 75, and fetching it
     # here raised PGRST205 (table not in schema cache) on every pulse run.
-    person_nodes = fetch_all_paginated("graph_nodes", "id, label", in_filter_col="type", in_filter_val=["person"])
+    person_nodes = fetch_all_paginated("graph_nodes", "id, label",
+                                       in_filter_col="type", in_filter_val=["person"],
+                                       eq_filters={"is_current": True})
     person_id_to_name = {}
     for n in (person_nodes or []):
         person_id_to_name.setdefault(n["id"], n["label"].strip())
@@ -1191,8 +1234,11 @@ def backfill_orphaned_node_edges():
     except Exception:
         pass
 
-    # Find 0-edge and AUTHORED-only nodes (excluding tasks)
-    all_nodes = fetch_all_paginated("graph_nodes", "id, label, type")
+    # Find 0-edge and AUTHORED-only nodes (excluding tasks) — live nodes only;
+    # 94% of graph_nodes rows are soft-deleted (is_current=False) archives that
+    # must never be rewired and previously made this pass scan ~54k rows.
+    all_nodes = fetch_all_paginated("graph_nodes", "id, label, type",
+                                    eq_filters={"is_current": True})
     all_edges = fetch_all_paginated("graph_edges", "id, source_node_id, target_node_id, relationship")
     
     # Build degree map
@@ -1324,7 +1370,9 @@ def sync_person_nodes_to_people_table():
         print("\n⏭️  Person→people sync skipped: people table removed (migration 75).")
         return
     print("\n👤 Person node sync: Linking graph people to people table...")
-    nodes = fetch_all_paginated("graph_nodes", "id, label, type, metadata", in_filter_col="type", in_filter_val=["person"])
+    nodes = fetch_all_paginated("graph_nodes", "id, label, type, metadata",
+                                in_filter_col="type", in_filter_val=["person"],
+                                eq_filters={"is_current": True})
     if not nodes:
         print("No person nodes found.")
         return
@@ -1724,8 +1772,10 @@ def dedup_graph_nodes(dry_run: bool = True):
     """
     print(f"\n🧹 Node Dedup {'(DRY RUN)' if dry_run else '(LIVE RUN)'}: Merging case-variant duplicates...")
     
-    # Fetch all nodes
-    nodes = fetch_all_paginated("graph_nodes", "id, label, type")
+    # Fetch all nodes — live nodes only (soft-deleted archives are never
+    # duplicate-merged).
+    nodes = fetch_all_paginated("graph_nodes", "id, label, type",
+                                eq_filters={"is_current": True})
     if not nodes:
         print("No nodes found.")
         return
@@ -1808,45 +1858,57 @@ def dedup_graph_nodes(dry_run: bool = True):
         print(f"Nodes deleted: {deleted_nodes_count}")
         print(f"Duplicate edges deleted: {deleted_duplicate_edges}")
         
+def _run_phase2() -> None:
+    """Run the full graph backfill + sync passes for the CURRENT tenant scope.
+
+    Called once per active tenant by __main__ via run_tenant_fanout (M16).
+    Before fan-out the cron only ever backfilled the channel tenant (oldest
+    active user), so every other tenant's graph was never built.
+    """
+    # Run backfill
+    run_backfill()
+
+    # Run graph→table sync
+    sync_person_nodes_to_people_table()
+    sync_people_to_graph_nodes()
+
+    # Run table→graph sync (reverse direction)
+    sync_person_org_edges()
+    sync_organizations_to_graph_nodes()
+
+    # Verification
+    org_count = supabase.table("graph_nodes").select("*", count="exact").eq("type", "organization").not_.is_("db_record_id", "null").eq('is_current', True).execute()
+    actual_org_count = getattr(org_count, "count", 0) if hasattr(org_count, "count") else len(org_count.data or []) if org_count else 0
+    try:
+        expected_orgs = supabase.table("organizations").select("*", count="exact").execute()
+        expected_org_count = getattr(expected_orgs, "count", 0) if hasattr(expected_orgs, "count") else len(expected_orgs.data or [])
+        if actual_org_count < expected_org_count:
+            print(f"⚠️  Org sync mismatch: {actual_org_count}/{expected_org_count} graph nodes created — some orgs missing")
+    except Exception:
+        print("⏭️  Org-count verification skipped: organizations table removed (migration 75).")
+
+    proj_count = supabase.table("graph_nodes").select("*", count="exact").eq("type", "project").not_.is_("db_record_id", "null").eq('is_current', True).execute()
+    expected_projs = supabase.table("projects").select("*", count="exact").execute()
+    actual_proj_count = getattr(proj_count, "count", 0) if hasattr(proj_count, "count") else len(proj_count.data or []) if proj_count else 0
+    expected_proj_count = getattr(expected_projs, "count", 0) if hasattr(expected_projs, "count") else len(expected_projs.data or [])
+    if actual_proj_count < expected_proj_count:
+        print(f"⚠️  Project sync mismatch: {actual_proj_count}/{expected_proj_count} graph nodes created — some projects missing")
+
+    print("✅ All Phase-2 operations complete")
+
+
 if __name__ == "__main__":
     supabase_url = os.getenv("SUPABASE_URL")
     supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-    
+
     if not supabase_url or not supabase_key:
         print("ERROR: Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY")
         sys.exit(1)
-    
-    # Standalone cron runs carry no API key — scope the whole run to the
-    # channel tenant (single active user) so the tenant facade works (M3).
-    with channel_tenant_scope():
-        # Run backfill
-        run_backfill()
-        
-        # Run graph→table sync
 
-        sync_person_nodes_to_people_table()
-        sync_people_to_graph_nodes()
-        
-        # Run table→graph sync (reverse direction)
-        sync_person_org_edges()
-        sync_organizations_to_graph_nodes()
-        
-        # Verification
-        org_count = supabase.table("graph_nodes").select("*", count="exact").eq("type", "organization").not_.is_("db_record_id", "null").eq('is_current', True).execute()
-        actual_org_count = getattr(org_count, "count", 0) if hasattr(org_count, "count") else len(org_count.data or []) if org_count else 0
-        try:
-            expected_orgs = supabase.table("organizations").select("*", count="exact").execute()
-            expected_org_count = getattr(expected_orgs, "count", 0) if hasattr(expected_orgs, "count") else len(expected_orgs.data or [])
-            if actual_org_count < expected_org_count:
-                print(f"⚠️  Org sync mismatch: {actual_org_count}/{expected_org_count} graph nodes created — some orgs missing")
-        except Exception:
-            print("⏭️  Org-count verification skipped: organizations table removed (migration 75).")
-        
-        proj_count = supabase.table("graph_nodes").select("*", count="exact").eq("type", "project").not_.is_("db_record_id", "null").eq('is_current', True).execute()
-        expected_projs = supabase.table("projects").select("*", count="exact").execute()
-        actual_proj_count = getattr(proj_count, "count", 0) if hasattr(proj_count, "count") else len(proj_count.data or []) if proj_count else 0
-        expected_proj_count = getattr(expected_projs, "count", 0) if hasattr(expected_projs, "count") else len(expected_projs.data or [])
-        if actual_proj_count < expected_proj_count:
-            print(f"⚠️  Project sync mismatch: {actual_proj_count}/{expected_proj_count} graph nodes created — some projects missing")
-        
-        print("✅ All Phase-2 operations complete")
+    # M16: fan out over all active tenants — each tenant's graph is backfilled
+    # under its own scope (before this the cron only ever ran the channel
+    # tenant = oldest active user, so 3 of 5 tenants were never graph-linked).
+    # run_tenant_fanout falls back to channel_tenant_scope() when there are no
+    # active users (exact legacy behaviour).
+    from core.services.db import run_tenant_fanout
+    run_tenant_fanout(_run_phase2, job_name="graph_backfill")

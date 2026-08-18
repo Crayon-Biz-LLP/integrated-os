@@ -1,12 +1,16 @@
-name: Ingest (Journal + Graph Backfill)
+name: Ingest (Journal Ingest)
 on:
   schedule:
-    # M9.7: journal ingest + graph backfill extracted from pulse.yml so the
-    # 30-min heartbeat (pulse.yml) never re-runs them wastefully. Runs 20
-    # minutes before each briefing slot so the heartbeat briefs on fresh data:
+    # M9.7: journal ingest extracted from pulse.yml so the 30-min heartbeat
+    # never re-runs it wastefully. Runs 20 minutes before each briefing slot
+    # so the heartbeat briefs on fresh data:
     #   Weekday slots 07:30/11:30/14:30/17:30 IST → 07:10/11:10/14:10/17:10 IST
     #   Weekday evening 20:00 IST → 19:40 IST
     #   Weekend 08:00/15:00 IST → 07:40/14:40 IST
+    # NOTE: graph backfill previously ran here as Step 2 — the 25-min job
+    # budget could not fit a 25-60 min backfill, so every run was cancelled
+    # at the timeout. Backfill now runs in its own workflow (backfill_graph.yml,
+    # 60-min budget, nightly + manual dispatch).
     - cron: '40 1,5,8,11 * * 1-5'
     - cron: '10 14 * * 1-5'
     - cron: '10 2,9 * * 0,6'
@@ -42,7 +46,7 @@ jobs:
       - name: Install Dependencies
         run: pip install -r requirements.txt
 
-      - name: "Step 1: Ingest New Journal Entries"
+      - name: "Ingest New Journal Entries"
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
@@ -54,12 +58,3 @@ jobs:
           GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
           GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_KEY_3 }}
         run: python -m core.skills.archive_ingest
-
-      - name: "Step 2: Update Neural Graph (Link Memories)"
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
-          GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_KEY_3 }}
-        run: python -m core.skills.backfill_graph

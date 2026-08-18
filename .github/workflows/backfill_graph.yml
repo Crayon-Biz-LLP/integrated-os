@@ -1,9 +1,12 @@
 name: Graph Backfill
 on:
-  # Graph backfill now runs inside ingest.yml (Step 2, before each pulse
-  # slot, 5-6x/day) — this standalone nightly run was a redundant duplicate
-  # of the same `python -m core.skills.backfill_graph` command. Schedule
-  # disabled; keep manual dispatch for on-demand deep backfills.
+  # Restored as a standalone job (Aug 18): the backfill was merged into
+  # ingest.yml's 25-min job (Aug 12) where it could not finish — every run
+  # was cancelled at the 25-min timeout. It needs up to 60 min for the
+  # largest tenant, so it runs here nightly (20:00 UTC = 1:30 AM IST) with
+  # a 60-min budget, plus manual dispatch for on-demand deep backfills.
+  schedule:
+    - cron: '0 20 * * *'  # Every day at 1:30 AM IST (20:00 UTC)
   workflow_dispatch:  # Allow manual trigger via API
 
 jobs:
