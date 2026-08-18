@@ -1,3 +1,5 @@
+import 'dart:io' show Platform;
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -118,9 +120,13 @@ class NotificationService {
   Future<void> _registerToken() async {
     if (_deviceToken == null) return;
     try {
+      // iOS tokens must register as 'ios' so the backend builds an APNs
+      // payload (sound/badge) instead of an Android one (push_notification.py
+      // branches on this value when sending).
+      final platform = Platform.isIOS ? 'ios' : 'android';
       final result = await _api.post('/api/register-device', body: {
         'token': _deviceToken,
-        'platform': 'android',
+        'platform': platform,
       });
       if (result.success) {
         debugPrint('[Notification] Token registered with backend');
@@ -152,7 +158,16 @@ class NotificationService {
         id: DateTime.now().millisecondsSinceEpoch ~/ 1000,
         title: notification.title ?? 'Rhodey',
         body: notification.body ?? '',
-        notificationDetails: NotificationDetails(android: androidDetails),
+        notificationDetails: NotificationDetails(
+          android: androidDetails,
+          // iOS needs its own presentation settings — with only android
+          // details set, foreground pushes would be silently dropped.
+          iOS: const DarwinNotificationDetails(
+            presentAlert: true,
+            presentBadge: true,
+            presentSound: true,
+          ),
+        ),
       );
     }
 

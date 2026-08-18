@@ -79,6 +79,11 @@ class UpdateService {
   /// was less than 24 hours ago. This avoids a network call on every app open
   /// and every foreground transition.
   Future<void> check(BuildContext context, {bool showFeedback = false}) async {
+    // The in-app updater installs APKs — Android only. iOS testers get
+    // updates via TestFlight instead; checking would nag them with an
+    // "update" dialog pointing at an .apk that can't open.
+    if (!Platform.isAndroid) return;
+
     // Guard: if we've already shown the dialog this session, skip silently
     if (_dialogShownThisSession && !showFeedback) {
       return;
