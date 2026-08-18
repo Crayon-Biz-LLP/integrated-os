@@ -539,6 +539,321 @@ class _InboxScreenState extends State<InboxScreen>
     }
   }
 
+  // ── Org relationship prompt ───────────────────────────────────
+
+  /// Shows a relationship prompt after an org is approved.
+  /// Lets user link the new org to an existing org (Vendor/Client/Partner).
+  void _showOrgRelationshipPrompt(Map<String, dynamic> followUp) {
+    final newOrg = followUp['new_org'] as Map<String, dynamic>?;
+    final knownOrgs = (followUp['known_orgs'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+    final message = followUp['message'] as String? ?? 'How does this org relate to your orgs?';
+    final options = (followUp['options'] as List?)?.cast<String>() ?? ['Vendor', 'Client', 'Partner', 'Standalone'];
+
+    if (newOrg == null || knownOrgs.isEmpty || !mounted) return;
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppTheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: AppTheme.textTertiary.withValues(alpha: 0.3),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+                margin: const EdgeInsets.only(bottom: 16),
+              ),
+              Text(
+                message,
+                style: AppTheme.title.copyWith(fontSize: 15),
+              ),
+              const SizedBox(height: 16),
+              // Relationship type buttons
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: options.map((opt) {
+                  return Material(
+                    color: AppTheme.accent.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(10),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(10),
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        if (opt.toLowerCase() == 'standalone') return;
+                        _showOrgPicker(newOrg, opt, knownOrgs);
+                      },
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                        child: Text(
+                          opt,
+                          style: TextStyle(
+                            color: AppTheme.accent,
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                }).toList(),
+              ),
+              const SizedBox(height: 12),
+              // Skip button
+              SizedBox(
+                width: double.infinity,
+                child: Material(
+                  color: Colors.transparent,
+                  child: InkWell(
+                    borderRadius: BorderRadius.circular(10),
+                    onTap: () => Navigator.pop(ctx),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: AppTheme.border),
+                      ),
+                      child: const Text(
+                        'Skip for now',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: AppTheme.textSecondary,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Shows org picker after relationship type is selected.
+  void _showOrgPicker(Map<String, dynamic> newOrg, String relationship, List<Map<String, dynamic>> knownOrgs) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppTheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: AppTheme.textTertiary.withValues(alpha: 0.3),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+                margin: const EdgeInsets.only(bottom: 16),
+              ),
+              Text(
+                '${newOrg['label']} — $relationship to which org?',
+                style: AppTheme.title.copyWith(fontSize: 15),
+              ),
+              const SizedBox(height: 16),
+              // Org list
+              ...knownOrgs.map((org) {
+                return ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(
+                    org['label'] ?? 'Unknown',
+                    style: AppTheme.body,
+                  ),
+                  trailing: const Icon(Icons.chevron_right, color: AppTheme.textTertiary),
+                  onTap: () {
+                    Navigator.pop(ctx);
+                    _showNoteInput(newOrg, org, relationship);
+                  },
+                );
+              }),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Shows optional note input after org is selected.
+  void _showNoteInput(Map<String, dynamic> newOrg, Map<String, dynamic> targetOrg, String relationship) {
+    final textController = TextEditingController();
+    showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: AppTheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      isScrollControlled: true,
+      builder: (ctx) => Padding(
+        padding: EdgeInsets.fromLTRB(
+          20, 16, 20, MediaQuery.of(ctx).viewInsets.bottom + 24,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: AppTheme.textTertiary.withValues(alpha: 0.3),
+                borderRadius: BorderRadius.circular(2),
+              ),
+              margin: const EdgeInsets.only(bottom: 16),
+            ),
+            Text(
+              '${newOrg['label']} → $relationship → ${targetOrg['label']}',
+              style: AppTheme.title.copyWith(fontSize: 15),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Add a note? (optional)',
+              style: AppTheme.bodySmall.copyWith(
+                color: AppTheme.textTertiary,
+                fontSize: 12,
+              ),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: textController,
+              autofocus: true,
+              textInputAction: TextInputAction.done,
+              onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
+              decoration: InputDecoration(
+                hintText: 'e.g. Hotel bookings for church events',
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide(color: AppTheme.border),
+                ),
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 14,
+                  vertical: 12,
+                ),
+                isDense: true,
+              ),
+              style: AppTheme.body,
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(10),
+                      onTap: () => Navigator.pop(ctx, ''),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: AppTheme.border),
+                        ),
+                        child: const Text(
+                          'Skip',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            color: AppTheme.textSecondary,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  flex: 2,
+                  child: Material(
+                    color: AppTheme.accent,
+                    borderRadius: BorderRadius.circular(10),
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(10),
+                      onTap: () {
+                        final text = textController.text.trim();
+                        Navigator.pop(ctx, text.isNotEmpty ? text : '');
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                        child: const Text(
+                          'Save',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    ).then((note) {
+      if (note != null) {
+        _createOrgRelationship(newOrg, targetOrg, relationship, note: note.isEmpty ? null : note);
+      }
+    });
+  }
+
+  /// Creates the org→org relationship via API.
+  Future<void> _createOrgRelationship(
+    Map<String, dynamic> newOrg,
+    Map<String, dynamic> targetOrg,
+    String relationship, {
+    String? note,
+  }) async {
+    if (!mounted) return;
+
+    final sourceId = newOrg['id'] as String?;
+    final targetId = targetOrg['id'] as String?;
+    if (sourceId == null || targetId == null) return;
+
+    final relMap = {
+      'Vendor': 'VENDOR_TO',
+      'Client': 'CLIENT_OF',
+      'Partner': 'PARTNER',
+    };
+    final apiRel = relMap[relationship] ?? relationship.toUpperCase();
+
+    final result = await _api.createOrgRelationship(
+      sourceOrgId: sourceId,
+      targetOrgId: targetId,
+      relationship: apiRel,
+      note: note,
+    );
+
+    if (mounted) {
+      if (result.success) {
+        _showSnack('✅ ${newOrg['label']} linked to ${targetOrg['label']} ($relationship)', isError: false);
+      } else {
+        _showSnack(result.error ?? 'Failed to create relationship');
+      }
+    }
+  }
+
   // ── Merge into existing (mirrors the web dashboard) ───────────
 
   /// Opens a search sheet to pick an existing live node to merge [item] into.
@@ -641,6 +956,11 @@ class _InboxScreenState extends State<InboxScreen>
         if (result.success) {
           _removeItem(item);
           _offerUndo('Approved', result);
+          // Check for org relationship follow-up
+          final followUp = result.data?['follow_up'];
+          if (followUp != null && followUp['type'] == 'org_relationship') {
+            _showOrgRelationshipPrompt(followUp);
+          }
         } else if (mounted) {
           _showSnack(result.error ?? 'Failed to approve');
         }

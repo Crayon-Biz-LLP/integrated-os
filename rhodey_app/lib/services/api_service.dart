@@ -559,6 +559,24 @@ class ApiService {
     );
   }
 
+  /// Create an org→org relationship (Vendor/Client/Partner).
+  Future<ApiResult<dynamic>> createOrgRelationship({
+    required String sourceOrgId,
+    required String targetOrgId,
+    required String relationship,
+    String? note,
+  }) async {
+    final body = <String, dynamic>{
+      'source_org_id': sourceOrgId,
+      'target_org_id': targetOrgId,
+      'relationship': relationship,
+    };
+    if (note != null && note.isNotEmpty) {
+      body['note'] = note;
+    }
+    return post('/api/org-relationship', body: body);
+  }
+
   /// Accept or reject a merge proposal via /api/graph-merge-action.
   Future<ApiResult<dynamic>> acceptMerge(int pendingId) async {
     return post(

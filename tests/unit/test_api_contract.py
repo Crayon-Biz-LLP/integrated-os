@@ -70,6 +70,7 @@ PINNED_ROUTES = {
     "/api/graph-node-action/batch": ["post"],
     "/api/graph-node-merge": ["post"],
     "/api/graph-node/{node_id}/enrichment": ["patch"],
+    "/api/org-relationship": ["post"],
     "/api/graph-node/{pending_id}": ["delete", "put"],
     "/api/graph-node/{pending_id}/type": ["patch"],
     "/api/graph-nodes/live": ["get"],
@@ -145,8 +146,8 @@ def test_route_surface_matches_pin():
 def test_pin_operation_count_is_stable():
     """Sanity guard so the pin can't silently shrink while paths stay equal."""
     total = sum(len(m) for m in PINNED_ROUTES.values())
-    assert total == 89
-    assert len(PINNED_ROUTES) == 78
+    assert total == 90
+    assert len(PINNED_ROUTES) == 79
 
 
 # ── 2. OpenAPI spec validity ──────────────────────────────────────────────

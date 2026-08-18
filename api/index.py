@@ -3695,6 +3695,61 @@ async def graph_node_action_batch_route(request: Request):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@app.post("/api/org-relationship")
+async def org_relationship_route(request: Request):
+    """Create an org→org relationship edge (Vendor/Client/Partner)."""
+    require_api_auth(request)
+    try:
+        body = await request.json()
+        source_org_id = body.get('source_org_id')
+        target_org_id = body.get('target_org_id')
+        relationship = body.get('relationship', '').upper()
+        note = body.get('note')
+        
+        if not source_org_id or not target_org_id:
+            raise HTTPException(status_code=400, detail="source_org_id and target_org_id required")
+        
+        valid_rels = ['VENDOR_TO', 'CLIENT_OF', 'PARTNER']
+        if relationship not in valid_rels:
+            raise HTTPException(status_code=400, detail=f"relationship must be one of {valid_rels}")
+        
+        supabase = tenant_aware_client()
+        
+        # Get org labels
+        source_res = maybe_single_safe(supabase.table('graph_nodes').select('id, label, type').eq('id', source_org_id).eq('type', 'organization').eq('is_current', True))
+        target_res = maybe_single_safe(supabase.table('graph_nodes').select('id, label, type').eq('id', target_org_id).eq('type', 'organization').eq('is_current', True))
+        
+        if not source_res or not source_res.data:
+            raise HTTPException(status_code=400, detail="Source org not found")
+        if not target_res or not target_res.data:
+            raise HTTPException(status_code=400, detail="Target org not found")
+        
+        source_label = source_res.data['label']
+        target_label = target_res.data['label']
+        
+        # Create pending edge for approval
+        from core.lib.graph_rules import insert_pending_edge
+        metadata = {'source_type': 'organization', 'target_type': 'organization'}
+        if note:
+            metadata['note'] = note
+        
+        insert_pending_edge(
+            source_label,
+            target_label,
+            relationship,
+            metadata
+        )
+        
+        audit_log_sync("api", "INFO", f"Created org relationship: {source_label} → {relationship} → {target_label}")
+        return {"success": True, "message": f"Relationship {source_label} → {relationship} → {target_label} created for approval"}
+    except HTTPException:
+        raise
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @app.put("/api/graph-node/{pending_id}")
 async def graph_node_rename_route(pending_id: str, request: Request):
     require_api_auth(request)

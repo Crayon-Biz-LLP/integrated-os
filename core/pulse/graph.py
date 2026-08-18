@@ -761,6 +761,25 @@ async def process_graph_pending_decision(pending_id: int, decision: str, context
             )
             if result.get("success"):
                 fire_briefing_refresh(source="graph_node_decision")
+                # After org approval, add follow_up signal for relationship linking
+                if node_type == 'organization' and result.get('action') != 'merge_proposed':
+                    try:
+                        orgs_res = supabase.table('graph_nodes') \
+                            .select('id, label') \
+                            .eq('type', 'organization') \
+                            .eq('is_current', True) \
+                            .execute()
+                        known_orgs = [o for o in (orgs_res.data or []) if o.get('label') != label]
+                        if known_orgs:
+                            result['follow_up'] = {
+                                'type': 'org_relationship',
+                                'new_org': {'id': result.get('node_id'), 'label': label},
+                                'known_orgs': known_orgs,
+                                'message': f'How does {label} relate to your orgs?',
+                                'options': ['Vendor', 'Client', 'Partner', 'Standalone']
+                            }
+                    except Exception as fu_err:
+                        audit_log_sync("pulse", "WARNING", f"Failed to build org follow_up: {fu_err}")
             return result
 
     except Exception as e:
