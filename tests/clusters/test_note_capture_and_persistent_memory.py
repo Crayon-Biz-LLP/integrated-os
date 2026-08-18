@@ -7,6 +7,7 @@ Run: LIVE_DB=true PYTHONPATH=. pytest tests/clusters/test_note_capture_and_persi
 
 import uuid
 from datetime import datetime, timezone, timedelta
+from unittest.mock import MagicMock, patch
 
 import pytest
 from core.services.db import tenant_aware_client
@@ -95,8 +96,9 @@ class TestNoteCaptureCorrectness:
             _cleanup_raw()
             _cleanup_conversations(chat_id)
 
+    @patch('core.webhook.workflows.generate_content_with_fallback')
     @pytest.mark.asyncio
-    async def test_02_note_during_active_workflow(self):
+    async def test_02_note_during_active_workflow(self, mock_llm):
         chat_id = _chat_id(2)
         thread_id = str(uuid.uuid4())
         _cleanup_raw()
@@ -126,6 +128,16 @@ class TestNoteCaptureCorrectness:
             assert w_check.data[0]['status'] == 'active'
             n_check = supabase.table('raw_dumps').select('status').eq('id', note_id).execute()
             assert n_check.data[0]['status'] == 'staged'
+
+            # Unrelated note → LLM returns all-skip → must fall through and
+            # leave the workflow active (mock keeps this deterministic).
+            mock_resp = MagicMock()
+            mock_resp.parse_json.return_value = {
+                "decisions": [{"index": 0, "decision": "skip"}],
+                "has_other_content": True,
+                "other_content_text": "I need milk",
+            }
+            mock_llm.return_value = mock_resp
 
             handled, _ = await check_and_resume_workflow(chat_id, "By the way, I need milk", thread_id)
             assert not handled
@@ -266,8 +278,9 @@ class TestWorkflowContinuity:
         finally:
             _cleanup_conversations(chat_id)
 
+    @patch('core.webhook.workflows.generate_content_with_fallback')
     @pytest.mark.asyncio
-    async def test_07_cancel_vs_unrelated(self):
+    async def test_07_cancel_vs_unrelated(self, mock_llm):
         chat_id = _chat_id(7)
         thread_id = str(uuid.uuid4())
         _cleanup_conversations(chat_id)
@@ -283,6 +296,16 @@ class TestWorkflowContinuity:
                 'payload': {'signals': [{'type': 'deadline', 'task_title': 'Cancel Test'}]}, 'expires_at': _ts(hours=23)
             }).execute()
             w_id = w_res.data[0]['id']
+
+            # Unrelated reply → LLM returns all-skip → must fall through and
+            # leave the workflow active (mock keeps this deterministic).
+            mock_resp = MagicMock()
+            mock_resp.parse_json.return_value = {
+                "decisions": [{"index": 0, "decision": "skip"}],
+                "has_other_content": False,
+                "other_content_text": "",
+            }
+            mock_llm.return_value = mock_resp
 
             handled1, _ = await check_and_resume_workflow(chat_id, "Marcus approved the pricing", thread_id)
             assert not handled1

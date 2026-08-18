@@ -25,7 +25,10 @@ DECLINE_PHRASES = frozenset({
     "forget it", "dismiss", "reject", "decline", "skip", "ignore",
 })
 
-NEGATION_WORDS = frozenset({"not", "no", "never", "don\'t", "doesn\'t", "won\'t", "can\'t"})
+NEGATION_WORDS = frozenset({
+    "not", "no", "never", "nothing", "none",
+    "don\'t", "doesn\'t", "won\'t", "can\'t",
+})
 
 # ── Phase 4: action_clarification workflows ──
 # A pending action that failed schema validation (NeedsClarification) is parked
@@ -242,6 +245,26 @@ def get_deterministic_decision(text: str) -> str | None:
     return None
 
 
+def _has_decline_language(text: str) -> bool:
+    """True if the reply carries explicit decline/negation intent.
+
+    Gates LLM-produced 'decline' decisions: an unrelated note (e.g. "By the
+    way, I need milk") must never cancel an active workflow just because the
+    LLM read it as a rejection. Single-word declines ('no', 'stop', 'cancel',
+    ...), negation words ('not', 'never', "don't", ...) and multi-word
+    decline phrases ('not now', 'never mind', ...) count; anything else
+    doesn't.
+    """
+    if not text:
+        return False
+    lowered = text.lower()
+    for phrase in DECLINE_PHRASES:
+        if " " in phrase and phrase in lowered:
+            return True
+    tokens = {tok.strip(".,!?;:'\"").lower() for tok in lowered.split()}
+    return bool(tokens & DECLINE_PHRASES) or bool(tokens & NEGATION_WORDS)
+
+
 async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> Tuple[bool, Optional[str]]:
     """
     Checks if there's an active workflow for this chat.
@@ -339,7 +362,23 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
             signal_decisions = raw.get("decisions", [])
             has_other_content = raw.get("has_other_content", False)
             other_content_text = raw.get("other_content_text", "")
-            decision = "confirm" if any(sd.get("decision") == "confirm" for sd in signal_decisions) else "decline"
+            confirmed = any(sd.get("decision") == "confirm" for sd in signal_decisions)
+            declined = any(sd.get("decision") == "decline" for sd in signal_decisions)
+            if confirmed:
+                decision = "confirm"
+            elif declined and _has_decline_language(text):
+                # 'decline' is only authoritative when the reply actually says
+                # no — an LLM misread of an unrelated message must not cancel
+                # the workflow.
+                decision = "decline"
+            else:
+                # The reply confirms no signal and doesn't explicitly decline
+                # (e.g. an unrelated note) — fall through to normal routing so
+                # the message is captured normally and the workflow stays
+                # active, awaiting the user's real answer.
+                audit_log_sync("workflow", "INFO",
+                    f"Workflow {w_id} bypassed: batch reply unrelated to all signals — falling through")
+                return False, None
         else:
             decision = raw.get("decision", "unrelated")
             

@@ -92,8 +92,9 @@ async def test_workflow_yes_reply():
         supabase.table('tasks').delete().eq('title', 'Test Event').execute()
 
 
+@patch('core.webhook.workflows.generate_content_with_fallback')
 @pytest.mark.asyncio
-async def test_workflow_unrelated_note_stays_active():
+async def test_workflow_unrelated_note_stays_active(mock_llm):
     supabase = tenant_aware_client()
     chat_id = 9999998
     thread_id = str(uuid.uuid4())
@@ -118,6 +119,16 @@ async def test_workflow_unrelated_note_stays_active():
     w_id = w_res.data[0]['id']
     
     try:
+        # Unrelated note → LLM returns all-skip → must fall through and
+        # leave the workflow active (mock keeps this deterministic).
+        mock_resp = MagicMock()
+        mock_resp.parse_json.return_value = {
+            "decisions": [{"index": 0, "decision": "skip"}],
+            "has_other_content": True,
+            "other_content_text": "remind me to buy milk",
+        }
+        mock_llm.return_value = mock_resp
+
         # Test raw note reply (should bypass workflow, stay active, return False to fall open)
         handled, _ = await check_and_resume_workflow(chat_id, "By the way, remind me to buy milk", thread_id)
         assert not handled
@@ -337,7 +348,11 @@ def test_resolve_thread_sentence_start_non_entity_passes():
 async def test_check_resume_mixed_topic_with_workflow_entity(mock_llm):
     """Mixed-topic text mentioning both workflow entity (Amico) and unrelated entity (Equisoft) still routes to workflow via LLM."""
     mock_resp = MagicMock()
-    mock_resp.parse_json.return_value = {"decision": "confirm"}
+    mock_resp.parse_json.return_value = {
+        "decisions": [{"index": 0, "decision": "confirm"}],
+        "has_other_content": False,
+        "other_content_text": "",
+    }
     mock_llm.return_value = mock_resp
     _seed_org_node("Amico")
     _seed_org_node("Equisoft")
