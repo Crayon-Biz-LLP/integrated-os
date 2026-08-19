@@ -3862,12 +3862,16 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
                   timestamp: DateTime.now(),
                 );
                 setState(() {
+                  _messages.removeWhere((m) => m.id == msg.id);
                   _messages.insert(0, confirmMsg);
                 });
               }
             },
             onSkip: () {
-              // Just leave the card as-is, user can scroll past
+              // Just remove the card
+              setState(() {
+                _messages.removeWhere((m) => m.id == msg.id);
+              });
             },
           ),
         ],
