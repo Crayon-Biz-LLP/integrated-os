@@ -179,6 +179,11 @@ async def _process_task_graph_enrichment(
     Also consumes entity extraction return values to backfill organization_id
     on the task if it was not set during creation.
     """
+    # --- PREVENTION GUARD ---
+    if content and ('[TEST]' in content or content in ['Valid Event', 'Test Event', 'Test Note', 'Test Note for Enrichment']):
+        audit_log_sync("enrichment_queue", "INFO", f"Skipping graph extraction for test task {target_id}")
+        return True
+
     try:
         from core.pulse.graph import write_graph_edges_for_task
         from core.pulse.entity_extractor import extract_and_link_entities
@@ -235,6 +240,11 @@ async def _process_note_enrichment(
     Layer 1: entity_linker.resolve_entities() runs at creation time in create_note_direct()
     Layer 2: Entity extraction in enrichment queue backfills any IDs still missing
     """
+    # --- PREVENTION GUARD ---
+    if content and ('[TEST]' in content or content in ['Valid Event', 'Test Event', 'Test Note', 'Test Note for Enrichment']):
+        audit_log_sync("enrichment_queue", "INFO", f"Skipping graph extraction for test note {memory_id}")
+        return True
+
     try:
         from core.pulse.entity_extractor import extract_and_link_entities
         from core.llm import get_embedding
