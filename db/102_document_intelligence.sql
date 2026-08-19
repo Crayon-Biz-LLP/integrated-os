@@ -23,6 +23,18 @@ CREATE TABLE IF NOT EXISTS document_items (
   created_at TIMESTAMPTZ DEFAULT now()
 );
 
+-- Patch: add owner_id to document_items if missing (migration ran before
+-- the column was added to the migration file).
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'document_items' AND column_name = 'owner_id'
+  ) THEN
+    ALTER TABLE document_items ADD COLUMN owner_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000';
+  END IF;
+END $$;
+
 -- Index for querying documents by owner
 CREATE INDEX IF NOT EXISTS idx_documents_owner ON documents(owner_id, created_at DESC);
 
