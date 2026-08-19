@@ -75,7 +75,7 @@
 | **Email (Outlook)** | `email_ingest.py` (GHA cron) | Shared `build_email_classify_prompt()` | Same pipeline |
 | **Teams** | `teams_ingest.py` (GHA cron) | Flash Lite classify | `plan_actions()` |
 | **Calls** | `call_ingest.py` (GHA cron) | Gemini extraction | Decision Pulse approval |
-| **Documents** | `multimodal.py` → `document_extractor.py` | Hybrid: PyMuPDF/docx/xlsx/pptx algorithmic + Gemini vision fallback | NOTE pipeline |
+| **Documents** | `document_extractor.py` → `document_parser.py` | Flash Lite structured breakdown | `raw_dumps` capture → Review Card → execution + `doc_enrich` |
 
 ### Classifier Rules
 
@@ -185,6 +185,11 @@ create_task_direct()
               └── write_graph_edges_for_task()
               └── extract_and_link_entities()
               └── get_embedding()
+              
+document_confirm_route()
+  ├── INSERT tasks/notes (synchronous)
+  └── INSERT pending_enrichment_job (job_type='doc_enrich')
+        └── extract_and_link_entities(..., source_type='raw_dump')
 ```
 
 | Before (broken) | After (safe) |
