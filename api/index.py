@@ -67,24 +67,7 @@ async def lifespan(app):
     Also upgrades the thread pool from default (min(32, 6)=6) to 16 workers
     because interrogate_brain fires 17+ sync Supabase calls via asyncio.to_thread().
     """
-    # Startup: initialize asyncpg pool (hot-path reads only)
-    try:
-        from core.services.async_db import init_pool
-        await init_pool()
-        print("✅ asyncpg pool initialized successfully")
-    except Exception as e:
-        # Fail-open: if asyncpg fails, PostgREST still works
-        print(f"⚠️ asyncpg pool init failed (non-fatal): {e}")
-
     yield
-
-    # Shutdown: close asyncpg pool
-    try:
-        from core.services.async_db import close_pool
-        await close_pool()
-        print("✅ asyncpg pool closed")
-    except Exception as e:
-        print(f"⚠️ asyncpg pool close error (non-fatal): {e}")
 
 
 app = FastAPI(title="Integrated-OS", lifespan=lifespan)
