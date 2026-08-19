@@ -27,11 +27,20 @@ CREATE TABLE IF NOT EXISTS document_items (
 -- the column was added to the migration file).
 DO $$
 BEGIN
+  -- Drop UUID column if it exists (was wrong type)
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'document_items' AND column_name = 'owner_id'
+    AND data_type = 'uuid'
+  ) THEN
+    ALTER TABLE document_items DROP COLUMN owner_id;
+  END IF;
+  -- Add as TEXT to match require_api_auth return type
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.columns
     WHERE table_name = 'document_items' AND column_name = 'owner_id'
   ) THEN
-    ALTER TABLE document_items ADD COLUMN owner_id UUID NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000';
+    ALTER TABLE document_items ADD COLUMN owner_id TEXT NOT NULL DEFAULT '';
   END IF;
 END $$;
 

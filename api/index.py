@@ -4809,7 +4809,7 @@ async def document_confirm_route(request: Request):
         ]
     }
     """
-    owner_id = require_api_auth(request)
+    require_api_auth(request)
     try:
         body = await request.json()
         document_id = body.get("document_id")
@@ -4871,7 +4871,6 @@ async def document_confirm_route(request: Request):
             # Store the document item
             supabase.table("document_items").insert({
                 "document_id": document_id,
-                "owner_id": owner_id,
                 "item_type": item_type,
                 "item_data": json.dumps(item),
                 "created_entity_id": entity_id,
