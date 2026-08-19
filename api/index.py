@@ -4745,50 +4745,43 @@ async def multimodal_input_route(request: Request):
         is_document = mime_type in document_types
 
         if source == "app" and is_document:
-            # Document Intelligence flow: try it, fall back on any error
-            try:
-                from core.webhook.multimodal import extract_text
-                from core.webhook.document_parser import parse_document
-                from core.services.db import tenant_aware_client
+            from core.webhook.multimodal import extract_text
+            from core.webhook.document_parser import parse_document
+            from core.services.db import tenant_aware_client
 
-                extracted_text = extract_text(file_bytes, mime_type)
-                if not extracted_text:
-                    return await _classic_multimodal_flow(file_bytes, mime_type)
-
-                breakdown = await parse_document(extracted_text)
-                if not breakdown or not breakdown.get("complex", False):
-                    return await _classic_multimodal_flow(file_bytes, mime_type)
-
-                # Store document and breakdown
-                supabase = tenant_aware_client()
-                doc_result = supabase.table("documents").insert({
-                    "owner_id": owner_id,
-                    "filename": filename,
-                    "mime_type": mime_type,
-                    "extracted_text": extracted_text[:10000],
-                    "parsed_breakdown": json.dumps(breakdown),
-                }).execute()
-
-                document_id = doc_result.data[0]["id"] if doc_result.data else None
-
-                return {
-                    "success": True,
-                    "response": None,
-                    "briefing_update": None,
-                    "document_breakdown": {
-                        "document_id": document_id,
-                        "filename": filename,
-                        "document_type": breakdown.get("document_type"),
-                        "summary": breakdown.get("summary"),
-                        "key_facts": breakdown.get("key_facts", {}),
-                        "suggested_actions": breakdown.get("suggested_actions", []),
-                    },
-                }
-            except Exception as intel_err:
-                print(f"Document intelligence failed, falling back to classic: {intel_err}")
-                import traceback
-                traceback.print_exc()
+            extracted_text = extract_text(file_bytes, mime_type)
+            if not extracted_text:
                 return await _classic_multimodal_flow(file_bytes, mime_type)
+
+            breakdown = await parse_document(extracted_text)
+            if not breakdown or not breakdown.get("complex", False):
+                return await _classic_multimodal_flow(file_bytes, mime_type)
+
+            # Store document and breakdown
+            supabase = tenant_aware_client()
+            doc_result = supabase.table("documents").insert({
+                "owner_id": owner_id,
+                "filename": filename,
+                "mime_type": mime_type,
+                "extracted_text": extracted_text[:10000],
+                "parsed_breakdown": json.dumps(breakdown),
+            }).execute()
+
+            document_id = doc_result.data[0]["id"] if doc_result.data else None
+
+            return {
+                "success": True,
+                "response": None,
+                "briefing_update": None,
+                "document_breakdown": {
+                    "document_id": document_id,
+                    "filename": filename,
+                    "document_type": breakdown.get("document_type"),
+                    "summary": breakdown.get("summary"),
+                    "key_facts": breakdown.get("key_facts", {}),
+                    "suggested_actions": breakdown.get("suggested_actions", []),
+                },
+            }
         else:
             return await _classic_multimodal_flow(file_bytes, mime_type)
     except HTTPException:
