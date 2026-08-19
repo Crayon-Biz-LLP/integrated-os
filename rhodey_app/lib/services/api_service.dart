@@ -289,6 +289,27 @@ class ApiService {
     }
   }
 
+  /// Confirm selected document items and batch-create tasks/events/notes.
+  Future<ApiResult<dynamic>> confirmDocumentItems(
+    int documentId,
+    List<Map<String, dynamic>> selectedItems,
+  ) async {
+    debugPrint('[API] confirmDocumentItems: doc=$documentId items=${selectedItems.length}');
+    try {
+      return post(
+        '/api/document/confirm',
+        body: {
+          'document_id': documentId,
+          'selected_items': selectedItems,
+        },
+        timeout: const Duration(seconds: 30),
+        maxRetries: 0,
+      );
+    } catch (e) {
+      return ApiResult.fail('$e');
+    }
+  }
+
   // ── Messages (history) ────────────────────────────────────────
 
   /// Fetches message history from /api/messages.

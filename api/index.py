@@ -4685,8 +4685,11 @@ async def multimodal_input_route(request: Request):
 
     Sends the file through the multimodal processing pipeline (same as Telegram).
     Returns the captured response text and updated briefing.
+    
+    When source=app and the file is a document (PDF, DOCX, etc.), returns
+    a structured breakdown for the document review card instead of auto-routing.
     """
-    require_api_auth(request)
+    owner_id = require_api_auth(request)
     try:
         form = await request.form()
         file = form.get("file")
@@ -4695,39 +4698,262 @@ async def multimodal_input_route(request: Request):
 
         file_bytes = await file.read()
         mime_type = file.content_type or "application/octet-stream"
+        source = form.get("source", "app")  # "app" or "telegram"
+        filename = form.get("filename", None)
 
-        from core.webhook.multimodal import process_multimodal_content
-        from core.actions import get_captured_response
-        from datetime import timezone, timedelta
-
-        ist_offset = timezone(timedelta(hours=5, minutes=30))
-        now = datetime.now(ist_offset)
-
-        telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
-        if not telegram_chat_id:
-            raise HTTPException(status_code=500, detail="TELEGRAM_CHAT_ID missing")
-
-        await process_multimodal_content(
-            file_bytes, mime_type, int(telegram_chat_id),
-            ist_hour=now.hour
+        # Check if this is a document that should go through the intelligence flow
+        document_types = (
+            "application/pdf",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "text/plain",
         )
+        is_document = mime_type in document_types
+        use_intelligence_flow = source == "app" and is_document
 
-        response_text = get_captured_response()
+        if use_intelligence_flow:
+            # Document Intelligence flow: extract → parse → return breakdown
+            from core.webhook.multimodal import extract_text
+            from core.webhook.document_parser import parse_document
+            from core.lib.supabase import tenant_aware_client
+            
+            # Step 1: Extract text locally
+            extracted_text = extract_text(file_bytes, mime_type)
+            if not extracted_text:
+                # Fall back to classic flow if extraction fails
+                from core.webhook.multimodal import process_multimodal_content
+                from core.actions import get_captured_response
+                from datetime import timezone, timedelta
+                
+                ist_offset = timezone(timedelta(hours=5, minutes=30))
+                now = datetime.now(ist_offset)
+                telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
+                if not telegram_chat_id:
+                    raise HTTPException(status_code=500, detail="TELEGRAM_CHAT_ID missing")
+                
+                await process_multimodal_content(
+                    file_bytes, mime_type, int(telegram_chat_id),
+                    ist_hour=now.hour
+                )
+                response_text = get_captured_response()
+                
+                try:
+                    from api.briefing import build_briefing
+                    briefing = await build_briefing(tenant_aware_client())
+                    briefing_update = json.loads(json.dumps(briefing, default=str))
+                except Exception:
+                    briefing_update = None
+                
+                return {
+                    "success": True,
+                    "response": response_text,
+                    "briefing_update": briefing_update,
+                    "document_breakdown": None,
+                }
+            
+            # Step 2: Parse document with LLM
+            breakdown = await parse_document(extracted_text)
+            
+            if not breakdown or not breakdown.get("complex", False):
+                # Simple document: fall back to classic flow
+                from core.webhook.multimodal import process_multimodal_content
+                from core.actions import get_captured_response
+                from datetime import timezone, timedelta
+                
+                ist_offset = timezone(timedelta(hours=5, minutes=30))
+                now = datetime.now(ist_offset)
+                telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
+                if not telegram_chat_id:
+                    raise HTTPException(status_code=500, detail="TELEGRAM_CHAT_ID missing")
+                
+                await process_multimodal_content(
+                    file_bytes, mime_type, int(telegram_chat_id),
+                    ist_hour=now.hour
+                )
+                response_text = get_captured_response()
+                
+                try:
+                    from api.briefing import build_briefing
+                    briefing = await build_briefing(tenant_aware_client())
+                    briefing_update = json.loads(json.dumps(briefing, default=str))
+                except Exception:
+                    briefing_update = None
+                
+                return {
+                    "success": True,
+                    "response": response_text,
+                    "briefing_update": briefing_update,
+                    "document_breakdown": None,
+                }
+            
+            # Step 3: Store document and breakdown in DB
+            supabase = tenant_aware_client()
+            
+            doc_result = supabase.table("documents").insert({
+                "owner_id": owner_id,
+                "filename": filename,
+                "mime_type": mime_type,
+                "extracted_text": extracted_text[:10000],  # Cap at 10K chars
+                "parsed_breakdown": json.dumps(breakdown),
+            }).execute()
+            
+            document_id = doc_result.data[0]["id"] if doc_result.data else None
+            
+            # Step 4: Return breakdown for the review card
+            return {
+                "success": True,
+                "response": None,
+                "briefing_update": None,
+                "document_breakdown": {
+                    "document_id": document_id,
+                    "filename": filename,
+                    "document_type": breakdown.get("document_type"),
+                    "summary": breakdown.get("summary"),
+                    "key_facts": breakdown.get("key_facts", {}),
+                    "suggested_actions": breakdown.get("suggested_actions", []),
+                },
+            }
+        else:
+            # Classic flow: extract → classify → route (for images, audio, Telegram)
+            from core.webhook.multimodal import process_multimodal_content
+            from core.actions import get_captured_response
+            from datetime import timezone, timedelta
 
-        try:
-            from api.briefing import build_briefing
-            briefing = await build_briefing(tenant_aware_client())
-            briefing_update = json.loads(json.dumps(briefing, default=str))
-        except Exception:
-            briefing_update = None
+            ist_offset = timezone(timedelta(hours=5, minutes=30))
+            now = datetime.now(ist_offset)
 
-        return {
-            "success": True,
-            "response": response_text,
-            "briefing_update": briefing_update,
-        }
+            telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID")
+            if not telegram_chat_id:
+                raise HTTPException(status_code=500, detail="TELEGRAM_CHAT_ID missing")
+
+            await process_multimodal_content(
+                file_bytes, mime_type, int(telegram_chat_id),
+                ist_hour=now.hour
+            )
+
+            response_text = get_captured_response()
+
+            try:
+                from api.briefing import build_briefing
+                briefing = await build_briefing(tenant_aware_client())
+                briefing_update = json.loads(json.dumps(briefing, default=str))
+            except Exception:
+                briefing_update = None
+
+            return {
+                "success": True,
+                "response": response_text,
+                "briefing_update": briefing_update,
+                "document_breakdown": None,
+            }
     except Exception as e:
         print(f"Multimodal input error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# --- DOCUMENT INTELLIGENCE: CONFIRM AND CREATE ---
+@app.post("/api/document/confirm")
+async def document_confirm_route(request: Request):
+    """Confirm selected document items and batch-create tasks/events/notes.
+    
+    Body: {
+        "document_id": int,
+        "selected_items": [
+            {
+                "type": "task" | "event" | "note",
+                "title": str,
+                "owner": str | null,
+                "deadline": str | null,  // ISO date
+                "date": str | null,      // ISO date for events
+                "org_hint": str | null,
+                "description": str | null,
+                "edited": bool  // did user edit this item?
+            }
+        ]
+    }
+    """
+    owner_id = require_api_auth(request)
+    try:
+        body = await request.json()
+        document_id = body.get("document_id")
+        selected_items = body.get("selected_items", [])
+        
+        if not document_id:
+            raise HTTPException(status_code=400, detail="document_id required")
+        if not selected_items:
+            raise HTTPException(status_code=400, detail="No items selected")
+        
+        supabase = tenant_aware_client()
+        
+        created_items = []
+        
+        for item in selected_items:
+            item_type = item.get("type", "task")
+            title = item.get("title", "")
+            deadline = item.get("deadline")
+            date = item.get("date")
+            org_hint = item.get("org_hint")
+            description = item.get("description", "")
+            was_edited = item.get("edited", False)
+            
+            entity_id = None
+            
+            if item_type == "task":
+                # Create task
+                from core.pulse.tools import create_task_direct
+                result = await create_task_direct(
+                    title=title,
+                    organization_name=org_hint,
+                    due_date=deadline,
+                )
+                entity_id = result.get("id") if result else None
+                
+            elif item_type == "event":
+                # Create calendar event
+                from core.pulse.tools import create_event
+                result = await create_event(
+                    title=title,
+                    start_date=date,
+                    end_date=date,
+                    description=description,
+                )
+                entity_id = result.get("id") if result else None
+                
+            elif item_type == "note":
+                # Ingest as note
+                from core.lib.ingest import ingest
+                result = await ingest(
+                    text=f"{title}. {description}" if description else title,
+                    source="document_intelligence",
+                    classification="note",
+                    has_memory_value=True,
+                )
+                entity_id = result.get("id") if result else None
+            
+            # Store the document item
+            supabase.table("document_items").insert({
+                "document_id": document_id,
+                "owner_id": owner_id,
+                "item_type": item_type,
+                "item_data": json.dumps(item),
+                "created_entity_id": entity_id,
+                "was_edited": was_edited,
+            }).execute()
+            
+            created_items.append({
+                "type": item_type,
+                "title": title,
+                "entity_id": entity_id,
+            })
+        
+        return {
+            "success": True,
+            "created_items": created_items,
+            "count": len(created_items),
+        }
+    except Exception as e:
+        print(f"Document confirm error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 

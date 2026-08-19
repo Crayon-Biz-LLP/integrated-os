@@ -2,6 +2,8 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:flutter_tts/flutter_tts.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:file_picker/file_picker.dart';
 import 'menu_sheet.dart';
 import 'inbox_screen.dart';
 import 'today_screen.dart';
@@ -19,6 +21,7 @@ import '../widgets/chat_bubble.dart';
 import '../widgets/merge_search_sheet.dart';
 import '../widgets/voice_states.dart';
 import '../widgets/rich_card_content.dart';
+import '../widgets/document_review_card.dart';
 import '../widgets/home_tour_overlay.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../utils/home_instrumentation.dart';
@@ -3595,6 +3598,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
             if (msg.type == MessageType.taskList && msg.taskList != null) {
               content = _buildTaskListMessage(msg);
               holdsState = true;
+            } else if (msg.type == MessageType.documentReview && msg.documentBreakdown != null) {
+              // Document review card — structured breakdown with checkboxes
+              content = _buildDocumentReviewCard(msg);
+              holdsState = true;
             } else if (msg.role == MessageRole.rhodey && !msg.isRhodeyTyping) {
               // Memoized: resolveCardData runs once per message, not per rebuild.
               final cardData = _cachedCardData(msg);
@@ -3819,6 +3826,55 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     );
   }
 
+  Widget _buildDocumentReviewCard(ChatMessage msg) {
+    final breakdown = msg.documentBreakdown!;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(left: 16, bottom: 4),
+            child: Text(
+              'Rhodey',
+              style: AppTheme.caption.copyWith(
+                color: AppTheme.accent,
+                letterSpacing: 0.3,
+              ),
+            ),
+          ),
+          DocumentReviewCard(
+            breakdown: breakdown,
+            documentId: breakdown['document_id'],
+            filename: breakdown['filename'],
+            onConfirm: (selectedItems) async {
+              final docId = breakdown['document_id'];
+              if (docId == null) return;
+              final result = await _api.confirmDocumentItems(docId, selectedItems);
+              if (result.success && mounted) {
+                final count = result.data['count'] ?? 0;
+                // Replace the review card with a confirmation message
+                final confirmMsg = ChatMessage(
+                  id: 'doc-confirm-${DateTime.now().millisecondsSinceEpoch}',
+                  role: MessageRole.rhodey,
+                  text: '✅ Created $count ${count == 1 ? 'item' : 'items'} from document.',
+                  timestamp: DateTime.now(),
+                );
+                setState(() {
+                  _messages.insert(0, confirmMsg);
+                });
+              }
+            },
+            onSkip: () {
+              // Just leave the card as-is, user can scroll past
+            },
+          ),
+        ],
+      ),
+    );
+  }
+
   void _retryMessage(String id) {
     final idx = _messages.indexWhere((m) => m.id == id);
     if (idx == -1) return;
@@ -3827,6 +3883,184 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       _messages.removeAt(idx);
     });
     _sendMessage(text);
+  }
+
+  // ── Attachment picker ──────────────────────────────────────────────
+
+  void _showAttachmentSheet() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppTheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 36, height: 4,
+                decoration: BoxDecoration(
+                  color: AppTheme.border,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Text(
+                'Add attachment',
+                style: AppTheme.bodySmall.copyWith(
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              const SizedBox(height: 16),
+              ListTile(
+                leading: Icon(Icons.photo_outlined, color: AppTheme.textSecondary, size: 22),
+                title: Text('Gallery', style: AppTheme.body.copyWith(fontSize: 14)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _pickAndUploadDocument(source: 'gallery');
+                },
+              ),
+              ListTile(
+                leading: Icon(Icons.description_outlined, color: AppTheme.textSecondary, size: 22),
+                title: Text('Document (PDF, DOCX, TXT)', style: AppTheme.body.copyWith(fontSize: 14)),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  _pickAndUploadDocument(source: 'document');
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _pickAndUploadDocument({required String source}) async {
+    String? filePath;
+    String? fileName;
+
+    try {
+      if (source == 'gallery') {
+        final picker = ImagePicker();
+        final file = await picker.pickImage(source: ImageSource.gallery);
+        if (file == null) return; // User cancelled
+        filePath = file.path;
+        fileName = file.name;
+      } else {
+        final result = await FilePicker.platform.pickFiles(
+          type: FileType.custom,
+          allowedExtensions: ['pdf', 'docx', 'txt', 'jpg', 'jpeg', 'png'],
+        );
+        if (result == null || result.files.single.path == null) return; // User cancelled
+        filePath = result.files.single.path!;
+        fileName = result.files.single.name;
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to pick file: $e'),
+            backgroundColor: AppTheme.red,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+      return;
+    }
+
+    // Show user message
+    final msgId = 'upload-${DateTime.now().millisecondsSinceEpoch}';
+    final userMsg = ChatMessage(
+      id: msgId,
+      role: MessageRole.user,
+      text: '📎 $fileName',
+      timestamp: DateTime.now(),
+      sendStatus: SendStatus.sending,
+    );
+    setState(() {
+      _messages.insert(0, userMsg);
+    });
+
+    // Show typing indicator
+    final typingId = 'typing-${DateTime.now().millisecondsSinceEpoch}';
+    final typingMsg = ChatMessage(
+      id: typingId,
+      role: MessageRole.rhodey,
+      text: '...',
+      timestamp: DateTime.now(),
+    );
+    setState(() {
+      _messages.insert(0, typingMsg);
+    });
+
+    // Upload to API
+    final result = await _api.sendMultimodal(filePath, fieldName: 'file');
+    if (!mounted) return;
+
+    // Remove typing indicator
+    setState(() {
+      _messages.removeWhere((m) => m.id == typingId);
+    });
+
+    // Mark user message as sent
+    final userMsgIdx = _messages.indexWhere((m) => m.id == msgId);
+    if (userMsgIdx != -1) {
+      setState(() {
+        _messages[userMsgIdx] = ChatMessage(
+          id: msgId,
+          role: MessageRole.user,
+          text: '📎 $fileName',
+          timestamp: DateTime.now(),
+          sendStatus: SendStatus.sent,
+        );
+      });
+    }
+
+    if (result.success && result.data is Map) {
+      final data = result.data as Map<String, dynamic>;
+      final breakdown = data['document_breakdown'];
+
+      if (breakdown != null) {
+        // Document Intelligence: show breakdown card
+        final reviewMsg = ChatMessage(
+          id: 'doc-review-${DateTime.now().millisecondsSinceEpoch}',
+          role: MessageRole.rhodey,
+          text: '📄 ${breakdown['summary'] ?? 'Document processed'}',
+          timestamp: DateTime.now(),
+          type: MessageType.documentReview,
+          documentBreakdown: Map<String, dynamic>.from(breakdown),
+        );
+        setState(() {
+          _messages.insert(0, reviewMsg);
+        });
+      } else {
+        // Classic flow: show response text
+        final responseText = data['response'] as String? ?? 'Got it.';
+        final rhodeyMsg = ChatMessage(
+          id: 'doc-response-${DateTime.now().millisecondsSinceEpoch}',
+          role: MessageRole.rhodey,
+          text: responseText,
+          timestamp: DateTime.now(),
+        );
+        setState(() {
+          _messages.insert(0, rhodeyMsg);
+        });
+      }
+    } else {
+      // Error
+      final errorMsg = ChatMessage(
+        id: 'doc-error-${DateTime.now().millisecondsSinceEpoch}',
+        role: MessageRole.rhodey,
+        text: '⚠️ ${result.error ?? 'Upload failed. Try again.'}',
+        timestamp: DateTime.now(),
+      );
+      setState(() {
+        _messages.insert(0, errorMsg);
+      });
+    }
   }
 
   // ── Input bar ──────────────────────────────────────────────
@@ -3842,6 +4076,25 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
         children: [
           Row(
             children: [
+              // Attachment button
+              Material(
+                color: Colors.transparent,
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(20),
+                  onTap: _showAttachmentSheet,
+                  child: Container(
+                    padding: const EdgeInsets.all(8),
+                    child: Icon(
+                      Icons.attach_file,
+                      color: AppTheme.textTertiary,
+                      size: 20,
+                    ),
+                  ),
+                ),
+              ),
+
+              const SizedBox(width: 4),
+
               // Voice button
               Material(
                 color: Colors.transparent,

@@ -53,6 +53,7 @@ PINNED_ROUTES = {
     "/api/decision-pulse": ["get", "post"],
     "/api/decisions/undo": ["post"],
     "/api/demo/cleanup": ["post"],
+    "/api/document/confirm": ["post"],
     "/api/demo/message": ["post"],
     "/api/draft-action": ["post"],
     "/api/drive-webhook": ["post"],
@@ -146,8 +147,8 @@ def test_route_surface_matches_pin():
 def test_pin_operation_count_is_stable():
     """Sanity guard so the pin can't silently shrink while paths stay equal."""
     total = sum(len(m) for m in PINNED_ROUTES.values())
-    assert total == 90
-    assert len(PINNED_ROUTES) == 79
+    assert total == 91
+    assert len(PINNED_ROUTES) == 80
 
 
 # ── 2. OpenAPI spec validity ──────────────────────────────────────────────
