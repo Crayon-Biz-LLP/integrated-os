@@ -93,7 +93,7 @@ async def parse_document(extracted_text: str) -> Optional[dict]:
     try:
         response = await generate_content_with_fallback(
             prompt=prompt,
-            workload=WorkloadProfile.CLASSIFY,
+            workload=WorkloadProfile.SYNTHESIS,
             primary_model=SYNTHESIS_MODEL,
         )
         response = response.text if response and response.text else None
