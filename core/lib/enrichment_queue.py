@@ -124,6 +124,10 @@ async def process_pending_enrichment(max_jobs: int = 3) -> int:
                 memory_id=target_id, content=content, source=related_id or "enrichment_queue",
                 related_org_id=related_org_id,
             )
+        elif job_type == "doc_enrich":
+            success = await _process_doc_enrichment(
+                document_id=target_id, content=content
+            )
         else:
             audit_log_sync(
                 "enrichment_queue", "WARNING",
@@ -307,5 +311,31 @@ async def _process_note_enrichment(
         audit_log_sync(
             "enrichment_queue", "WARNING",
             f"note_enrich failed for memory {memory_id}: {e}"
+        )
+        return False
+
+async def _process_doc_enrichment(document_id: int, content: str) -> bool:
+    """Process a doc_enrich enrichment job: entity extraction on full document body.
+
+    Extracts entities from the document and records them as a 'raw_dump' source_type,
+    putting the document's org/people references directly into the graph.
+    """
+    # --- PREVENTION GUARD ---
+    if content and ('[TEST]' in content or content in ['Valid Event', 'Test Event', 'Test Note', 'Test Note for Enrichment']):
+        audit_log_sync("enrichment_queue", "INFO", f"Skipping graph extraction for test document {document_id}")
+        return True
+
+    try:
+        from core.pulse.entity_extractor import extract_and_link_entities
+
+        # 1. Entity extraction — use 'raw_dump' source type to track it back to the doc
+        await extract_and_link_entities(
+            content, document_id, "raw_dump"
+        )
+        return True
+    except Exception as e:
+        audit_log_sync(
+            "enrichment_queue", "WARNING",
+            f"doc_enrich failed for document {document_id}: {e}"
         )
         return False

@@ -37,7 +37,8 @@ Return ONLY valid JSON:
       "type": "<task|event|note>",
       "title": "<action title, under 60 chars>",
       "owner": "<person name if mentioned, else null>",
-      "deadline": "<ISO date if mentioned, else null>",
+      "date": "<ISO date for events, else null>",
+      "deadline": "<ISO date for tasks, else null>",
       "org_hint": "<org name if mentioned, else null>",
       "description": "<1-2 sentence context>"
     }}

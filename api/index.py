@@ -4764,6 +4764,25 @@ async def multimodal_input_route(request: Request):
 
             document_id = doc_result.data[0]["id"] if doc_result.data else None
 
+            if document_id:
+                try:
+                    supabase.table("raw_dumps").insert({
+                        "content": extracted_text[:10000],
+                        "source": "document",
+                        "status": "processed",
+                        "is_processed": True,
+                        "direction": "incoming",
+                        "message_type": "document",
+                        "sender": "app",
+                        "owner_id": owner_id,
+                        "metadata": {
+                            "document_id": document_id,
+                            "document_type": breakdown.get("document_type")
+                        }
+                    }).execute()
+                except Exception as audit_e:
+                    print(f"Failed to write raw_dumps for document {document_id}: {audit_e}")
+
             return {
                 "success": True,
                 "response": None,
@@ -4809,7 +4828,7 @@ async def document_confirm_route(request: Request):
         ]
     }
     """
-    require_api_auth(request)
+    owner_id = require_api_auth(request)
     try:
         body = await request.json()
         document_id = body.get("document_id")
@@ -4822,67 +4841,103 @@ async def document_confirm_route(request: Request):
         
         supabase = tenant_aware_client()
         
+        # Ownership check
+        doc_res = supabase.table("documents").select("owner_id, extracted_text").eq("id", document_id).limit(1).execute()
+        if not doc_res.data:
+            raise HTTPException(status_code=404, detail="Document not found")
+        if doc_res.data[0].get("owner_id") != owner_id:
+            raise HTTPException(status_code=403, detail="Not authorized to confirm this document")
+        extracted_text = doc_res.data[0].get("extracted_text", "")
+        
         created_items = []
+        created_entity_refs = []  # For compensation rollback
         
-        for item in selected_items:
-            item_type = item.get("type", "task")
-            title = item.get("title", "")
-            deadline = item.get("deadline")
-            date = item.get("date")
-            org_hint = item.get("org_hint")
-            description = item.get("description", "")
-            was_edited = item.get("edited", False)
-            
-            entity_id = None
-            
-            if item_type == "task":
-                # Create task
-                from core.pulse.tools import create_task_direct
-                result = await create_task_direct(
-                    title=title,
-                    organization_name=org_hint,
-                    deadline=deadline,
-                    notes=description,
-                )
-                entity_id = result.get("task_id") if result else None
+        try:
+            for item in selected_items:
+                item_type = item.get("type", "task")
+                title = item.get("title", "")
+                deadline = item.get("deadline")
+                date = item.get("date")
+                org_hint = item.get("org_hint")
+                description = item.get("description", "")
+                was_edited = item.get("edited", False)
                 
-            elif item_type == "event":
-                # Events are tasks with reminder_at (no standalone event creation)
-                from core.pulse.tools import create_task_direct
-                result = await create_task_direct(
-                    title=title,
-                    organization_name=org_hint,
-                    reminder_at=date,
-                    notes=description,
-                )
-                entity_id = result.get("task_id") if result else None
+                entity_id = None
                 
-            elif item_type == "note":
-                # Ingest as note
-                from core.lib.ingest import ingest
-                result = await ingest(
-                    text=f"{title}. {description}" if description else title,
-                    source="document_intelligence",
-                    classification="note",
-                    has_memory_value=True,
+                if item_type == "task":
+                    # Create task
+                    from core.pulse.tools import create_task_direct
+                    result = await create_task_direct(
+                        title=title,
+                        organization_name=org_hint,
+                        deadline=deadline,
+                        notes=description,
+                    )
+                    entity_id = result.get("task_id") if result else None
+                    if entity_id:
+                        created_entity_refs.append(("tasks", entity_id))
+                    
+                elif item_type == "event":
+                    # Events are tasks with reminder_at (no standalone event creation)
+                    from core.pulse.tools import create_task_direct
+                    result = await create_task_direct(
+                        title=title,
+                        organization_name=org_hint,
+                        reminder_at=date,
+                        notes=description,
+                    )
+                    entity_id = result.get("task_id") if result else None
+                    if entity_id:
+                        created_entity_refs.append(("tasks", entity_id))
+                    
+                elif item_type == "note":
+                    # Ingest as note
+                    from core.lib.ingest import ingest
+                    result = await ingest(
+                        text=f"{title}. {description}" if description else title,
+                        source="document_intelligence",
+                        classification="note",
+                        has_memory_value=True,
+                    )
+                    entity_id = result.get("message_id") if result else None
+                    if entity_id:
+                        created_entity_refs.append(("memories", entity_id))
+                
+                # Store the document item
+                supabase.table("document_items").insert({
+                    "document_id": document_id,
+                    "item_type": item_type,
+                    "item_data": json.dumps(item),
+                    "created_entity_id": entity_id,
+                    "was_edited": was_edited,
+                }).execute()
+                
+                created_items.append({
+                    "type": item_type,
+                    "title": title,
+                    "entity_id": entity_id,
+                })
+                
+            # Layer 3 Conformance: enqueue doc_enrich to mine entities from the full body
+            if extracted_text:
+                from core.lib.enrichment_queue import enqueue_enrichment
+                enqueue_enrichment(
+                    job_type="doc_enrich",
+                    target_type="document",
+                    target_id=document_id,
+                    content=extracted_text
                 )
-                entity_id = result.get("message_id") if result else None
+                
+        except Exception as e:
+            # Compensation rollback on partial failure
+            print(f"Document confirm item creation failed, rolling back: {e}")
+            for table, eid in created_entity_refs:
+                try:
+                    supabase.table(table).delete().eq("id", eid).execute()
+                except Exception:
+                    pass
+            raise HTTPException(status_code=500, detail="Failed to create all items")
             
-            # Store the document item
-            supabase.table("document_items").insert({
-                "document_id": document_id,
-                "item_type": item_type,
-                "item_data": json.dumps(item),
-                "created_entity_id": entity_id,
-                "was_edited": was_edited,
-            }).execute()
-            
-            created_items.append({
-                "type": item_type,
-                "title": title,
-                "entity_id": entity_id,
-            })
-        
         return {
             "success": True,
             "created_items": created_items,
