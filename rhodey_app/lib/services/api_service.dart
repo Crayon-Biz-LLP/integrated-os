@@ -275,8 +275,12 @@ class ApiService {
         await http.MultipartFile.fromPath(fieldName ?? 'file', filePath),
       );
 
+      // Send metadata fields so the backend knows this is an app upload
+      request.fields['source'] = 'app';
+      request.fields['filename'] = filePath.split('/').last;
+
       final streamedResp = await request.send().timeout(
-        const Duration(seconds: 60),
+        const Duration(seconds: 180),  // Document parsing can take 2-3 min
       );
       final resp = await http.Response.fromStream(streamedResp);
 

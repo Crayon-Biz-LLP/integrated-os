@@ -4737,8 +4737,14 @@ async def multimodal_input_route(request: Request):
                 return await _classic_multimodal_flow(file_bytes, mime_type)
 
             breakdown = await parse_document(extracted_text)
-            if not breakdown or not breakdown.get("complex", False):
+            if not breakdown:
+                # LLM couldn't parse the document — fall back to classic flow
                 return await _classic_multimodal_flow(file_bytes, mime_type)
+
+            # Always return the breakdown (even for simple docs).
+            # The app uses the 'complex' flag to decide whether to show
+            # checkboxes or auto-create items — but the breakdown itself
+            # is always useful.
 
             # Store document and breakdown
             supabase = tenant_aware_client()
