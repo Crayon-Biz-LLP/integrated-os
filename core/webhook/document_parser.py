@@ -14,59 +14,40 @@ from typing import Optional
 
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
-from core.llm.constants import SYNTHESIS_MODEL
+from core.llm.constants import CLASSIFICATION_MODEL
 
 logger = logging.getLogger(__name__)
 
 # ── Structured output schema ──────────────────────────────────────
+# Uses CLASSIFICATION_MODEL (gemini-3.5-flash-lite) for speed — this
+# is a simple extraction task, not deep synthesis.
 
 DOCUMENT_PARSE_PROMPT = """\
-You are an executive assistant analyzing a document. Extract structured information.
+Analyze this document and extract structured information.
 
-DOCUMENT TEXT:
-{extracted_text}
+DOCUMENT:
+{text}
 
-Your task:
-1. Identify the document type
-2. Write a 2-3 sentence summary
-3. Extract key facts (type-specific)
-4. List suggested actions (tasks, events, notes to create)
-
-Return ONLY valid JSON (no markdown, no explanation):
+Return ONLY valid JSON:
 {{
-  "document_type": "<invoice|meeting_minutes|contract|email_thread|report|receipt|proposal|policy|resume|other>",
-  "complex": <true if multiple action items, decisions, or stakeholders>,
-  "summary": "<2-3 sentence summary of what this document is about>",
-  "key_facts": {{
-    // Type-specific fields. Examples:
-    // invoice: "vendor", "amount", "due_date", "line_items"
-    // meeting_minutes: "attendees", "decisions", "action_items_summary"
-    // contract: "parties", "term", "expiry", "key_terms"
-    // report: "period", "key_findings", "recommendations"
-    // email_thread: "from", "subject", "decisions", "action_items_summary"
-    // receipt: "vendor", "amount", "date", "items"
-    // other: "description", "relevant_dates"
-  }},
+  "document_type": "<invoice|meeting_minutes|contract|report|receipt|proposal|other>",
+  "summary": "<2-3 sentence summary>",
   "suggested_actions": [
     {{
       "type": "<task|event|note>",
-      "title": "<concise action title>",
+      "title": "<action title, under 60 chars>",
       "owner": "<person name if mentioned, else null>",
       "deadline": "<ISO date if mentioned, else null>",
-      "date": "<ISO date for events, else null>",
-      "org_hint": "<organization name if mentioned, else null>",
-      "description": "<1-2 sentence context for the action>"
+      "org_hint": "<org name if mentioned, else null>",
+      "description": "<1-2 sentence context>"
     }}
   ]
 }}
 
 RULES:
-- "complex" = true if the document has 2+ action items, decisions, or involves multiple people
-- "complex" = false for simple reference documents (single invoice, receipt, brief note)
-- suggested_actions should be actionable items, not passive observations
-- If the document is just a reference (no actions needed), return empty suggested_actions
-- Keep titles concise (under 60 chars)
-- Deadlines should be absolute dates, not relative ("2025-08-25", not "next Friday")
+- suggested_actions = actionable items only, not passive observations
+- If no actions needed, return empty suggested_actions
+- Deadlines must be absolute dates (2025-08-25, not 'next Friday')
 """
 
 
@@ -76,9 +57,7 @@ async def parse_document(extracted_text: str) -> Optional[dict]:
     Returns:
         {
             "document_type": str,
-            "complex": bool,
             "summary": str,
-            "key_facts": dict,
             "suggested_actions": list[dict]
         }
         or None on failure.
@@ -87,14 +66,14 @@ async def parse_document(extracted_text: str) -> Optional[dict]:
         return None
 
     prompt = DOCUMENT_PARSE_PROMPT.format(
-        extracted_text=extracted_text[:8000]  # Cap at 8K chars to stay within token limits
+        text=extracted_text[:4000]  # Cap at 4K — flash-lite is fast but needs tight input
     )
 
     try:
         response = await generate_content_with_fallback(
             prompt=prompt,
-            workload=WorkloadProfile.SYNTHESIS,
-            primary_model=SYNTHESIS_MODEL,
+            workload=WorkloadProfile.INTERACTIVE,
+            primary_model=CLASSIFICATION_MODEL,
         )
         response = response.text if response and response.text else None
 
@@ -119,10 +98,6 @@ async def parse_document(extracted_text: str) -> Optional[dict]:
         # Ensure suggested_actions is a list
         if "suggested_actions" not in parsed:
             parsed["suggested_actions"] = []
-
-        # Ensure key_facts is a dict
-        if "key_facts" not in parsed or not isinstance(parsed["key_facts"], dict):
-            parsed["key_facts"] = {}
 
         return parsed
 
