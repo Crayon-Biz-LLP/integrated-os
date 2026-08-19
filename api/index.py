@@ -4759,7 +4759,7 @@ async def multimodal_input_route(request: Request):
                 "filename": filename,
                 "mime_type": mime_type,
                 "extracted_text": extracted_text[:10000],
-                "parsed_breakdown": json.dumps(breakdown),
+                "parsed_breakdown": breakdown,
             }).execute()
 
             document_id = doc_result.data[0]["id"] if doc_result.data else None
@@ -4905,10 +4905,11 @@ async def document_confirm_route(request: Request):
                 
                 # Store the document item
                 supabase.table("document_items").insert({
+                    "owner_id": owner_id,
                     "document_id": document_id,
                     "item_type": item_type,
-                    "item_data": json.dumps(item),
-                    "created_entity_id": entity_id,
+                    "item_data": item,
+                    "created_entity_id": str(entity_id) if entity_id else None,
                     "was_edited": was_edited,
                 }).execute()
                 

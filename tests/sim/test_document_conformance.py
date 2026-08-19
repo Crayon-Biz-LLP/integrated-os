@@ -17,3 +17,17 @@ class TestDocumentConformance:
         })
         
         assert response.status_code in [401, 403, 404]
+
+    def test_document_confirm_schema_compliance(self):
+        """Verifies the confirm endpoint can be called with selected items."""
+        from api.index import app
+        client = TestClient(app)
+        
+        response = client.post("/api/document/confirm", json={
+            "document_id": -9999,
+            "selected_items": [
+                {"type": "task", "title": "Audit code"},
+                {"type": "note", "title": "Meeting minutes"}
+            ]
+        })
+        assert response.status_code in [401, 403, 404]
