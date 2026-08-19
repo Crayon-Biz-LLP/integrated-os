@@ -1,5 +1,5 @@
 from core.llm.constants import SYNTHESIS_MODEL
-from core.services.db import maybe_single_safe, tenant_aware_client
+from core.services.db import exec_query, maybe_single_safe, tenant_aware_client
 from core.llm import get_embedding
 from core.llm.fallback import generate_content_with_fallback
 import json
@@ -1466,7 +1466,7 @@ async def fetch_graph_task_context(people: list, active_tasks: list) -> str:
         audit_log_sync("pulse", "WARNING", f"⚠️ Graph task context fetch failed (non-critical): {e}")
         return ""
 
-def enrich_pending_edges_with_conflicts(rows: list) -> list:
+async def enrich_pending_edges_with_conflicts(rows: list) -> list:
     """Attach an existing conflicting relationship to each pending edge row.
 
     Replaces the retired clarifier's edge_contradiction question (plans/73):
@@ -1495,12 +1495,13 @@ def enrich_pending_edges_with_conflicts(rows: list) -> list:
         by_label = {}
         for i in range(0, len(labels), 50):
             chunk = labels[i:i + 50]
-            n_res = supabase.table("graph_nodes") \
-                .select("id, label") \
-                .in_("label", chunk) \
-                .eq("is_current", True) \
-                .limit(200) \
-                .execute()
+            n_res = await exec_query(
+                supabase.table("graph_nodes")
+                .select("id, label")
+                .in_("label", chunk)
+                .eq("is_current", True)
+                .limit(200)
+            )
             for n in (n_res.data or []):
                 by_label.setdefault((n.get("label") or "").strip().lower(), n.get("id"))
 
@@ -1508,12 +1509,13 @@ def enrich_pending_edges_with_conflicts(rows: list) -> list:
         pair_rels = {}  # (src_id, tgt_id) -> {relationship}
         for i in range(0, len(node_ids), 50):
             chunk = node_ids[i:i + 50]
-            e_res = supabase.table("graph_edges") \
-                .select("source_node_id, target_node_id, relationship") \
-                .in_("source_node_id", chunk) \
-                .eq("is_current", True) \
-                .limit(500) \
-                .execute()
+            e_res = await exec_query(
+                supabase.table("graph_edges")
+                .select("source_node_id, target_node_id, relationship")
+                .in_("source_node_id", chunk)
+                .eq("is_current", True)
+                .limit(500)
+            )
             for e in (e_res.data or []):
                 rel = (e.get("relationship") or "").upper()
                 if rel == "MENTIONS":

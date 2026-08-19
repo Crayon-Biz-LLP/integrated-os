@@ -615,7 +615,7 @@ async def home_feed_route(request: Request):
                 if _snooze_ok(supabase, 'pending_graph_edges'):
                     q = q.or_('snoozed_until.is.null,snoozed_until.lt.now')
                 res = await exec_query(q.order('created_at', desc=True).limit(100))
-                return enrich_pending_edges_with_conflicts(res.data or [])
+                return await enrich_pending_edges_with_conflicts(res.data or [])
             except Exception:
                 return []
 
@@ -4859,7 +4859,7 @@ async def pending_graph_edges_route(request: Request):
         if _snooze_ok(supabase, 'pending_graph_edges'):
             res = res.or_('snoozed_until.is.null,snoozed_until.lt.now')
         res = res.order('created_at', desc=True).limit(100).execute()
-        return {"data": enrich_pending_edges_with_conflicts(res.data or [])}
+        return {"data": await enrich_pending_edges_with_conflicts(res.data or [])}
     except Exception:
         import traceback
         traceback.print_exc()
@@ -4906,7 +4906,7 @@ async def inbox_route(request: Request):
                 if _snooze_ok(supabase, 'pending_graph_edges'):
                     q = q.or_('snoozed_until.is.null,snoozed_until.lt.now')
                 res = await exec_query(q.order('created_at', desc=True).limit(100))
-                return enrich_pending_edges_with_conflicts(res.data or [])
+                return await enrich_pending_edges_with_conflicts(res.data or [])
             except Exception:
                 return []
 
