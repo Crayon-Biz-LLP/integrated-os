@@ -4664,7 +4664,6 @@ async def app_version_route(request: Request):
 # --- MULTIMODAL INPUT (Receives file uploads from Flutter app) ---
 async def _classic_multimodal_flow(file_bytes, mime_type):
     """Classic extract → classify → route flow (for images, audio, Telegram, fallback)."""
-    print(f"[DOC-INT] FALLBACK: classic multimodal flow running (mime={mime_type})")
     from core.webhook.multimodal import process_multimodal_content
     from core.actions import get_captured_response
     from core.services.db import tenant_aware_client
@@ -4717,15 +4716,12 @@ async def multimodal_input_route(request: Request):
         mime_type = file.content_type or "application/octet-stream"
         source = form.get("source") or "app"
         filename = form.get("filename") or None
-        print(f"[DOC-INT] form fields: source={source!r} filename={filename!r} mime={mime_type!r} size={len(file_bytes)}")
-
         # Flutter file_picker sends application/octet-stream for all file types.
         # Detect the real MIME type from the filename extension.
         if mime_type == "application/octet-stream" and filename:
             import mimetypes
             guessed, _ = mimetypes.guess_type(filename)
             if guessed:
-                print(f"[DOC-INT] corrected mime from octet-stream to {guessed}")
                 mime_type = guessed
 
         # Only attempt intelligence flow for app-uploaded documents
@@ -4743,18 +4739,13 @@ async def multimodal_input_route(request: Request):
             from core.webhook.document_parser import parse_document
             from core.services.db import tenant_aware_client
 
-            print(f"[DOC-INT] source={source} mime={mime_type} filename={filename} file_size={len(file_bytes)}")
             extracted_text = extract_text(file_bytes, mime_type)
             if not extracted_text:
-                print("[DOC-INT] extract_text returned None — falling back to classic")
                 return await _classic_multimodal_flow(file_bytes, mime_type)
-            print(f"[DOC-INT] extract_text OK: {len(extracted_text)} chars")
 
             breakdown = await parse_document(extracted_text)
             if not breakdown:
-                print("[DOC-INT] parse_document returned None — falling back to classic")
                 return await _classic_multimodal_flow(file_bytes, mime_type)
-            print(f"[DOC-INT] parse_document OK: complex={breakdown.get('complex')} type={breakdown.get('document_type')} actions={len(breakdown.get('suggested_actions', []))}")
 
             # Always return the breakdown (even for simple docs).
             # The app uses the 'complex' flag to decide whether to show
