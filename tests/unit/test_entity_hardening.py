@@ -283,3 +283,58 @@ def test_prompt_format_does_not_crash():
     assert text_to_insert in prompt
     assert "{text}" not in prompt
     assert "{" in prompt  # JSON braces still intact
+
+# ── Fix 6: task-type entities are skipped (prevent constraint violation) ────
+
+def test_insert_extracted_entities_skips_task_type_nodes(monkeypatch):
+    calls = []
+
+    def mock_audit(subsystem, level, msg, metadata=None, **kw):
+        calls.append({"msg": msg, "metadata": metadata})
+
+    monkeypatch.setattr("core.pulse.graph.audit_log_sync", mock_audit)
+    monkeypatch.setattr("core.lib.graph_rules.audit_log_sync", mock_audit)
+
+    class MockData:
+        def __init__(self, data):
+            self.data = data
+
+    class MockBuilder:
+        def select(self, *a, **k): return self
+        def ilike(self, *a, **k): return self
+        def eq(self, *a, **k): return self
+        def filter(self, *a, **k): return self
+        def limit(self, *a, **k): return self
+        def maybe_single(self, *a, **k): return self
+        def insert(self, data, **k): return self
+        def update(self, data, **k): return self
+        def execute(self):
+            return MockData([])
+
+    class MockSupabase:
+        def table(self, name):
+            return MockBuilder()
+
+    monkeypatch.setattr("core.pulse.graph.supabase", MockSupabase())
+    monkeypatch.setattr("core.lib.graph_rules.supabase", MockSupabase())
+
+    from core.pulse.graph import insert_extracted_entities
+    insert_extracted_entities(
+        nodes=[
+            {"label": "Audit Product Code", "type": "task", "type_conflict": True},
+            {"label": "Quark Learning", "type": "organization"}
+        ],
+        edges=[],
+        source_id="123",
+        source_type="task",
+    )
+
+    skipped = [c for c in calls if "label_skipped_task_type" in c["msg"]]
+    assert len(skipped) == 1
+    assert "Audit Product Code" in skipped[0]["msg"]
+
+    routing = [c for c in calls if c["metadata"] and c["metadata"].get("event") == "entity_routing"]
+    routed_labels = [c["metadata"].get("label") for c in routing]
+    
+    assert "Quark Learning" in routed_labels
+    assert "Audit Product Code" not in routed_labels, "task type node should never route to pending"

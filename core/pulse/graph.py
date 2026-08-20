@@ -1595,6 +1595,12 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
                         f"label_skipped_no_type: {lbl!r} produced without a type — not persisted"
                     )
                 continue
+            if typ == 'task':
+                audit_log_sync(
+                    "graph_pipeline", "INFO",
+                    f"label_skipped_task_type: {lbl!r} is a task — tasks flow via suggestion/review, not pending_nodes"
+                )
+                continue
             if lbl:
                 # Apply type override if exists
                 if lbl.lower() in overrides_map:
