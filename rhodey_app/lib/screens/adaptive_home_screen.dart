@@ -3863,8 +3863,9 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
                 );
                 setState(() {
                   _messages.removeWhere((m) => m.id == msg.id);
-                  _messages.insert(0, confirmMsg);
+                  _messages.add(confirmMsg);
                 });
+                _scrollToBottom();
               }
             },
             onSkip: () {
@@ -3985,8 +3986,9 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       sendStatus: SendStatus.sending,
     );
     setState(() {
-      _messages.insert(0, userMsg);
+      _messages.add(userMsg);
     });
+    _scrollToBottom();
 
     // Show typing indicator
     final typingId = 'typing-${DateTime.now().millisecondsSinceEpoch}';
@@ -3997,8 +3999,9 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       timestamp: DateTime.now(),
     );
     setState(() {
-      _messages.insert(0, typingMsg);
+      _messages.add(typingMsg);
     });
+    _scrollToBottom();
 
     // Upload to API
     final result = await _api.sendMultimodal(filePath, fieldName: 'file');
@@ -4038,8 +4041,9 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
           documentBreakdown: Map<String, dynamic>.from(breakdown),
         );
         setState(() {
-          _messages.insert(0, reviewMsg);
+          _messages.add(reviewMsg);
         });
+        _scrollToBottom();
       } else {
         // Classic flow: show response text
         final responseText = data['response'] as String? ?? 'Got it.';
@@ -4050,8 +4054,9 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
           timestamp: DateTime.now(),
         );
         setState(() {
-          _messages.insert(0, rhodeyMsg);
+          _messages.add(rhodeyMsg);
         });
+        _scrollToBottom();
       }
     } else {
       // Error
@@ -4062,8 +4067,9 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
         timestamp: DateTime.now(),
       );
       setState(() {
-        _messages.insert(0, errorMsg);
+        _messages.add(errorMsg);
       });
+      _scrollToBottom();
     }
   }
 

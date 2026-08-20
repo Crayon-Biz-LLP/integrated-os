@@ -232,3 +232,44 @@ def test_insert_extracted_entities_drops_unknown_edge_endpoints(monkeypatch):
     for c in routing:
         lbl = (c["metadata"].get("label") or "").lower()
         assert "ghost corp" not in lbl and "pup" not in lbl, f"unknown endpoint persisted: {c}"
+
+# ── Fix 5: Hardened LLM+Pattern Reconciliation ──────────────────────────────
+
+def test_reconcile_db_wins():
+    from core.lib.entity_reconcile import reconcile_entity_types
+    llm_nodes = [{"label": "Qhord", "type": "person", "evidence": "hallucination"}]
+    pat_nodes = [DetectedEntity(label="Qhord", type="organization", source="db", db_id="123", confidence=1.0, is_new=False)]
+    res = reconcile_entity_types(llm_nodes, pat_nodes)
+    assert res[0]["type"] == "organization"
+    assert res[0]["source"] == "db"
+    assert res[0]["db_id"] == "123"
+
+def test_reconcile_agreement():
+    from core.lib.entity_reconcile import reconcile_entity_types
+    llm_nodes = [{"label": "Marutham", "type": "organization"}]
+    pat_nodes = [DetectedEntity(label="Marutham", type="organization", source="pattern", confidence=0.8, is_new=True)]
+    res = reconcile_entity_types(llm_nodes, pat_nodes)
+    assert res[0]["type"] == "organization"
+    assert res[0]["source"] == "llm+patterns"
+    assert not res[0].get("type_conflict")
+
+def test_reconcile_conflict_routes_pending():
+    from core.lib.entity_reconcile import reconcile_entity_types
+    # The Quark Learning bug case:
+    llm_nodes = [{"label": "Quark Learning", "type": "organization"}]
+    pat_nodes = [DetectedEntity(label="Quark Learning", type="person", source="pattern", confidence=0.8, is_new=True)]
+    res = reconcile_entity_types(llm_nodes, pat_nodes)
+    assert res[0]["type"] == "organization"
+    assert res[0]["type_conflict"] is True
+    assert res[0]["source"] == "llm (conflict)"
+
+def test_reconcile_uncorroborated_llm():
+    from core.lib.entity_reconcile import reconcile_entity_types
+    # Uncorroborated LLM (pattern silent)
+    llm_nodes = [{"label": "Astral Insights", "type": "organization"}]
+    pat_nodes = []
+    res = reconcile_entity_types(llm_nodes, pat_nodes)
+    assert res[0]["type"] == "organization"
+    assert res[0]["type_conflict"] is True
+    assert res[0]["source"] == "llm_only"
+

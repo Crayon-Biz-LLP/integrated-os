@@ -1575,6 +1575,7 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
 
     # Build unique nodes map from extracted nodes
     extracted_nodes = {}
+    extracted_conflicts = {}
     
     # Fetch type overrides
     overrides_res = supabase.table('graph_type_overrides').select('*').execute()
@@ -1599,6 +1600,8 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
                 if lbl.lower() in overrides_map:
                     typ = overrides_map[lbl.lower()]
                 extracted_nodes[lbl] = typ
+                if n.get("type_conflict"):
+                    extracted_conflicts[lbl] = True
 
     # 2. Sanitize LLM edge endpoints. The relationship LLM can echo
     #    ' {label} ({type})' strings back as endpoints (e.g. 'Pup (animal)').
@@ -1662,6 +1665,10 @@ def insert_extracted_entities(nodes: list, edges: list, source_id: str, source_t
             
         # 3. Route
         route = route_label(res, val)
+        if extracted_conflicts.get(raw_lbl):
+            route = "pending"
+            val["reason"] = (val.get("reason", "") + " | type_conflict").strip(" |")
+        
         res["route"] = route
         resolved_labels[raw_lbl] = res
         
