@@ -4783,6 +4783,11 @@ async def multimodal_input_route(request: Request):
                 except Exception as audit_e:
                     print(f"Failed to write raw_dumps for document {document_id}: {audit_e}")
 
+            enriched_entities = []
+            if breakdown and breakdown.get("suggested_entities"):
+                from core.pulse.graph import match_existing_nodes
+                enriched_entities = match_existing_nodes(breakdown.get("suggested_entities", []), owner_id)
+
             return {
                 "success": True,
                 "response": None,
@@ -4794,7 +4799,7 @@ async def multimodal_input_route(request: Request):
                     "summary": breakdown.get("summary"),
                     "key_facts": breakdown.get("key_facts", {}),
                     "suggested_actions": breakdown.get("suggested_actions", []),
-                    "suggested_entities": breakdown.get("suggested_entities", []),
+                    "suggested_entities": enriched_entities,
                 },
             }
         else:
@@ -5863,6 +5868,13 @@ async def suggestions_confirm_route(request: Request):
                 if not label:
                     continue
                 
+                merge_with = entity.get("merge_with")
+                if merge_with and merge_with.get("id"):
+                    # User explicitly chose to merge with an existing node
+                    # The node already exists, so we just acknowledge it
+                    created_items.append({"type": node_type, "title": label, "entity_id": merge_with.get("id")})
+                    continue
+
                 res = await create_graph_node_with_db_record(
                     label=label, 
                     node_type=node_type, 

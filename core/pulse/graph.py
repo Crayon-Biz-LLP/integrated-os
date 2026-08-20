@@ -5,6 +5,7 @@ from core.llm.fallback import generate_content_with_fallback
 import json
 import asyncio
 import uuid
+import difflib
 from core.lib.audit_logger import audit_log_sync
 from core.lib.telemetry import emit_observation
 from core.services.briefing_refresh import fire_briefing_refresh
@@ -34,6 +35,93 @@ TYPE_TO_DANNY_EDGE = {
     'event': 'ATTENDED',
     'emotional_state': 'FEELS',
 }
+
+
+def match_existing_nodes(entities: list[dict], owner_id: str) -> list[dict]:
+    """Find existing graph nodes (and pending nodes) that match suggested entities.
+    Filters out the owner's own person nodes.
+    Returns entities enriched with `existing_matches` array.
+    """
+    if not entities:
+        return []
+
+    # Get owner name to filter it out
+    owner_name_lower = ""
+    res_user = supabase.table("users").select("name").eq("id", owner_id).execute()
+    if res_user.data and res_user.data[0].get("name"):
+        owner_name_lower = str(res_user.data[0]["name"]).lower().strip()
+
+    # Fetch live nodes
+    res_live = supabase.table("graph_nodes").select("id, label, type").eq("owner_id", owner_id).eq("is_current", True).execute()
+    live_nodes = res_live.data or []
+
+    # Fetch pending nodes
+    res_pending = supabase.table("pending_nodes").select("id, label, node_type").eq("owner_id", owner_id).in_("status", ["pending", "flagged"]).execute()
+    pending_nodes = res_pending.data or []
+
+    enriched = []
+    for ent in entities:
+        label = ent.get("label", "")
+        node_type = ent.get("type", "")
+        if not label:
+            enriched.append(ent)
+            continue
+            
+        target_lower = label.lower().strip()
+        
+        # Auto-exclude owner by label or canonical alias
+        if owner_name_lower and (target_lower == owner_name_lower or target_lower == resolve_alias(owner_name_lower).lower()):
+            continue
+
+        matches = []
+        for n in live_nodes:
+            n_type = n.get("type", "")
+            if n_type == node_type or n_type == "person":
+                c = n.get("label", "")
+                c_lower = c.lower().strip()
+                ratio = difflib.SequenceMatcher(None, target_lower, c_lower).ratio()
+                if target_lower in c_lower or c_lower in target_lower:
+                    ratio += 0.3
+                if ratio >= 0.55:
+                    matches.append({
+                        "id": str(n["id"]),
+                        "label": c,
+                        "type": n_type,
+                        "scope": "live",
+                        "score": round(ratio, 3)
+                    })
+
+        for p in pending_nodes:
+            p_type = p.get("node_type", "")
+            if p_type == node_type or p_type == "person":
+                c = p.get("label", "")
+                c_lower = c.lower().strip()
+                ratio = difflib.SequenceMatcher(None, target_lower, c_lower).ratio()
+                if target_lower in c_lower or c_lower in target_lower:
+                    ratio += 0.3
+                if ratio >= 0.55:
+                    matches.append({
+                        "id": str(p["id"]),
+                        "label": c,
+                        "type": p_type,
+                        "scope": "pending",
+                        "score": round(ratio, 3)
+                    })
+        
+        matches.sort(key=lambda x: x["score"], reverse=True)
+        # Deduplicate matches by ID to handle weird edge cases
+        unique_matches = []
+        seen_ids = set()
+        for m in matches:
+            if m["id"] not in seen_ids:
+                seen_ids.add(m["id"])
+                unique_matches.append(m)
+
+        ent_copy = dict(ent)
+        ent_copy["existing_matches"] = unique_matches
+        enriched.append(ent_copy)
+        
+    return enriched
 
 
 async def create_graph_node_with_db_record(

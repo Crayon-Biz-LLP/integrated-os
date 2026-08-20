@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
+import 'merge_search_sheet.dart';
 
 class SuggestionCard extends StatefulWidget {
   final Map<String, dynamic> breakdown;
@@ -34,6 +35,10 @@ class _SuggestionItem {
   String? description;
   bool selected;
   bool edited;
+  
+  double? confidence;
+  List<Map<String, dynamic>>? existingMatches;
+  Map<String, dynamic>? mergeWith;
 
   _SuggestionItem({
     required this.category,
@@ -46,7 +51,14 @@ class _SuggestionItem {
     this.description,
     this.selected = true,
     this.edited = false,
-  });
+    this.confidence,
+    this.existingMatches,
+    this.mergeWith,
+  }) {
+    if (existingMatches != null && existingMatches!.isNotEmpty && mergeWith == null) {
+      mergeWith = existingMatches![0];
+    }
+  }
 
   Map<String, dynamic> toMap() {
     if (category == 'task') {
@@ -65,6 +77,7 @@ class _SuggestionItem {
         'type': type,
         'label': title,
         'edited': edited,
+        'merge_with': mergeWith,
       };
     }
   }
@@ -102,6 +115,8 @@ class _SuggestionCardState extends State<SuggestionCard> {
         category: 'entity',
         type: entity['type'] ?? 'concept',
         title: entity['label'] ?? '',
+        confidence: (entity['confidence'] as num?)?.toDouble(),
+        existingMatches: (entity['existing_matches'] as List?)?.cast<Map<String, dynamic>>(),
       ));
     }
     return items;
@@ -111,6 +126,16 @@ class _SuggestionCardState extends State<SuggestionCard> {
     setState(() {
       _items[index].selected = !_items[index].selected;
     });
+  }
+
+  Future<void> _openMergeSheet(int index) async {
+    final item = _items[index];
+    final selected = await MergeSearchSheet.show(context, nodeType: item.type);
+    if (selected != null) {
+      setState(() {
+        item.mergeWith = selected;
+      });
+    }
   }
 
   void _editItem(int index) {
@@ -301,13 +326,52 @@ class _SuggestionCardState extends State<SuggestionCard> {
                                 style: AppTheme.caption.copyWith(fontSize: 10, color: AppTheme.textTertiary),
                               ),
                             if (item.category == 'entity')
-                              Text(
-                                'New ${item.type}',
-                                style: AppTheme.caption.copyWith(fontSize: 10, color: AppTheme.blue),
+                              Row(
+                                children: [
+                                  if (item.mergeWith != null)
+                                    Expanded(
+                                      child: Text(
+                                        'Existing: ${item.mergeWith!['label']} (${item.type})',
+                                        style: AppTheme.caption.copyWith(fontSize: 10, color: AppTheme.green),
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    )
+                                  else
+                                    Expanded(
+                                      child: Text(
+                                        'New ${item.type}',
+                                        style: AppTheme.caption.copyWith(fontSize: 10, color: AppTheme.blue),
+                                      ),
+                                    ),
+                                  if (item.confidence != null)
+                                    Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Container(
+                                          width: 6,
+                                          height: 6,
+                                          margin: const EdgeInsets.only(right: 4),
+                                          decoration: BoxDecoration(
+                                            shape: BoxShape.circle,
+                                            color: item.confidence! > 0.8 ? AppTheme.green : (item.confidence! > 0.5 ? AppTheme.amber : AppTheme.red),
+                                          ),
+                                        ),
+                                        Text('${(item.confidence! * 100).toInt()}%', style: AppTheme.caption.copyWith(fontSize: 10)),
+                                      ],
+                                    ),
+                                ],
                               ),
                           ],
                         ),
                       ),
+                      if (item.category == 'entity')
+                        IconButton(
+                          icon: const Icon(Icons.call_merge, size: 16),
+                          color: item.mergeWith != null ? AppTheme.accent : AppTheme.textTertiary,
+                          onPressed: () => _openMergeSheet(index),
+                          padding: EdgeInsets.zero,
+                          constraints: const BoxConstraints(),
+                        ),
                       IconButton(
                         icon: const Icon(Icons.edit_outlined, size: 16),
                         color: AppTheme.textTertiary,

@@ -4000,6 +4000,31 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       return;
     }
 
+    if (!mounted) return;
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.surface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Text('Upload $fileName?', style: const TextStyle(fontSize: 16, color: AppTheme.textPrimary)),
+        content: const Text(
+          'This will be sent to Rhodey for analysis.',
+          style: TextStyle(fontSize: 13, color: AppTheme.textSecondary),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Upload', style: TextStyle(color: AppTheme.accent)),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+
     // Show user message
     final msgId = 'upload-${DateTime.now().millisecondsSinceEpoch}';
     final userMsg = ChatMessage(

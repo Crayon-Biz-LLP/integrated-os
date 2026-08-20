@@ -1499,6 +1499,14 @@ async def _process_webhook(update: dict):
                     
                     if len(tasks) + len(entities) >= 2:
                         # Rich content -> Show Suggestion Card via raw_dumps
+                        from core.pulse.graph import match_existing_nodes
+                        from core.lib.auth import get_tenant_id
+                        
+                        owner_id = get_tenant_id()
+                        if entities and owner_id:
+                            entities = match_existing_nodes(entities, owner_id)
+                            suggestions["suggested_entities"] = entities
+                            
                         from core.services.reply_delivery import deliver_outbound_reply
                         # Cancel any anaphora task
                         if _anaphora_task:
