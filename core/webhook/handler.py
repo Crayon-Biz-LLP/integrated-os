@@ -533,6 +533,8 @@ async def _process_webhook(update: dict):
     start_timer(req_trace_id)
     
     try:
+        from core.services.db import tenant_aware_client
+        supabase = tenant_aware_client()
         update_id = update.get('update_id')
         if update_id and isinstance(update_id, (int, float)):
             try:
@@ -1485,6 +1487,70 @@ async def _process_webhook(update: dict):
         
         if confidence >= CONFIDENCE_HIGH:
             print(f"[HANDLER_DEBUG] Routing: intent={intent}, confidence={confidence}, text={text!r}", flush=True)
+            
+            # --- UNIFIED SUGGESTION EXTRACTION FOR MESSAGES ---
+            # If the intent is TASK or NOTE and the message is from the app, check if it's rich enough for a suggestion card.
+            if intent in ('TASK', 'NOTE') and source == 'app':
+                from core.lib.suggestion_extractor import extract_suggestions
+                suggestions = await extract_suggestions(text)
+                if suggestions:
+                    tasks = suggestions.get("suggested_actions", [])
+                    entities = suggestions.get("suggested_entities", [])
+                    
+                    if len(tasks) + len(entities) >= 2:
+                        # Rich content -> Show Suggestion Card via raw_dumps
+                        from core.services.reply_delivery import deliver_outbound_reply
+                        # Cancel any anaphora task
+                        if _anaphora_task:
+                            _anaphora_task.cancel()
+                            
+                        # Deliver a text reply first
+                        text_response = "I extracted a few items from your message. Please review:"
+                        await deliver_outbound_reply(
+                            message_text=text_response, 
+                        )
+                        
+                        # Then deliver the suggestion card as a specialized raw_dump
+                        from core.services.db import tenant_aware_client, channel_tenant_scope
+                        supabase = tenant_aware_client()
+                        with channel_tenant_scope():
+                            try:
+                                # We use a fake source_id since there's no "document_id"
+                                # But we need an ID that the app can send back to confirm
+                                # Let's create an inbound raw_dump for the message if not already done,
+                                # or just use a dummy id since messages create tasks via /api/suggestions/confirm
+                                msg_dump_res = supabase.table('raw_dumps').insert({
+                                    'content': text,
+                                    'source': 'telegram_bot',
+                                    'direction': 'inbound',
+                                    'message_type': 'text',
+                                    'status': 'processed',
+                                    'sender': 'user',
+                                }).execute()
+                                msg_id = msg_dump_res.data[0]['id'] if msg_dump_res.data else 0
+                                
+                                suggestions['message_id'] = msg_id
+
+                                supabase.table('raw_dumps').insert({
+                                    'content': "Suggestion Card",
+                                    'source': 'telegram_bot',
+                                    'direction': 'outgoing',
+                                    'message_type': 'suggestion',
+                                    'status': 'completed',
+                                    'sender': 'system',
+                                    'metadata': {
+                                        'suggestion_breakdown': suggestions
+                                    }
+                                }).execute()
+                            except Exception as e:
+                                audit_log_sync("webhook", "ERROR", f"Failed to insert suggestion raw_dump: {e}")
+                        
+                        report(req_trace_id)
+                        return {"success": True}
+                    else:
+                        # Simple message -> fall through to regular execution!
+                        pass
+
             await route_by_intent(intent, text, chat_id, session_id, classification=classification, source=source, sender=sender, active_anchor=active_anchor, anaphora_task=_anaphora_task)
         elif intent == 'CLARIFICATION_NEEDED':
             _anaphora_task.cancel()

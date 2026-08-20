@@ -4794,6 +4794,7 @@ async def multimodal_input_route(request: Request):
                     "summary": breakdown.get("summary"),
                     "key_facts": breakdown.get("key_facts", {}),
                     "suggested_actions": breakdown.get("suggested_actions", []),
+                    "suggested_entities": breakdown.get("suggested_entities", []),
                 },
             }
         else:
@@ -5805,3 +5806,159 @@ async def oauth_exchange(request: Request):
     except Exception:
         pass
     return {"connected": True, "scopes": scopes}
+# --- UNIFIED SUGGESTIONS: CONFIRM AND CREATE ---
+@app.post("/api/suggestions/confirm")
+async def suggestions_confirm_route(request: Request):
+    """Confirm selected tasks and entities from a suggestion card.
+    
+    Body: {
+        "source_type": "document" | "message",
+        "source_id": int | str,
+        "selected_tasks": [...],
+        "selected_entities": [...]
+    }
+    """
+    owner_id = require_api_auth(request)
+    try:
+        body = await request.json()
+        source_type = body.get("source_type")
+        source_id = body.get("source_id")
+        selected_tasks = body.get("selected_tasks", [])
+        selected_entities = body.get("selected_entities", [])
+        
+        if not source_type or not source_id:
+            raise HTTPException(status_code=400, detail="source_type and source_id required")
+            
+        supabase = tenant_aware_client()
+        extracted_text = ""
+        
+        if source_type == "document":
+            doc_res = supabase.table("documents").select("owner_id, extracted_text").eq("id", source_id).limit(1).execute()
+            if not doc_res.data:
+                raise HTTPException(status_code=404, detail="Document not found")
+            if doc_res.data[0].get("owner_id") != owner_id:
+                raise HTTPException(status_code=403, detail="Not authorized")
+            extracted_text = doc_res.data[0].get("extracted_text", "")
+        elif source_type == "message":
+            msg_res = supabase.table("raw_dumps").select("owner_id, content").eq("id", source_id).limit(1).execute()
+            if not msg_res.data:
+                raise HTTPException(status_code=404, detail="Message not found")
+            if msg_res.data[0].get("owner_id") != owner_id:
+                raise HTTPException(status_code=403, detail="Not authorized")
+            extracted_text = msg_res.data[0].get("content", "")
+            
+        created_items = []
+        created_entity_refs = []
+        
+        try:
+            from core.pulse.graph import create_graph_node_with_db_record
+            from core.pulse.tools import create_task_direct
+            from core.lib.ingest import ingest
+            from core.lib.enrichment_queue import enqueue_enrichment
+            
+            # 1. Create entities first so they are available for task resolution
+            for entity in selected_entities:
+                label = entity.get("label", "")
+                node_type = entity.get("type", "concept")
+                if not label:
+                    continue
+                
+                res = await create_graph_node_with_db_record(
+                    label=label, 
+                    node_type=node_type, 
+                    source_text=extracted_text[:500],
+                    source_tag="suggestion_confirm",
+                    force=True
+                )
+                if res and res.get('success'):
+                    created_items.append({"type": node_type, "title": label, "entity_id": res.get("node_id")})
+                    
+            # 2. Create tasks
+            for item in selected_tasks:
+                item_type = item.get("type", "task")
+                title = item.get("title", "")
+                deadline = item.get("deadline")
+                date = item.get("date")
+                org_hint = item.get("org_hint")
+                description = item.get("description", "")
+                
+                entity_id = None
+                
+                if item_type == "task":
+                    result = await create_task_direct(
+                        title=title,
+                        organization_name=org_hint,
+                        deadline=deadline,
+                        notes=description,
+                    )
+                    entity_id = result.get("task_id") if result else None
+                    if entity_id:
+                        created_entity_refs.append(("tasks", entity_id))
+                        
+                elif item_type == "event":
+                    result = await create_task_direct(
+                        title=title,
+                        organization_name=org_hint,
+                        reminder_at=date,
+                        notes=description,
+                    )
+                    entity_id = result.get("task_id") if result else None
+                    if entity_id:
+                        created_entity_refs.append(("tasks", entity_id))
+                        
+                elif item_type == "note":
+                    result = await ingest(
+                        text=f"{title}. {description}" if description else title,
+                        source="suggestion_confirm",
+                        classification="note",
+                        has_memory_value=True,
+                    )
+                    entity_id = result.get("message_id") if result else None
+                    if entity_id:
+                        created_entity_refs.append(("memories", entity_id))
+                        
+                if source_type == "document":
+                    supabase.table("document_items").insert({
+                        "owner_id": owner_id,
+                        "document_id": source_id,
+                        "item_type": item_type,
+                        "item_data": item,
+                        "created_entity_id": str(entity_id) if entity_id else None,
+                    }).execute()
+                    
+                created_items.append({
+                    "type": item_type,
+                    "title": title,
+                    "entity_id": entity_id,
+                })
+                
+            # 3. Enqueue enrichment to catch edges
+            if source_type == "document" and extracted_text:
+                enqueue_enrichment(
+                    job_type="doc_enrich",
+                    target_type="document",
+                    target_id=source_id,
+                    content=extracted_text
+                )
+                
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            for table, eid in created_entity_refs:
+                try:
+                    supabase.table(table).delete().eq("id", eid).execute()
+                except Exception:
+                    pass
+            raise HTTPException(status_code=500, detail="Failed to create all items")
+            
+        return {
+            "success": True,
+            "created_items": created_items,
+            "count": len(created_items),
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Internal server error")

@@ -21,7 +21,7 @@ import '../widgets/chat_bubble.dart';
 import '../widgets/merge_search_sheet.dart';
 import '../widgets/voice_states.dart';
 import '../widgets/rich_card_content.dart';
-import '../widgets/document_review_card.dart';
+import '../widgets/suggestion_card.dart';
 import '../widgets/home_tour_overlay.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../utils/home_instrumentation.dart';
@@ -1721,15 +1721,29 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       final ts = createdAt.isNotEmpty
           ? ((DateTime.tryParse(createdAt) ?? DateTime.now()).toLocal())
           : DateTime.now();
+      MessageType msgType = MessageType.text;
+      Map<String, dynamic>? suggestionBreakdown;
+      
+      final rawMsgType = m['message_type'] as String? ?? 'text';
+      if (rawMsgType == 'suggestion') {
+        msgType = MessageType.suggestion;
+        final meta = m['metadata'];
+        if (meta is Map<String, dynamic> && meta['suggestion_breakdown'] != null) {
+          suggestionBreakdown = Map<String, dynamic>.from(meta['suggestion_breakdown']);
+        }
+      }
+
       _messages.add(
         ChatMessage(
           id: '$idPrefix${_msgCounter++}',
           role: role,
+          type: msgType,
           text: content,
           timestamp: ts,
           intent: m['intent'] as String?,
           ackTitle: m['title'] as String?,
           sendStatus: role == MessageRole.user ? SendStatus.sent : null,
+          suggestionBreakdown: suggestionBreakdown,
         ),
       );
       addedAny = true;
@@ -3598,9 +3612,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
             if (msg.type == MessageType.taskList && msg.taskList != null) {
               content = _buildTaskListMessage(msg);
               holdsState = true;
-            } else if (msg.type == MessageType.documentReview && msg.documentBreakdown != null) {
-              // Document review card — structured breakdown with checkboxes
-              content = _buildDocumentReviewCard(msg);
+            } else if ((msg.type == MessageType.documentReview && msg.documentBreakdown != null) ||
+                       (msg.type == MessageType.suggestion && msg.suggestionBreakdown != null)) {
+              // Document review / Message suggestion card — structured breakdown with checkboxes
+              content = _buildSuggestionCard(msg);
               holdsState = true;
             } else if (msg.role == MessageRole.rhodey && !msg.isRhodeyTyping) {
               // Memoized: resolveCardData runs once per message, not per rebuild.
@@ -3826,8 +3841,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
     );
   }
 
-  Widget _buildDocumentReviewCard(ChatMessage msg) {
-    final breakdown = msg.documentBreakdown!;
+  Widget _buildSuggestionCard(ChatMessage msg) {
+    final breakdown = msg.suggestionBreakdown ?? msg.documentBreakdown!;
+    final isDoc = msg.type == MessageType.documentReview;
+    final sourceId = breakdown['document_id'] ?? breakdown['message_id'] ?? msg.id;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),
       child: Column(
@@ -3844,25 +3861,32 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
               ),
             ),
           ),
-          DocumentReviewCard(
+          SuggestionCard(
             breakdown: breakdown,
-            documentId: breakdown['document_id'],
+            sourceType: isDoc ? 'document' : 'message',
+            sourceId: sourceId,
             filename: breakdown['filename'],
-            onConfirm: (selectedItems) async {
-              final docId = breakdown['document_id'];
-              if (docId == null) return;
-              final result = await _api.confirmDocumentItems(docId, selectedItems);
+            onConfirm: (selectedTasks, selectedEntities) async {
+              if (sourceId == null) return;
+              final result = await _api.confirmSuggestions(
+                isDoc ? 'document' : 'message',
+                sourceId,
+                selectedTasks,
+                selectedEntities,
+              );
+              // Optimistic removal to avoid stuck card
+              setState(() {
+                _messages.removeWhere((m) => m.id == msg.id);
+              });
               if (result.success && mounted) {
                 final count = result.data['count'] ?? 0;
-                // Replace the review card with a confirmation message
                 final confirmMsg = ChatMessage(
                   id: 'doc-confirm-${DateTime.now().millisecondsSinceEpoch}',
                   role: MessageRole.rhodey,
-                  text: '✅ Created $count ${count == 1 ? 'item' : 'items'} from document.',
+                  text: '✅ Created $count ${count == 1 ? 'item' : 'items'}.',
                   timestamp: DateTime.now(),
                 );
                 setState(() {
-                  _messages.removeWhere((m) => m.id == msg.id);
                   _messages.add(confirmMsg);
                 });
                 _scrollToBottom();

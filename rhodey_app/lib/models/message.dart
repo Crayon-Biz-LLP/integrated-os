@@ -1,6 +1,6 @@
 enum MessageRole { user, rhodey }
 
-enum MessageType { text, taskResult, noteResult, decision, enrichment, taskList, documentReview }
+enum MessageType { text, taskResult, noteResult, decision, enrichment, taskList, documentReview, suggestion }
 
 /// Outbound send states — the trust pipeline.
 ///
@@ -34,8 +34,9 @@ class ChatMessage {
   final SendStatus? sendStatus;
 
   /// Structured document breakdown for document review cards.
-  /// Populated when MessageType == documentReview.
+  /// Populated when MessageType == documentReview or suggestion.
   final Map<String, dynamic>? documentBreakdown;
+  final Map<String, dynamic>? suggestionBreakdown;
 
   const ChatMessage({
     required this.id,
@@ -49,6 +50,7 @@ class ChatMessage {
     this.ackTitle,
     this.sendStatus,
     this.documentBreakdown,
+    this.suggestionBreakdown,
   });
 
   bool get isUser => role == MessageRole.user;

@@ -102,6 +102,7 @@ PINNED_ROUTES = {
     "/api/send-draft": ["post"],
     "/api/send-message": ["post"],
     "/api/sentinel": ["get", "post"],
+    "/api/suggestions/confirm": ["post"],
     "/api/tasks": ["get"],
     "/api/tasks/{task_id}/status": ["patch"],
     "/api/teams-action": ["post"],
@@ -147,8 +148,8 @@ def test_route_surface_matches_pin():
 def test_pin_operation_count_is_stable():
     """Sanity guard so the pin can't silently shrink while paths stay equal."""
     total = sum(len(m) for m in PINNED_ROUTES.values())
-    assert total == 91
-    assert len(PINNED_ROUTES) == 80
+    assert total == 92
+    assert len(PINNED_ROUTES) == 81
 
 
 # ── 2. OpenAPI spec validity ──────────────────────────────────────────────

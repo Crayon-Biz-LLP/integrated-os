@@ -293,6 +293,31 @@ class ApiService {
     }
   }
 
+  /// Confirm selected tasks and entities from suggestions.
+  Future<ApiResult<dynamic>> confirmSuggestions(
+    String sourceType,
+    dynamic sourceId,
+    List<Map<String, dynamic>> selectedTasks,
+    List<Map<String, dynamic>> selectedEntities,
+  ) async {
+    debugPrint('[API] confirmSuggestions: source=$sourceId tasks=${selectedTasks.length} entities=${selectedEntities.length}');
+    try {
+      return post(
+        '/api/suggestions/confirm',
+        body: {
+          'source_type': sourceType,
+          'source_id': sourceId,
+          'selected_tasks': selectedTasks,
+          'selected_entities': selectedEntities,
+        },
+        timeout: const Duration(seconds: 45), // Increased timeout
+        maxRetries: 0,
+      );
+    } catch (e) {
+      return ApiResult.fail('$e');
+    }
+  }
+
   /// Confirm selected document items and batch-create tasks/events/notes.
   Future<ApiResult<dynamic>> confirmDocumentItems(
     int documentId,
