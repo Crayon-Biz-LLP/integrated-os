@@ -41,7 +41,7 @@ async def extract_and_link_entities(
     llm_nodes = []
     llm_edges = []
     
-    prompt = ENTITY_EXTRACTION_PROMPT.format(text=text)
+    prompt = ENTITY_EXTRACTION_PROMPT.replace("{text}", text)
 
     try:
         response = await generate_content_with_fallback(

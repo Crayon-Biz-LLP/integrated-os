@@ -273,3 +273,13 @@ def test_reconcile_uncorroborated_llm():
     assert res[0]["type_conflict"] is True
     assert res[0]["source"] == "llm_only"
 
+
+def test_prompt_format_does_not_crash():
+    from core.prompts.entity_extraction import ENTITY_EXTRACTION_PROMPT
+    # The prompt contains literal JSON braces. .format() will crash with KeyError,
+    # so we verify .replace() works without parsing braces.
+    text_to_insert = "Sample document text"
+    prompt = ENTITY_EXTRACTION_PROMPT.replace("{text}", text_to_insert)
+    assert text_to_insert in prompt
+    assert "{text}" not in prompt
+    assert "{" in prompt  # JSON braces still intact
