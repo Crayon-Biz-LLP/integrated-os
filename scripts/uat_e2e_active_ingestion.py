@@ -1,12 +1,10 @@
-import asyncio
-import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi.testclient import TestClient
-from api.index import app
-from core.services.db import tenant_aware_client, tenant_scope
+from fastapi.testclient import TestClient  # noqa: E402
+from api.index import app  # noqa: E402
+from core.services.db import tenant_aware_client, tenant_scope  # noqa: E402
 
 TEST_TENANT = 'e87f0279-3ec0-4875-af69-49894ee9da6f'
 
@@ -97,7 +95,7 @@ def run_e2e_test():
                     org_name = gn.data[0]['label'] if gn.data else 'Unknown'
                     print(f"   ✅ Task successfully linked to LIVE Org: {org_name} (ID: {t['organization_id']})")
                 else:
-                    print(f"   ❌ Task missing organization_id!")
+                    print("   ❌ Task missing organization_id!")
             else:
                 print("   ❌ Task not found in database!")
 
