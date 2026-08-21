@@ -412,7 +412,7 @@ Return ONLY valid JSON:
                 # Route to pending
                 node_res = supabase.table('pending_nodes').insert({
                     "label": canonical_name,
-                    "type": "practice",
+                    "node_type": "practice",
                     "source_text": "practice_detection",
                     "status": "pending",
                     "eval_context": metadata

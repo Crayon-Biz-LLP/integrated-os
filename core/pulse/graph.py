@@ -6,6 +6,7 @@ import json
 import asyncio
 import uuid
 import difflib
+from typing import Optional
 from core.lib.audit_logger import audit_log_sync
 from core.lib.telemetry import emit_observation
 from core.services.briefing_refresh import fire_briefing_refresh
@@ -502,6 +503,151 @@ async def _backfill_existing_content_for_entity(
         )
 
 
+def _resolve_pending_org_on_approval(pending_node_id: int, graph_node_id: str):
+    """Resolve pending_org_id → organization_id on all tasks and memories.
+
+    Called when a pending org node is approved. Updates all tasks/memories
+    that have pending_org_id pointing to this pending node.
+    Also creates BELONGS_TO edges for tasks.
+    """
+    try:
+        # Resolve tasks
+        tasks = supabase.table('tasks').select('id, title').eq(
+            'pending_org_id', pending_node_id
+        ).execute()
+
+        for task in (tasks.data or []):
+            supabase.table('tasks').update({
+                'organization_id': graph_node_id,
+                'pending_org_id': None,
+            }).eq('id', task['id']).execute()
+
+            # Create BELONGS_TO edge
+            from core.lib.graph_rules import insert_pending_edge
+            org_res = supabase.table('graph_nodes').select('label').eq(
+                'id', graph_node_id
+            ).single().execute()
+            if org_res and org_res.data:
+                insert_pending_edge(
+                    task.get('title', ''),
+                    org_res.data['label'],
+                    "BELONGS_TO",
+                    {
+                        "source_type": "task",
+                        "target_type": "organization",
+                        "source_table": "approval_resolution",
+                        "source_text": f"resolved from pending_node #{pending_node_id}",
+                    }
+                )
+
+            audit_log_sync("pulse", "INFO",
+                f"Resolved pending_org for task {task['id']}: pending#{pending_node_id} → graph#{graph_node_id}")
+
+        # Resolve memories
+        memories = supabase.table('memories').select('id').eq(
+            'pending_org_id', pending_node_id
+        ).execute()
+
+        for mem in (memories.data or []):
+            supabase.table('memories').update({
+                'organization_id': graph_node_id,
+                'pending_org_id': None,
+            }).eq('id', mem['id']).execute()
+
+            audit_log_sync("pulse", "INFO",
+                f"Resolved pending_org for memory {mem['id']}: pending#{pending_node_id} → graph#{graph_node_id}")
+
+        # Resolve enrichment jobs
+        jobs = supabase.table('pending_enrichment_jobs').select('id').eq(
+            'pending_org_id', pending_node_id
+        ).execute()
+
+        for job in (jobs.data or []):
+            supabase.table('pending_enrichment_jobs').update({
+                'related_org_id': graph_node_id,
+                'pending_org_id': None,
+            }).eq('id', job['id']).execute()
+
+    except Exception as e:
+        audit_log_sync("pulse", "WARNING",
+            f"Failed to resolve pending_org on approval: {e}")
+
+
+def _handle_rejected_pending_org(pending_node_id: int):
+    """Handle rejected pending org: clear pending_org_id on linked tasks/memories.
+
+    Tries to find a fallback org from the task's notes field.
+    If no fallback, clears the link and surfaces in decision pulse.
+    """
+    try:
+        supabase_client = tenant_aware_client()
+
+        # Find tasks with this pending org
+        tasks = supabase_client.table('tasks').select('id, title, notes').eq(
+            'pending_org_id', pending_node_id
+        ).execute()
+
+        for task in (tasks.data or []):
+            text = task.get('notes') or task.get('title') or ""
+            fallback_org = _find_fallback_org(text, exclude_pending_id=pending_node_id)
+
+            if fallback_org:
+                supabase_client.table('tasks').update({
+                    'organization_id': fallback_org,
+                    'pending_org_id': None,
+                }).eq('id', task['id']).execute()
+                audit_log_sync("pulse", "INFO",
+                    f"Task {task['id']}: fallback org {fallback_org} after rejection of pending#{pending_node_id}")
+            else:
+                supabase_client.table('tasks').update({
+                    'pending_org_id': None,
+                }).eq('id', task['id']).execute()
+                audit_log_sync("pulse", "WARNING",
+                    f"Task {task['id']} needs org after rejection of pending#{pending_node_id}")
+
+        # Find memories with this pending org
+        memories = supabase_client.table('memories').select('id').eq(
+            'pending_org_id', pending_node_id
+        ).execute()
+
+        for mem in (memories.data or []):
+            supabase_client.table('memories').update({
+                'pending_org_id': None,
+            }).eq('id', mem['id']).execute()
+
+        # Find enrichment jobs with this pending org
+        jobs = supabase_client.table('pending_enrichment_jobs').select('id').eq(
+            'pending_org_id', pending_node_id
+        ).execute()
+
+        for job in (jobs.data or []):
+            supabase_client.table('pending_enrichment_jobs').update({
+                'pending_org_id': None,
+            }).eq('id', job['id']).execute()
+
+    except Exception as e:
+        audit_log_sync("pulse", "WARNING",
+            f"Failed to handle rejected pending org: {e}")
+
+
+def _find_fallback_org(text: str, exclude_pending_id: int = None) -> Optional[str]:
+    """Try to find an existing org from text as a fallback after rejection.
+
+    Uses deterministic entity detection. Returns organization graph_node_id or None.
+    """
+    if not text:
+        return None
+    try:
+        from core.lib.entity_detector import detect_entities
+        entities = detect_entities(text)
+        for e in entities:
+            if e.type == 'organization' and e.db_id and e.db_id != str(exclude_pending_id):
+                return e.db_id
+    except Exception:
+        pass
+    return None
+
+
 def _root_person_label() -> str | None:
     """The tenant's root person label (their own name), or None.
 
@@ -727,6 +873,11 @@ async def process_graph_pending_decision(pending_id: int, decision: str, context
                 source='decision_pulse'
             )
             fire_briefing_refresh(source="graph_node_decision")
+
+            # ── Handle rejected pending org: clear pending_org_id on linked tasks/memories ──
+            if raw_type == 'organization':
+                _handle_rejected_pending_org(pending_id)
+
             return {"success": True, "action": "rejected", "message": f"Rejected node and related edges for {label}"}
 
         # ── Merge Proposed: Approve = accept merge, Reject = create standalone ──
@@ -817,6 +968,11 @@ async def process_graph_pending_decision(pending_id: int, decision: str, context
                     supabase.table('pending_nodes').update({'status': 'merge_proposed'}).eq('id', pending_id).execute()
                 else:
                     supabase.table('pending_nodes').update({'status': 'approved'}).eq('id', pending_id).execute()
+
+                    # ── Resolve pending_org_id on tasks and memories ──
+                    if node_type == 'organization' and result.get('node_id'):
+                        _resolve_pending_org_on_approval(pending_id, result['node_id'])
+
                     try:
                         record_decision(
                             decision_type="graph_node_approval",

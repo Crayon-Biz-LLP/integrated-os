@@ -131,7 +131,7 @@ async def ingest(
         if has_memory_value and summary:
             from core.llm import get_embedding
             from core.retrieval.pipeline import schedule_index_memory
-            from core.pulse.entity_extractor import extract_and_link_entities
+            from core.lib.entity_context import extract_context_from_source
             from core.lib.time_utils import compute_expires_at
             mem_content = f"{source}: {summary or text[:200]}"
             emb = (await get_embedding(mem_content)).vector
@@ -146,7 +146,11 @@ async def ingest(
             if mem_res.data:
                 memory_id = mem_res.data[0]['id']
                 schedule_index_memory(memory_id, mem_content, "relationship_note", source)
-                await extract_and_link_entities(mem_content, str(memory_id), 'memory')
+                ctx = await extract_context_from_source(mem_content, timing="async")
+                if ctx.organization_id:
+                    supabase.table('memories').update({'organization_id': ctx.organization_id}).eq('id', memory_id).execute()
+                elif ctx.pending_org_id:
+                    supabase.table('memories').update({'pending_org_id': ctx.pending_org_id}).eq('id', memory_id).execute()
 
         return {"status": "filed", "action": "note", "message_id": message_id}
 
@@ -206,7 +210,7 @@ async def ingest(
     if is_human_sender and has_memory_value and summary:
         from core.llm import get_embedding
         from core.retrieval.pipeline import schedule_index_memory
-        from core.pulse.entity_extractor import extract_and_link_entities
+        from core.lib.entity_context import extract_context_from_source
         from core.lib.time_utils import compute_expires_at
 
         mem_content = f"{source}: {summary}"
@@ -222,7 +226,11 @@ async def ingest(
         if mem_res.data:
             memory_id = mem_res.data[0]['id']
             schedule_index_memory(memory_id, mem_content, "relationship_note", source)
-            extract_and_link_entities(mem_content, str(memory_id), 'memory')
+            ctx = await extract_context_from_source(mem_content, timing="async")
+            if ctx.organization_id:
+                supabase.table('memories').update({'organization_id': ctx.organization_id}).eq('id', memory_id).execute()
+            elif ctx.pending_org_id:
+                supabase.table('memories').update({'pending_org_id': ctx.pending_org_id}).eq('id', memory_id).execute()
 
     # ── Generate draft if needed ──
     if needs_draft and classification == "actionable":

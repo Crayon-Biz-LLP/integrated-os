@@ -84,7 +84,7 @@ async def seed_world(supabase, uid: str, world: dict) -> dict:
 
     # ── 1b. M6 ingest/archive config (per-tenant core_config rows) ──
     # A new tenant gets their OWN archive/ingest config so they never fall
-    # back to tenant #1's (Danny's) hardcoded labels/edges. Rows:
+    # back to tenant #1's hardcoded labels/edges. Rows:
     #   archive_person_labels / archive_org_labels — node typing for the
     #       archive ingest (their own people/orgs; empty = generic typing)
     #   archive_edge_rules — custom graph edges from archive text;
@@ -110,9 +110,9 @@ async def seed_world(supabase, uid: str, world: dict) -> dict:
         # balanced preset; the onboarding journey may pass briefing_preset.
         from core.services.briefing_schedule import schedule_for_preset
         # M9.3: a new tenant must get the NEUTRAL briefing_sections row — the
-        # runtime treats a MISSING row as the Danny-era default (Church
+        # runtime treats a MISSING row as the tenant-1-era default (Church
         # section + "work, family, and faith" framing), so an app-onboarded
-        # tenant without this row would silently inherit Danny's briefing.
+        # tenant without this row would silently inherit tenant-1's briefing.
         from core.services.briefing_sections import neutral_briefing_sections_json
         config_rows = [
             {"key": "archive_person_labels", "content": json.dumps([root_label] + people_names if root_label else people_names)},
@@ -169,6 +169,60 @@ async def seed_world(supabase, uid: str, world: dict) -> dict:
                 created["errors"].append(f"org {name}: {res.get('message')}")
         except Exception as e:
             created["errors"].append(f"org {name}: {e}")
+
+    # ── 2b. Personal orgs as graph nodes + user person node + root edges ──
+    personal_orgs = world.get("personal_orgs") or []
+    root_label = (world.get("root_label") or "").strip()
+    # Derive root label from context if not provided
+    if not root_label:
+        ctx = (world.get("context") or "").strip()
+        if ctx:
+            root_label = ctx.split(" - ")[0].split(" — ")[0].strip()[:50]
+    PERSONAL_ORG_LABELS = {"Personal", "Family"}
+    personal_org_ids = {}  # label → node_id
+    for org_name in personal_orgs:
+        if org_name not in PERSONAL_ORG_LABELS:
+            continue
+        try:
+            res = await create_graph_node_with_db_record(
+                label=org_name,
+                node_type="organization",
+                context=f"Personal org for {root_label or 'user'}",
+                source_tag="onboarding_seed",
+            )
+            if res.get("success"):
+                personal_org_ids[org_name] = res.get("node_id")
+                created["organizations"] += 1
+        except Exception as e:
+            created["errors"].append(f"personal_org {org_name}: {e}")
+
+    # Create user person node (the root "me" node)
+    user_person_id = None
+    if root_label:
+        try:
+            res = await create_graph_node_with_db_record(
+                label=root_label,
+                node_type="person",
+                context="Root person node",
+                source_tag="onboarding_seed",
+            )
+            if res.get("success"):
+                user_person_id = res.get("node_id")
+                created["people"] += 1
+        except Exception as e:
+            created["errors"].append(f"user_person {root_label}: {e}")
+
+    # Create WORKS_WITH edges from root person to personal orgs
+    if user_person_id:
+        from core.lib.graph_rules import insert_pending_edge
+        for org_name, org_id in personal_org_ids.items():
+            try:
+                insert_pending_edge(
+                    root_label, org_name, "WORKS_WITH",
+                    {"source_text": "onboarding_seed", "source_table": "seed_world"}
+                )
+            except Exception as e:
+                created["errors"].append(f"edge {root_label}→{org_name}: {e}")
 
     # ── 3. Initial board (tasks via create_task_direct) ──
     for t in world.get("tasks") or []:

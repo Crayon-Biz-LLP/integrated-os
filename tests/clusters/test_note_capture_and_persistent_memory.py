@@ -262,7 +262,7 @@ class TestWorkflowContinuity:
             w2_res = supabase.table('conversation_workflows').insert({
                 'chat_id': chat_id, 'thread_id': thread_id_2, 'workflow_type': 'batch',
                 'status': 'active', 'awaiting_user_input': True,
-                'payload': {'signals': [{'type': 'deadline', 'task_title': 'Valid Event'}]}, 'expires_at': _ts(hours=23)
+                'payload': {'signals': [{'type': 'deadline', 'task_title': '[TEST] Valid Event'}]}, 'expires_at': _ts(hours=23)
             }).execute()
             w2_id = w2_res.data[0]['id']
 

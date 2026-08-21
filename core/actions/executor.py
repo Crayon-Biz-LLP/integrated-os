@@ -1,6 +1,6 @@
 import uuid
 import hashlib
-from typing import List, Optional, Dict
+from typing import List, Optional
 from core.actions.models import Action, action_param_error
 from core.services.db import tenant_aware_client
 from core.lib.audit_logger import audit_log_sync
@@ -10,72 +10,6 @@ from core.webhook.telegram import send_telegram
 
 
 # ── Real-time org detection for NOTE and TASK paths ──
-
-async def _detect_new_orgs_and_create_pending(text: str, chat_id: int, cached_entities: List = None) -> List[Dict]:
-    """Run lightweight entity detection for new orgs.
-    
-    If Pattern D detects new orgs (is_new=True, type='organization'),
-    creates pending_nodes and returns info for workflow inclusion.
-    
-    Accepts optional cached_entities from Guard B to avoid duplicate
-    detect_entities() calls. When cached_entities is provided, skips
-    the DB roundtrip (saves ~200-800ms on Vercel).
-    
-    Returns: [{label, pending_id}] for each new or previously-pending org.
-    """
-    supabase = tenant_aware_client()
-    
-    if cached_entities is not None:
-        entities = cached_entities
-    else:
-        from core.lib.entity_detector import detect_entities
-        entities = detect_entities(text)
-    new_orgs = [e for e in entities if e.type == 'organization' and e.is_new]
-    if not new_orgs:
-        return []
-    
-    created = []
-    for org in new_orgs:
-        # Check if already pending
-        existing = supabase.table('pending_nodes') \
-            .select('id') \
-            .ilike('label', org.label) \
-            .limit(1) \
-            .execute()
-        if existing and existing.data:
-            created.append({'label': org.label, 'pending_id': existing.data[0]['id']})
-            continue
-
-        # Check if already an approved graph node
-        existing_gn = supabase.table('graph_nodes') \
-            .select('id') \
-            .ilike('label', org.label) \
-            .eq('type', 'organization') \
-            .eq('is_current', True) \
-            .limit(1) \
-            .execute()
-        if existing_gn and existing_gn.data:
-            audit_log_sync("executor", "INFO", f"Skipped pending_node for '{org.label}' — already exists as graph node")
-            continue
-
-        # (Consolidation: the graph-node check above is the single source of
-        # truth — the organizations mirror table is no longer consulted.)
-
-        # Create new pending_node
-        res = supabase.table('pending_nodes').insert({
-            'label': org.label,
-            'type': 'organization',
-            'source_text': text[:200],
-            'status': 'pending',
-            'confidence': 0.8,
-        }).execute()
-        if res.data:
-            created.append({'label': org.label, 'pending_id': res.data[0]['id']})
-            audit_log_sync("executor", "INFO",
-                f"Real-time org detection: created pending_node {res.data[0]['id']} for '{org.label}'")
-    
-    return created
-
 
 # ── Guard 3: Executor data-loss prevention ──
 
@@ -89,13 +23,12 @@ async def _save_fallback_note(text: str, chat_id: int, entity: str = None, sourc
     This is Guard 3 of 3 (see also: classify pre-filter in classify.py,
     planner context injection in planner.py + planner prompt).
     """
-    import asyncio
     try:
         from core.llm import get_embedding
         from core.retrieval.pipeline import schedule_index_memory
         from core.lib.time_utils import compute_expires_at
         from datetime import datetime, timezone
-        from core.pulse.entity_extractor import extract_and_link_entities
+        from core.lib.entity_context import extract_context_from_source
 
         supabase = tenant_aware_client()
         embedding = (await get_embedding(text)).vector
@@ -112,8 +45,12 @@ async def _save_fallback_note(text: str, chat_id: int, entity: str = None, sourc
         memory_id = mem_res.data[0]['id'] if mem_res.data else None
         if memory_id:
             schedule_index_memory(memory_id, text, "note", "executor_fallback")
-            # Fire enrichment in background — don't block the response
-            asyncio.ensure_future(extract_and_link_entities(text, str(memory_id), 'memory'))
+            # Extract entities with full text
+            ctx = await extract_context_from_source(text, timing="async")
+            if ctx.organization_id:
+                supabase.table('memories').update({'organization_id': ctx.organization_id}).eq('id', memory_id).execute()
+            elif ctx.pending_org_id:
+                supabase.table('memories').update({'pending_org_id': ctx.pending_org_id}).eq('id', memory_id).execute()
         audit_log_sync("executor", "INFO",
                        f"Guard 3: Saved fallback note (memory_id={memory_id}) for unprocessable message")
         return True
@@ -317,7 +254,7 @@ def _resolve_entity_from_anchor(entity: str, active_anchor: dict = None) -> str 
     """Guard 2c: Resolve entity name from active_anchor, falling back to classifier entity.
 
     If the thread has an active_anchor with a resolved entity name (e.g., "FC Madras"),
-    prefer it over the classifier's routing tag (e.g., "SOLVSTRAT").
+    prefer it over the classifier's routing tag (e.g., "ACME").
     This prevents entity context loss when a note is created in an entity-anchored thread.
     """
     if active_anchor:
@@ -400,7 +337,7 @@ async def execute_planned_actions(
             from core.retrieval.pipeline import schedule_index_memory
             from core.lib.time_utils import compute_expires_at
             from datetime import datetime, timezone
-            from core.pulse.entity_extractor import extract_and_link_entities
+            from core.lib.entity_context import extract_context_from_source
 
             embedding = (await get_embedding(text)).vector
             embed_valid = bool(embedding and any(embedding))
@@ -416,7 +353,11 @@ async def execute_planned_actions(
             memory_id = mem_res.data[0]['id'] if mem_res.data else None
             if memory_id:
                 schedule_index_memory(memory_id, text, "note", "webhook_completion")
-                await extract_and_link_entities(text, str(memory_id), 'memory')
+                ctx = await extract_context_from_source(text, timing="async")
+                if ctx.organization_id:
+                    supabase.table('memories').update({'organization_id': ctx.organization_id}).eq('id', memory_id).execute()
+                elif ctx.pending_org_id:
+                    supabase.table('memories').update({'pending_org_id': ctx.pending_org_id}).eq('id', memory_id).execute()
         except Exception as e:
             audit_log_sync("executor", "WARNING", f"Failed to save completion history: {e}")
 
@@ -437,10 +378,9 @@ async def execute_planned_actions(
             from core.retrieval.pipeline import schedule_index_memory
             from core.lib.time_utils import compute_expires_at
             from datetime import datetime, timezone
-            from core.pulse.entity_extractor import extract_and_link_entities
+            from core.lib.entity_context import extract_context_from_source
 
-            # Gate: count context-bearing entity types only (person, org, project)
-            # Emotional states and other types are too noisy for this guard.
+            # Gate: count context-bearing entity types only (person, org)
             entities = detect_entities(text)
             _cached_entities = entities  # Cache for reuse downstream
             entity_count = sum(1 for e in entities
@@ -461,7 +401,11 @@ async def execute_planned_actions(
                 memory_id = mem_res.data[0]['id'] if mem_res.data else None
                 if memory_id:
                     schedule_index_memory(memory_id, text, "note", "executor")
-                    await extract_and_link_entities(text, str(memory_id), 'memory')
+                    ctx = await extract_context_from_source(text, cached_entities=_cached_entities, timing="async")
+                    if ctx.organization_id:
+                        supabase.table('memories').update({'organization_id': ctx.organization_id}).eq('id', memory_id).execute()
+                    elif ctx.pending_org_id:
+                        supabase.table('memories').update({'pending_org_id': ctx.pending_org_id}).eq('id', memory_id).execute()
                 audit_log_sync("executor", "INFO",
                     f"Guard B: Saved original TASK message as memory (memory_id={memory_id}, "
                     f"entities={entity_count}) for {text[:60]}...")
@@ -504,22 +448,26 @@ async def execute_planned_actions(
                 sig["organization_name"] = act.params["organization_name"]
             signals.append(sig)
             
-        # ── Detect new orgs from the full text and add to workflow ──
-        new_orgs = []
+        # ── Extract entity context from the full text ──
+        entity_ctx_for_workflow = None
         if text:
             try:
-                new_orgs = await _detect_new_orgs_and_create_pending(text, chat_id, cached_entities=_cached_entities)
-            except Exception as e:
-                audit_log_sync("executor", "WARNING", f"TASK real-time org detection failed (non-critical): {e}")
+                from core.lib.entity_context import extract_context_from_source
+                entity_ctx_for_workflow = await extract_context_from_source(text, cached_entities=_cached_entities, timing="sync")
+            except Exception as ec_e:
+                audit_log_sync("executor", "WARNING", f"EntityContext extraction failed (non-critical): {ec_e}")
         
         w_id = str(uuid.uuid4())
         
         try:
-            # Build payload with org info so check_and_resume_workflow can auto-approve them
+            # Build payload with entity context for guaranteed org linkage
             payload = {'signals': signals}
-            if new_orgs:
-                payload['new_orgs'] = new_orgs
-                payload['original_text'] = text
+            payload['original_text'] = text  # ALWAYS store
+            if entity_ctx_for_workflow:
+                payload['entity_context'] = entity_ctx_for_workflow.to_dict()
+                # Build new_orgs from EntityContext for backward compat with workflow resume
+                if entity_ctx_for_workflow.pending_org_label:
+                    payload['new_orgs'] = [{'label': entity_ctx_for_workflow.pending_org_label, 'pending_id': entity_ctx_for_workflow.pending_org_id}]
             
             # Clear old active workflows for this thread to prevent duplicates
             supabase.table('conversation_workflows').update({'status': 'cancelled'}).eq('thread_id', session_id).eq('status', 'active').execute()
@@ -536,8 +484,12 @@ async def execute_planned_actions(
             
             msg_lines = ["📋 I found these items:"]
             item_num = 1
-            if new_orgs:
-                for org_info in new_orgs:
+            # Build new_orgs list from EntityContext for display
+            new_orgs_display = []
+            if entity_ctx_for_workflow and entity_ctx_for_workflow.pending_org_label:
+                new_orgs_display = [{'label': entity_ctx_for_workflow.pending_org_label, 'pending_id': entity_ctx_for_workflow.pending_org_id}]
+            if new_orgs_display:
+                for org_info in new_orgs_display:
                     msg_lines.append(f"  {item_num}. 🏢 New client: {org_info['label']}")
                     item_num += 1
             for sig in signals:
@@ -751,6 +703,15 @@ async def execute_planned_actions(
                 dedup_org_id = action.params.get("organization_id") or action.organization_id or ""
                 dedup_raw = f"{title.lower().strip()}:{dedup_org_id}"
                 dedup_key = hashlib.md5(dedup_raw.encode()).hexdigest()[:16] if title else None
+                # Build EntityContext from full text for guaranteed org linkage
+                _entity_ctx = None
+                if text:
+                    try:
+                        from core.lib.entity_context import extract_context_from_source
+                        _entity_ctx = await extract_context_from_source(text, cached_entities=_cached_entities)
+                    except Exception as ec_e:
+                        audit_log_sync("executor", "WARNING", f"EntityContext extraction failed (non-critical): {ec_e}")
+
                 result = await create_task_direct(
                         title=title,
                         dedup_key=dedup_key,
@@ -767,6 +728,7 @@ async def execute_planned_actions(
                         # the app shows it as the "chief of staff" context on
                         # the focal card.
                         notes=text[:500] if text else None,
+                        entity_context=_entity_ctx,
                     )
                 if result.get("action") == "created":
                     results.append(ExecutionResult("create_task", target_id=result.get("task_id"), title=action.human_label or title, values={"reminder_at": reminder_at}))
@@ -796,6 +758,15 @@ async def execute_planned_actions(
                 from core.pulse.tools import create_note_direct
                 # Guard 2c: Fall back to resolved_entity if planner didn't provide organization_name
                 note_org_name = action.params.get("organization_name") or resolved_entity
+                # Build EntityContext from full text for guaranteed org linkage
+                _note_entity_ctx = None
+                if text:
+                    try:
+                        from core.lib.entity_context import extract_context_from_source
+                        _note_entity_ctx = await extract_context_from_source(text, cached_entities=_cached_entities)
+                    except Exception as ec_e:
+                        audit_log_sync("executor", "WARNING", f"EntityContext extraction failed for note (non-critical): {ec_e}")
+
                 result = await create_note_direct(
                         content=content,
                         source=source,
@@ -803,6 +774,7 @@ async def execute_planned_actions(
                         organization_name=note_org_name,
                         session_id=session_id,
                         active_anchor=active_anchor,
+                        entity_context=_note_entity_ctx,
                     )
                 if result.get("action") == "filed":
                     results.append(ExecutionResult("create_note", target_id=result.get("memory_id"), title=action.human_label or "Note created"))
@@ -828,6 +800,15 @@ async def execute_planned_actions(
 
             try:
                 from core.pulse.tools import create_task_direct
+                # Build EntityContext from full text for guaranteed org linkage
+                _event_entity_ctx = None
+                if text:
+                    try:
+                        from core.lib.entity_context import extract_context_from_source
+                        _event_entity_ctx = await extract_context_from_source(text, cached_entities=_cached_entities)
+                    except Exception as ec_e:
+                        audit_log_sync("executor", "WARNING", f"EntityContext extraction failed for event (non-critical): {ec_e}")
+
                 result = await create_task_direct(
                         title=title,
                         dedup_key=event_dedup_key,
@@ -836,6 +817,7 @@ async def execute_planned_actions(
                         priority="important",
                         organization_name=action.params.get("organization_name"),
                         notes=text[:500] if text else None,
+                        entity_context=_event_entity_ctx,
                     )
                 if result.get("action") == "created":
                     results.append(ExecutionResult("create_event", target_id=result.get("task_id"), title=action.human_label or title, values={"reminder_at": event_time}))
@@ -890,13 +872,13 @@ async def execute_planned_actions(
         for r in results
     ) and text:
         try:
-            new_orgs = await _detect_new_orgs_and_create_pending(text, chat_id, cached_entities=_cached_entities)
-            if new_orgs and not suppress_telegram:
+            from core.lib.entity_context import extract_context_from_source
+            ctx = await extract_context_from_source(text, cached_entities=_cached_entities, timing="sync")
+            if ctx.pending_org_label and not suppress_telegram:
                 org_lines = ["🏢 *New organization detected:*"]
-                for org_info in new_orgs:
-                    org_lines.append(
-                        f"  • {org_info['label']} — reply `g{org_info['pending_id']} yes` to approve"
-                    )
+                org_lines.append(
+                    f"  • {ctx.pending_org_label} — reply `g{ctx.pending_org_id} yes` to approve"
+                )
                 await send_telegram(chat_id, "\n".join(org_lines))
         except Exception as e:
             audit_log_sync("executor", "WARNING", f"NOTE real-time org detection failed (non-critical): {e}")

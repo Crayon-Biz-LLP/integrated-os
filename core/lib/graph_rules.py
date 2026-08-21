@@ -1218,3 +1218,35 @@ TYPE_TO_DANNY_EDGE = {
     "cluster": "OWNS",
     "task": "RELATES_TO"
 }
+
+
+def create_pending_involved_edge(
+    task_label: str,
+    person_label: str,
+    source_text: str = "",
+) -> bool:
+    """Create a pending INVOLVES edge between a task and a person.
+
+    Both nodes might be pending (not yet approved). The edge goes through
+    pending_graph_edges for HITL approval.
+
+    Called by the enrichment queue when EntityContext has person information.
+    """
+    try:
+        result = insert_pending_edge(
+            source_label=task_label,
+            target_label=person_label,
+            relationship="INVOLVES",
+            source_info={
+                "source_text": source_text[:200] if source_text else "",
+                "source_table": "entity_context",
+                "source_type": "task",
+                "target_type": "person",
+            }
+        )
+        if result and result.get("status") in ("inserted", "deduped"):
+            return True
+    except Exception as e:
+        audit_log_sync("graph_rules", "WARNING",
+            f"Failed to create pending INVOLVES edge ({task_label} → {person_label}): {e}")
+    return False

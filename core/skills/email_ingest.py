@@ -11,7 +11,7 @@ from core.lib.constants import EmailStatus
 from core.lib.people_utils import normalize_person_name, is_blocklisted_person
 from core.lib.duplicate_guard import check_duplicate
 from core.retrieval.pipeline import schedule_index_memory
-from core.pulse.entity_extractor import extract_and_link_entities
+from core.lib.entity_context import extract_context_from_source
 from core.services.db import (
     active_user_ids, channel_tenant_scope, maybe_single_safe, tenant_aware_client,
     tenant_scope,
@@ -20,7 +20,7 @@ from core.services.google_service import get_cached_service
 from core.lib.time_utils import compute_expires_at
 from core.services.llm import call_gemini_classify
 
-# Tenant #1 (Danny) archive Gmail label — the SINGLE source of truth. Used
+# Tenant #1 archive Gmail label — the SINGLE source of truth. Used
 # as the value seeded into core_config by scripts/seed_tenant1_m6_config.py.
 # NOT a runtime fallback — a tenant without an 'email_archive_label' row
 # scans INBOX-wide (see _archive_label_filter).
@@ -168,7 +168,11 @@ Output ONLY a concise 1-2 sentence note about the relationship context."""
         }).execute()
         memory_id = result.data[0]['id']
         schedule_index_memory(memory_id, note_content, "relationship_note", "email_ingest")
-        extract_and_link_entities(note_content, str(memory_id), 'memory')
+        ctx = await extract_context_from_source(note_content, timing="async")
+        if ctx.organization_id:
+            supabase.table('memories').update({'organization_id': ctx.organization_id}).eq('id', memory_id).execute()
+        elif ctx.pending_org_id:
+            supabase.table('memories').update({'pending_org_id': ctx.pending_org_id}).eq('id', memory_id).execute()
         print(f"Relationship note written for {sender_name}")
     except Exception as e:
         print(f"Relationship note write failed: {e}")

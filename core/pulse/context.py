@@ -136,13 +136,48 @@ class ContextProvider:
             return cached
             
         res = supabase.table('tasks')\
-            .select('id, title, organization_id, priority, created_at, reminder_at, status, direction, committed_to')\
+            .select('id, title, organization_id, pending_org_id, priority, created_at, reminder_at, status, direction, committed_to')\
             .eq('is_current', True)\
             .not_.in_('status', ['done', 'cancelled'])\
             .execute()
         tasks = res.data or []
         self.caches['tasks'].set(tasks)
         return tasks
+
+    def resolve_task_org(self, task: dict) -> str | None:
+        """Resolve task's org for graph traversal. Handles pending orgs.
+
+        Path 1: Approved org (fast)
+        Path 2: Pending org — find by label in graph_nodes
+        Path 3: Pending org still pending — use label for text-based retrieval
+        """
+        # Path 1: Approved org (fast)
+        if task.get('organization_id'):
+            return task['organization_id']
+
+        # Path 2: Pending org — find by label
+        if task.get('pending_org_id'):
+            try:
+                pending = supabase.table('pending_nodes').select('label').eq(
+                    'id', task['pending_org_id']
+                ).single().execute()
+
+                if pending.data:
+                    label = pending.data['label']
+
+                    # Try approved graph_node first
+                    org_node = supabase.table('graph_nodes').select('id').ilike(
+                        'label', label
+                    ).eq('type', 'organization').eq('is_current', True).single().execute()
+                    if org_node.data:
+                        return org_node.data['id']
+
+                    # Org is still pending — return label for text-based retrieval
+                    return f"pending:{label}"
+            except Exception:
+                pass
+
+        return None
         
     async def get_calendar_events(self, target_date):
         cached = self.caches['calendar'].get()
@@ -438,7 +473,7 @@ class ContextProvider:
         Args:
             query_text: The user's query for semantic matching.
             max_chars: Maximum formatted output length.
-            entity_name: Optional entity to filter tasks by (e.g. "Ashraya").
+            entity_name: Optional entity to filter tasks by (e.g. "AcmeCorp").
                         When provided, only tasks related to this entity are returned.
         """
         from core.features import is_org_routing_enabled
@@ -448,13 +483,13 @@ class ContextProvider:
         )
         org_map = {o['id']: o['name'] for o in (orgs or [])}
         
-        # Entity-aware task filtering — when a specific entity is resolved (e.g. "Ashraya"),
+        # Entity-aware task filtering — when a specific entity is resolved (e.g. "AcmeCorp"),
         # only show tasks that belong to that entity.
         if entity_name:
             entity_lower = entity_name.lower().strip()
             
             # Migration 76: for a PERSON entity, also match any of the person's
-            # aliases (e.g. "Sunju" in task titles when entity is "Sunjula Daniel").
+            # aliases (e.g. "Jane" in task titles when entity is "Jane Doe").
             person_terms = {entity_lower}
             try:
                 from core.lib.graph_rules import _build_person_index

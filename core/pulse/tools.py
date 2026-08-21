@@ -44,12 +44,13 @@ async def create_task_direct(
     dedup_key: str = None,
     project_name: str = None,  # Kept for backward compat — no longer used
     notes: str = None,  # Original message context — shown on the app's focal card
+    entity_context=None,  # EntityContext from extract_context_from_source
 ) -> dict:
     """Direct task creation — no process_single_dump dependency.
 
     Tasks are assigned to orgs directly (no projects).
-    Resolves organization_name to ID via DB lookup when not already provided.
-    Uses entity_linker for deterministic entity resolution BEFORE creation.
+    Uses entity_context for org resolution when available (guaranteed linkage).
+    Falls back to entity_linker for backward compatibility.
     Returns {"action": "created"|"skipped"|"error", "task_id": id, "reason": str}.
     """
     task_id = None
@@ -65,28 +66,33 @@ async def create_task_direct(
                 audit_log_sync("tools", "INFO", f"Direct create skipped (dedup): {title}")
                 return {"action": "skipped", "task_id": exist.data[0]['id']}
 
-        # Run deterministic entity resolution before resolving names
-        from core.lib.entity_linker import resolve_entities
-        entity_resolution = resolve_entities(
-            text=title,
-            planner_org_name=organization_name,
-            planner_proj_name=project_name,
-            write_signal_on_miss=True,
-        )
+        # ── Resolve org from EntityContext (primary path) ──
+        resolved_org_id = None
+        pending_org_id = None
 
-        # Use resolved entities — override planner's guess with deterministic result
-        if entity_resolution.organization_id:
-            organization_id = entity_resolution.organization_id
-            organization_name = entity_resolution.organization_name
+        if entity_context:
+            # EntityContext carries org from extract_context_from_source
+            resolved_org_id = entity_context.primary_org_id()
+            pending_org_id = entity_context.primary_pending_org_id()
+
+        # ── Fallback: ad-hoc resolution (backward compat for callers without EntityContext) ──
+        if not resolved_org_id and not pending_org_id:
+            from core.lib.entity_linker import resolve_entities
+            entity_resolution = resolve_entities(
+                text=title,
+                planner_org_name=organization_name,
+                planner_proj_name=project_name,
+                write_signal_on_miss=True,
+            )
+            if entity_resolution.organization_id:
+                resolved_org_id = entity_resolution.organization_id
+                organization_name = entity_resolution.organization_name
 
         # Resolve org name→ID if not already provided
-        if not organization_id and organization_name:
+        if not resolved_org_id and not pending_org_id and organization_name:
             resolved_org = _resolve_org_id(organization_name)
             if resolved_org:
-                organization_id = resolved_org
-
-        # Projects are intentionally removed. Tasks are assigned to orgs directly.
-        resolved_org_id = organization_id
+                resolved_org_id = resolved_org
 
         insert_data = {
             "title": title,
@@ -99,6 +105,8 @@ async def create_task_direct(
         }
         if resolved_org_id:
             insert_data["organization_id"] = resolved_org_id
+        if pending_org_id:
+            insert_data["pending_org_id"] = pending_org_id
         if reminder_at:
             insert_data["reminder_at"] = reminder_at
         if deadline:
@@ -156,6 +164,9 @@ async def create_task_direct(
             content=title,
             related_id=None,  # Projects retired — tasks live under orgs
             related_org_id=resolved_org_id,
+            full_text=notes or title,  # Pass full text for better entity detection
+            pending_org_id=pending_org_id,
+            entity_context=entity_context.to_dict() if entity_context else None,
         )
 
         accumulate_action(ActionResult(action_type="task_create", status="executed", entity_id=task_id, human_label=title))
@@ -178,41 +189,53 @@ async def create_note_direct(
     session_id: str = None,
     active_anchor: dict = None,
     project_name: str = None,  # Kept for backward compat — no longer used
+    entity_context=None,  # EntityContext from extract_context_from_source
 ) -> dict:
     """Direct note creation — no process_single_dump dependency.
 
     Notes are assigned to orgs directly (no projects).
-    Uses entity_linker for deterministic entity resolution.
-    Falls back to planner's name→ID resolution if entity_linker misses.
+    Uses entity_context for org resolution when available (guaranteed linkage).
+    Falls back to entity_linker for backward compatibility.
     Stores thread provenance (session_id, active_anchor) in metadata for
     retroactive linking.
     Returns {"action": "filed"|"error", "memory_id": id, "reason": str}.
     """
     memory_id = None
     try:
-        # ── Layer 1: Deterministic entity resolution ──
-        from core.lib.entity_linker import resolve_entities
-        entity_resolution = resolve_entities(
-            text=content,
-            planner_org_name=organization_name,
-            planner_proj_name=project_name,
-            write_signal_on_miss=True,
-        )
+        # ── Resolve org from EntityContext (primary path) ──
+        resolved_org_id = None
+        pending_org_id = None
+        person_ids = []
+        person_names = []
 
-        # Override planner's guess with deterministic result
-        if entity_resolution.organization_id:
-            organization_id = entity_resolution.organization_id
-            organization_name = entity_resolution.organization_name
+        if entity_context:
+            resolved_org_id = entity_context.primary_org_id()
+            pending_org_id = entity_context.primary_pending_org_id()
+            person_ids = entity_context.person_ids
+            person_names = entity_context.person_names
+
+        # ── Fallback: ad-hoc resolution (backward compat) ──
+        if not resolved_org_id and not pending_org_id:
+            from core.lib.entity_linker import resolve_entities
+            entity_resolution = resolve_entities(
+                text=content,
+                planner_org_name=organization_name,
+                planner_proj_name=project_name,
+                write_signal_on_miss=True,
+            )
+            if entity_resolution.organization_id:
+                resolved_org_id = entity_resolution.organization_id
+                organization_name = entity_resolution.organization_name
+
+        # ── Fallback name→ID resolution ──
+        if not resolved_org_id and not pending_org_id and organization_name:
+            resolved_org = _resolve_org_id(organization_name)
+            if resolved_org:
+                resolved_org_id = resolved_org
 
         audit_log_sync("tools", "INFO",
             f"create_note_direct entity resolution: org={organization_name or '(none)'} "
-            f"source={entity_resolution.source}")
-
-        # ── Layer 2: Fallback name→ID resolution ──
-        if not organization_id and organization_name:
-            resolved_org = _resolve_org_id(organization_name)
-            if resolved_org:
-                organization_id = resolved_org
+            f"pending_org={pending_org_id or '(none)'}")
 
         # ── Build insert data with entity context ──
         # Note: project_id is intentionally not set — notes live under orgs directly
@@ -230,20 +253,22 @@ async def create_note_direct(
             "is_current": True,
             "version": 1,
         }
-        if organization_id:
-            insert_data["organization_id"] = organization_id
+        if resolved_org_id:
+            insert_data["organization_id"] = resolved_org_id
+        if pending_org_id:
+            insert_data["pending_org_id"] = pending_org_id
 
         # Build metadata with all available entity context
         metadata = {}
-        if organization_id:
-            metadata["organization_id"] = organization_id
+        if resolved_org_id:
+            metadata["organization_id"] = resolved_org_id
         if organization_name:
             metadata["organization_name"] = organization_name
-        # Store person entities from resolution (no column on memories, so metadata is the path)
-        if entity_resolution.person_ids:
-            metadata["person_ids"] = entity_resolution.person_ids
-        if entity_resolution.person_names:
-            metadata["person_names"] = entity_resolution.person_names
+        # Store person entities (from EntityContext or fallback)
+        if person_ids:
+            metadata["person_ids"] = person_ids
+        if person_names:
+            metadata["person_names"] = person_names
 
         # ── Layer 3: Thread provenance for retroactive linking ──
         if session_id:
@@ -301,7 +326,10 @@ async def create_note_direct(
             target_id=memory_id,
             content=content,
             related_id=source,
-            related_org_id=organization_id,
+            related_org_id=resolved_org_id,
+            full_text=content,
+            pending_org_id=pending_org_id,
+            entity_context=entity_context.to_dict() if entity_context else None,
         )
 
         accumulate_action(ActionResult(action_type="note_create", status="executed", entity_id=memory_id, human_label=content[:80]))
@@ -420,7 +448,7 @@ def update_task_status(task_id: int, status: str = "done", duration_mins: int = 
         return f"FAIL: Error updating task {task_id}: {e}"
 
 async def create_person(name: str, context: str = "", source: str = "tools") -> dict:
-    """Create a person graph node + Danny KNOWS edge (graph-first, mirror removed).
+    """Create a person graph node + user KNOWS edge (graph-first, mirror removed).
 
     Returns {"success": bool, "node_id": str|None, "message": str}.
     The node's UUID is the person id everywhere (migration 75).

@@ -446,6 +446,16 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
             if not signal_decisions and decision == "confirm":
                 signal_decisions = [{"index": i, "decision": "confirm"} for i in range(len(signals_list))]
 
+            # Deserialize EntityContext from payload (if stored at creation time)
+            entity_ctx_dict = payload.get("entity_context")
+            entity_ctx = None
+            if entity_ctx_dict:
+                try:
+                    from core.lib.entity_context import EntityContext
+                    entity_ctx = EntityContext.from_dict(entity_ctx_dict)
+                except Exception as ec_e:
+                    audit_log_sync("workflow", "WARNING", f"Failed to deserialize EntityContext: {ec_e}")
+
             # Cache active tasks once for task_closure matching
             active_tasks = []
             for sd in signal_decisions:
@@ -466,11 +476,11 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
                     organization_name = list(approved_orgs.keys())[0]
 
                 if sig_type in ("deadline", "calendar_event"):
-                    res = await create_task_direct(title=title, reminder_at=reminder_at, organization_name=organization_name)
+                    res = await create_task_direct(title=title, reminder_at=reminder_at, organization_name=organization_name, entity_context=entity_ctx)
                     if res.get("action") == "created":
                         reply_text += f"\n✅ Task created: {title}"
                 elif sig_type == "task_imperative":
-                    res = await create_task_direct(title=title, reminder_at=reminder_at, organization_name=organization_name)
+                    res = await create_task_direct(title=title, reminder_at=reminder_at, organization_name=organization_name, entity_context=entity_ctx)
                     if res.get("action") == "created":
                         reply_text += f"\n✅ Task created: {title}" 
                 elif sig_type == "task_closure":

@@ -26,13 +26,14 @@ def enqueue_enrichment(
     content: str,
     related_id: str = None,
     related_org_id: str = None,
+    full_text: str = None,           # NEW: original message text
+    pending_org_id: int = None,      # NEW: pending org from EntityContext
+    entity_context: dict = None,     # NEW: serialized EntityContext
 ) -> bool:
     """Enqueue an enrichment job. Returns True if queued, False if skipped/duplicate.
 
-    Replaces asyncio.create_task(_enrich_task_for_graph(...)) and
-    asyncio.create_task(_enrich_note_for_graph(...)).
-
-    Accepts related_org_id for creating task→organization BELONGS_TO edges.
+    Accepts entity_context from extract_context_from_source() to avoid
+    re-extracting entities in the enrichment queue.
 
     Uses SELECT-first-then-INSERT pattern (same as schedule_index_memory)
     because PostgREST cannot reliably target partial unique indexes
@@ -62,6 +63,12 @@ def enqueue_enrichment(
         }
         if related_org_id:
             insert_data["related_org_id"] = related_org_id
+        if full_text:
+            insert_data["full_text"] = full_text
+        if pending_org_id:
+            insert_data["pending_org_id"] = pending_org_id
+        if entity_context:
+            insert_data["entity_context"] = json.dumps(entity_context)
 
         supabase.table("pending_enrichment_jobs").insert(insert_data).execute()
         return True
@@ -81,7 +88,8 @@ async def process_pending_enrichment(max_jobs: int = 3) -> int:
     try:
         rows = (
             supabase.table("pending_enrichment_jobs")
-            .select("id, job_type, target_type, target_id, content, related_id, retry_count")
+            .select("id, job_type, target_type, target_id, content, related_id, retry_count, "
+                    "related_org_id, full_text, pending_org_id, entity_context")
             .eq("status", "pending")
             .order("created_at", desc=False)
             .limit(max_jobs)
@@ -102,6 +110,17 @@ async def process_pending_enrichment(max_jobs: int = 3) -> int:
         content = job["content"]
         related_id = job.get("related_id")
         related_org_id = job.get("related_org_id")
+        full_text = job.get("full_text")
+        pending_org_id = job.get("pending_org_id")
+        entity_context_raw = job.get("entity_context")
+
+        # Parse entity_context from JSONB
+        entity_context = None
+        if entity_context_raw:
+            try:
+                entity_context = json.loads(entity_context_raw) if isinstance(entity_context_raw, str) else entity_context_raw
+            except Exception:
+                entity_context = None
 
         # Atomic claim — call RPC
         try:
@@ -117,12 +136,15 @@ async def process_pending_enrichment(max_jobs: int = 3) -> int:
         success = False
         if job_type == "task_graph":
             success = await _process_task_graph_enrichment(
-                target_id=target_id, content=content, related_id=related_id, related_org_id=related_org_id
+                target_id=target_id, content=content, related_id=related_id,
+                related_org_id=related_org_id, full_text=full_text,
+                pending_org_id=pending_org_id, entity_context=entity_context,
             )
         elif job_type == "note_enrich":
             success = await _process_note_enrichment(
                 memory_id=target_id, content=content, source=related_id or "enrichment_queue",
-                related_org_id=related_org_id,
+                related_org_id=related_org_id, full_text=full_text,
+                pending_org_id=pending_org_id, entity_context=entity_context,
             )
         elif job_type == "doc_enrich":
             success = await _process_doc_enrichment(
@@ -175,13 +197,13 @@ async def process_pending_enrichment(max_jobs: int = 3) -> int:
 
 
 async def _process_task_graph_enrichment(
-    target_id: int, content: str, related_id: str = None, related_org_id: str = None
+    target_id: int, content: str, related_id: str = None, related_org_id: str = None,
+    full_text: str = None, pending_org_id: int = None, entity_context: dict = None,
 ) -> bool:
-    """Process a task_graph enrichment job: graph edges + entity extraction.
+    """Process a task_graph enrichment job: graph edges + entity linkage.
 
-    Now creates task→org BELONGS_TO edge when related_org_id is provided.
-    Also consumes entity extraction return values to backfill organization_id
-    on the task if it was not set during creation.
+    Uses pre-extracted EntityContext when available (no re-extraction).
+    Creates task→org BELONGS_TO edge and task→person INVOLVES edges.
     """
     # --- PREVENTION GUARD ---
     if content and ('[TEST]' in content or content in ['Valid Event', 'Test Event', 'Test Note', 'Test Note for Enrichment']):
@@ -190,36 +212,61 @@ async def _process_task_graph_enrichment(
 
     try:
         from core.pulse.graph import write_graph_edges_for_task
-        from core.pulse.entity_extractor import extract_and_link_entities
 
-        # 1. Write graph edges — now includes task→org BELONGS_TO
+        # 1. Write graph edges — task→org BELONGS_TO
+        org_id_for_edges = related_org_id
+        if not org_id_for_edges and entity_context:
+            org_id_for_edges = entity_context.get("organization_id")
+
         await write_graph_edges_for_task(
             task_id=target_id, task_title=content,
-            organization_id=related_org_id
+            organization_id=org_id_for_edges
         )
 
-        # 2. Entity extraction — CONSUME return values to backfill org_id
-        org_candidates = await extract_and_link_entities(
-            content, target_id, "task"
-        )
+        # 2. Create person→task INVOLVES edges from EntityContext
+        if entity_context:
+            person_ids = entity_context.get("person_ids", [])
+            pending_person_ids = entity_context.get("pending_person_ids", [])
+            person_names = entity_context.get("person_names", [])
 
-        # 3. If task was created without org_id but entity extraction found one, UPDATE it
-        if org_candidates and not related_org_id:
-            found_org_id = org_candidates[0]
-            supabase = tenant_aware_client()
-            try:
-                task_check = supabase.table('tasks').select('organization_id').eq('id', target_id).limit(1).execute()
-                if task_check.data and task_check.data[0].get('organization_id') is None:
-                    supabase.table('tasks').update({'organization_id': found_org_id}).eq('id', target_id).execute()
-                    audit_log_sync(
-                        "enrichment_queue", "INFO",
-                        f"Backfilled organization_id={found_org_id} for task {target_id} from entity extraction"
+            from core.lib.graph_rules import create_pending_involved_edge
+            for i, person_id in enumerate(person_ids + pending_person_ids):
+                person_name = person_names[i] if i < len(person_names) else ""
+                if person_name:
+                    create_pending_involved_edge(
+                        task_label=content,
+                        person_label=person_name,
+                        source_text=entity_context.get("source_text", ""),
                     )
-            except Exception as fb_err:
-                audit_log_sync(
-                    "enrichment_queue", "WARNING",
-                    f"Failed to backfill org_id for task {target_id}: {fb_err}"
-                )
+
+        # 3. Entity extraction — use extract_context_from_source with full text
+        if entity_context:
+            # Context already extracted at creation time — skip LLM call
+            audit_log_sync("enrichment_queue", "INFO",
+                f"Skipped entity extraction for task {target_id} — context pre-extracted")
+        else:
+            # Backward compat: extract with full text (not just title)
+            from core.lib.entity_context import extract_context_from_source
+            fallback_ctx = await extract_context_from_source(
+                full_text or content, timing="async"
+            )
+
+            # Backfill organization_id if extraction found one
+            if fallback_ctx.organization_id and not related_org_id and not pending_org_id:
+                supabase = tenant_aware_client()
+                try:
+                    task_check = supabase.table('tasks').select('organization_id').eq('id', target_id).limit(1).execute()
+                    if task_check.data and task_check.data[0].get('organization_id') is None:
+                        supabase.table('tasks').update({'organization_id': fallback_ctx.organization_id}).eq('id', target_id).execute()
+                        audit_log_sync(
+                            "enrichment_queue", "INFO",
+                            f"Backfilled organization_id={fallback_ctx.organization_id} for task {target_id}"
+                        )
+                except Exception as fb_err:
+                    audit_log_sync(
+                        "enrichment_queue", "WARNING",
+                        f"Failed to backfill org_id for task {target_id}: {fb_err}"
+                    )
 
         return True
     except Exception as e:
@@ -231,18 +278,13 @@ async def _process_task_graph_enrichment(
 
 
 async def _process_note_enrichment(
-    memory_id: int, content: str, source: str, related_org_id: str = None
+    memory_id: int, content: str, source: str, related_org_id: str = None,
+    full_text: str = None, pending_org_id: int = None, entity_context: dict = None,
 ) -> bool:
-    """Process a note_enrich enrichment job: entity extraction + embedding + metadata backfill.
+    """Process a note_enrich enrichment job: entity linkage + embedding + metadata backfill.
 
-    Updates the memory row with:
-    - embedding vector (from get_embedding)
-    - organization_id in metadata (from entity extraction results)
-    - project_id in metadata (from entity extraction results)
-
-    This is the second layer of defense (Bridge B):
-    Layer 1: entity_linker.resolve_entities() runs at creation time in create_note_direct()
-    Layer 2: Entity extraction in enrichment queue backfills any IDs still missing
+    Uses pre-extracted EntityContext when available (no re-extraction).
+    Falls back to extract_and_link_entities for backward compatibility.
     """
     # --- PREVENTION GUARD ---
     if content and ('[TEST]' in content or content in ['Valid Event', 'Test Event', 'Test Note', 'Test Note for Enrichment']):
@@ -250,18 +292,24 @@ async def _process_note_enrichment(
         return True
 
     try:
-        from core.pulse.entity_extractor import extract_and_link_entities
         from core.llm import get_embedding
 
-        # 1. Entity extraction — CONSUME return values (org_candidates, proj_candidates)
-        org_candidates = await extract_and_link_entities(
-            content, memory_id, "memory"
-        )
+        # 1. Entity linkage — use EntityContext if available, otherwise extract
+        if entity_context:
+            # Context already extracted at creation time — skip LLM call
+            found_org_id = entity_context.get("organization_id") or related_org_id
+            audit_log_sync("enrichment_queue", "INFO",
+                f"Skipped entity extraction for note {memory_id} — context pre-extracted")
+        else:
+            # Backward compat: extract with full text using the single extraction pipeline
+            from core.lib.entity_context import extract_context_from_source
+            fallback_ctx = await extract_context_from_source(
+                full_text or content, timing="async"
+            )
+            found_org_id = fallback_ctx.organization_id or related_org_id
 
-        # 2. Backfill organization_id if missing and entity extraction found one
-        if org_candidates:
-            found_org_id = org_candidates[0]
-            # Check if note already has org_id in metadata
+        # 2. Backfill organization_id if missing
+        if found_org_id:
             try:
                 mem_check = maybe_single_safe(
                     supabase.table('memories').select('metadata').eq('id', memory_id).eq('is_current', True)
@@ -283,7 +331,7 @@ async def _process_note_enrichment(
                         }).eq('id', memory_id).eq('is_current', True).execute()
                         audit_log_sync(
                             "enrichment_queue", "INFO",
-                            f"Backfilled organization_id={found_org_id} for note {memory_id} from entity extraction"
+                            f"Backfilled organization_id={found_org_id} for note {memory_id}"
                         )
             except Exception as fb_err:
                 audit_log_sync(
@@ -326,12 +374,15 @@ async def _process_doc_enrichment(document_id: int, content: str) -> bool:
         return True
 
     try:
-        from core.pulse.entity_extractor import extract_and_link_entities
+        from core.lib.entity_context import extract_context_from_source
 
-        # 1. Entity extraction — use 'raw_dump' source type to track it back to the doc
-        await extract_and_link_entities(
-            content, document_id, "raw_dump"
-        )
+        # 1. Entity extraction — use single pipeline with full text
+        ctx = await extract_context_from_source(content, timing="async")
+        # Stamp org on document if found
+        if ctx.organization_id:
+            supabase.table('document_items').update({'organization_id': ctx.organization_id}).eq('id', document_id).execute()
+        elif ctx.pending_org_id:
+            supabase.table('document_items').update({'pending_org_id': ctx.pending_org_id}).eq('id', document_id).execute()
         return True
     except Exception as e:
         audit_log_sync(

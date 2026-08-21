@@ -20,7 +20,7 @@ import json
 import asyncio
 from datetime import datetime, timezone, timedelta
 from core.retrieval.pipeline import schedule_index_memory
-from core.pulse.entity_extractor import extract_and_link_entities
+from core.lib.entity_context import extract_context_from_source
 from core.services.db import tenant_aware_client
 from core.services.llm import call_gemini_classify
 from core.lib.time_utils import resolve_expiry
@@ -326,7 +326,11 @@ async def process_whatsapp_message(
             }).execute()
             memory_id = mem_result.data[0]['id']
             schedule_index_memory(memory_id, mem_content, "relationship_note", "whatsapp")
-            await extract_and_link_entities(mem_content, str(memory_id), 'memory')
+            ctx = await extract_context_from_source(mem_content, timing="async")
+            if ctx.organization_id:
+                supabase.table('memories').update({'organization_id': ctx.organization_id}).eq('id', memory_id).execute()
+            elif ctx.pending_org_id:
+                supabase.table('memories').update({'pending_org_id': ctx.pending_org_id}).eq('id', memory_id).execute()
         print(f"[fyi] {sender_name or sender_phone}: {message_text[:60]}")
         return {"status": "fyi", "classification": final_class}
 

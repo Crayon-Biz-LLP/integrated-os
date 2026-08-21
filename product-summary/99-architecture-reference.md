@@ -163,15 +163,28 @@ The planner queries 3 data planes to resolve ambiguous commands:
 
 ### Entity Resolution (Before Creation)
 
-Tasks and notes resolve their entity associations **before** creation, not after:
+Tasks and notes resolve their entity associations **before** creation via the **Entity Context Pipeline** — a single extraction function that replaces 5 legacy paths:
 
 ```
-text → _resolve_project_and_org_id(text)
-        ├── projects (name match)
-        ├── organizations (name match)
-        └── graph_nodes (people label match)
-      → (project_id, organization_id, resolved_org_name)
+text → extract_context_from_source(text)
+        ├── Phase 1: Deterministic detect_entities() (~200ms)
+        │     ├── N-gram scanning
+        │     ├── Pattern matching
+        │     └── Graph node lookup
+        ├── Phase 2: LLM extraction for unknowns (async)
+        │     └── Parallel extraction of orgs, persons, edges
+        ├── Phase 3: Reconciliation + pending node creation
+        │     └── Dedup, normalize, create pending_nodes
+        └── Phase 4: Personal org fallback (if no org detected)
+              └── Look up or lazily create "Personal" org
+      → EntityContext(org_id, pending_org_id, person_ids, edges)
 ```
+
+**Key properties:**
+- **Single pipeline**: All entity extraction goes through `extract_context_from_source()`
+- **Personal fallback**: Tasks without detected org get linked to "Personal"
+- **No orphan nodes**: Every task/note gets an org (detected or Personal)
+- **Timing parameter**: `timing="sync"` (before creation) or `timing="async"` (after creation)
 
 ### Enrichment Queue (Cold-Start-Safe)
 
@@ -183,13 +196,13 @@ create_task_direct()
   └── INSERT pending_enrichment_job (synchronous)
         └── sentinel piggyback processes within ~5 min
               └── write_graph_edges_for_task()
-              └── extract_and_link_entities()
+              └── extract_context_from_source() (if no EntityContext provided)
               └── get_embedding()
               
 document_confirm_route()
   ├── INSERT tasks/notes (synchronous)
   └── INSERT pending_enrichment_job (job_type='doc_enrich')
-        └── extract_and_link_entities(..., source_type='raw_dump')
+        └── Uses EntityContext from suggestion card (no re-extraction)
 ```
 
 | Before (broken) | After (safe) |
@@ -197,10 +210,11 @@ document_confirm_route()
 | `loop.create_task(enrich(...))` — killed by the serverless runtime on return | `enqueue_enrichment(...)` — synchronous DB insert, survives cold starts |
 | No retry — silent failure | 3-retry dead-letter lifecycle |
 | No visibility | `pending_enrichment_jobs` table with status tracking |
+| Redundant entity extraction | EntityContext passed through, no re-extraction |
 
 ### Multi-Intent Messages
 
-Messages with multiple intents (e.g., "Cancel that and close the Amita tasks") are handled via:
+Messages with multiple intents (e.g., "Cancel that and close the Jane tasks") are handled via:
 
 1. **Primary intent** — Classified normally, routed through action planner
 2. **secondary_actions** — Array of additional intents with confidence, processed after primary handler (threshold 0.5)
@@ -215,6 +229,7 @@ Messages with multiple intents (e.g., "Cancel that and close the Amita tasks") a
 
 | File | Purpose |
 |---|---|
+| `core/lib/entity_context.py` | `extract_context_from_source()` — single entity extraction pipeline |
 | `core/actions/planner.py` | `plan_actions()` — single LLM resolution + candidate pool |
 | `core/actions/executor.py` | Typed action execution with validation |
 | `core/actions/models.py` | `Action`, `Operation` dataclass definitions |
@@ -284,7 +299,7 @@ Query → LLM entity extraction (parallel) + lexical n-grams (parallel)
 |---|---|
 | **Thread types** | general (default), entity (org/project/person with scoped context), workflow (active batch operations) |
 | **Routing priority** | 1. Open workflow → 2. Exact entity match → 3. Prior bot question → 4. General fallback |
-| **Entity scoring** | Projects (90) > Orgs (80) > People (75) — "Anita" → person thread; "Marcus from Ashraya" → org thread |
+| **Entity scoring** | Projects (90) > Orgs (80) > People (75) — "Alice" → person thread; "John from AcmeCorp" → org thread |
 | **Person routing** | `_resolve_person_candidates()` via graph_nodes type='person', n-gram primary-topic detection |
 | **Summaries** | Eager — generated every 3rd user exchange via Flash Lite, always updated |
 | **Embeddings** | ALL exchange types embedded fire-and-forget (not just QUERY) |
@@ -531,3 +546,4 @@ docs_service = get_docs_service(creds)  # For Notebook LM sync
 | Jul 19-20 | 61 | Parallelization, streaming, voice overhaul, G1-G10 gap fixes, 15-query UAT |
 | Jul 20-21 | 62 | Hardened thread layer — person routing, eager summaries, all-exchange embeddings, cross-thread awareness, auto-archive |
 | Aug 14 | 73 | Clarifier question flow retired — queue-native graph HITL, silent low-confidence expiry gate (`pending → expired`), contradiction card hint, briefing check-in line (plans/73) |
+| Aug 21 | 74 | Unified Entity Context Pipeline — single extraction function, Personal org fallback, 5-tenant foundation fix, 3 bug fixes, 14 call sites consolidated |
