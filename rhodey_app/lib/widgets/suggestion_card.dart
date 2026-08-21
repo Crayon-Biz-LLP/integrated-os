@@ -31,7 +31,6 @@ class _SuggestionItem {
   String? owner;
   String? deadline;
   String? date;
-  String? orgHint;
   String? description;
   bool selected;
   bool edited;
@@ -47,7 +46,6 @@ class _SuggestionItem {
     this.owner,
     this.deadline,
     this.date,
-    this.orgHint,
     this.description,
     this.selected = true,
     this.edited = false,
@@ -68,7 +66,6 @@ class _SuggestionItem {
         'owner': owner,
         'deadline': deadline,
         'date': date,
-        'org_hint': orgHint,
         'description': description,
         'edited': edited,
       };
@@ -104,7 +101,6 @@ class _SuggestionCardState extends State<SuggestionCard> {
         owner: action['owner'],
         deadline: action['deadline'],
         date: action['date'],
-        orgHint: action['org_hint'],
         description: action['description'],
       ));
     }
@@ -143,7 +139,6 @@ class _SuggestionCardState extends State<SuggestionCard> {
     
     // Very simple inline edit dialog
     final titleCtrl = TextEditingController(text: item.title);
-    final orgCtrl = TextEditingController(text: item.orgHint);
     
     showDialog(
       context: context,
@@ -172,9 +167,7 @@ class _SuggestionCardState extends State<SuggestionCard> {
             onPressed: () {
               setState(() {
                 item.title = titleCtrl.text;
-                if (item.category == 'task') {
-                  item.orgHint = orgCtrl.text;
-                }
+
                 item.edited = true;
               });
               Navigator.pop(ctx);
@@ -317,12 +310,9 @@ class _SuggestionCardState extends State<SuggestionCard> {
                               ),
                               maxLines: 2, overflow: TextOverflow.ellipsis,
                             ),
-                            if (item.category == 'task' && (item.owner != null || item.orgHint != null))
+                            if (item.category == 'task' && item.owner != null)
                               Text(
-                                [
-                                  if (item.owner != null) '👤 ${item.owner}',
-                                  if (item.orgHint != null) '🏢 ${item.orgHint}',
-                                ].join(' · '),
+                                '👤 ${item.owner}',
                                 style: AppTheme.caption.copyWith(fontSize: 10, color: AppTheme.textTertiary),
                               ),
                             if (item.category == 'entity')

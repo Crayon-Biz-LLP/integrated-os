@@ -354,7 +354,7 @@ async def create_graph_node_with_db_record(
             msg = f"Approved node '{label}' ({node_type})"
             if node_type == 'organization':
                 msg = f"Approved organization '{label}'"
-            return {"success": True, "action": "approved", "message": msg, "inferred_edges": inferred}
+            return {"success": True, "action": "approved", "message": msg, "node_id": graph_node_id, "inferred_edges": inferred}
 
     except Exception as e:
         audit_log_sync("pulse", "ERROR", f"Error creating graph node with DB record: {e}")

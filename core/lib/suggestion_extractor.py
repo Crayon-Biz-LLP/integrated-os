@@ -16,7 +16,7 @@ from core.llm.constants import CLASSIFICATION_MODEL
 logger = logging.getLogger(__name__)
 
 SUGGESTION_EXTRACTION_PROMPT = """\
-Analyze this content and extract structured information, including actionable tasks and mentioned entities (people, organizations).
+Analyze this content and extract structured information, including actionable tasks.
 
 CONTENT:
 {text}
@@ -32,24 +32,14 @@ Return ONLY valid JSON:
       "owner": "<person name if mentioned, else null>",
       "date": "<ISO date for events, else null>",
       "deadline": "<ISO date for tasks, else null>",
-      "org_hint": "<org name if mentioned, else null>",
       "description": "<1-2 sentence context>"
-    }}
-  ],
-  "suggested_entities": [
-    {{
-      "type": "<person|organization>",
-      "label": "<Exact name of the entity>",
-      "confidence": <float 0.0-1.0>
     }}
   ]
 }}
 
 RULES:
 - suggested_actions = actionable items only, not passive observations
-- suggested_entities = explicitly mentioned people or organizations. Only include high-confidence entities.
 - If no actions needed, return empty suggested_actions
-- If no entities found, return empty suggested_entities
 - Deadlines must be absolute dates (2025-08-25, not 'next Friday')
 """
 
@@ -97,9 +87,6 @@ async def extract_suggestions(content: str) -> Optional[dict]:
         if "suggested_actions" not in parsed:
             parsed["suggested_actions"] = []
             
-        if "suggested_entities" not in parsed:
-            parsed["suggested_entities"] = []
-
         return parsed
 
     except json.JSONDecodeError as e:

@@ -1490,23 +1490,29 @@ async def _process_webhook(update: dict):
             
             # --- UNIFIED SUGGESTION EXTRACTION FOR MESSAGES ---
             # If the intent is TASK or NOTE and the message is from the app, check if it's rich enough for a suggestion card.
-            if intent in ('TASK', 'NOTE') and source == 'app':
+            if intent in ('TASK', 'NOTE') and source == 'web':
                 from core.lib.suggestion_extractor import extract_suggestions
+                from core.lib.entity_context import extract_context_from_source
+                
                 suggestions = await extract_suggestions(text)
                 if suggestions:
+                    # Run context extraction for entities
+                    ctx = await extract_context_from_source(text, timing="card")
+                    entities = ctx.detected_entities
                     tasks = suggestions.get("suggested_actions", [])
-                    entities = suggestions.get("suggested_entities", [])
                     
-                    if len(tasks) + len(entities) >= 2:
-                        # Rich content -> Show Suggestion Card via raw_dumps
-                        from core.pulse.graph import match_existing_nodes
-                        from core.lib.auth import get_tenant_id
+                    from core.pulse.graph import match_existing_nodes
+                    from core.lib.auth import get_tenant_id
+                    owner_id = get_tenant_id()
+
+                    if entities and owner_id:
+                        entities = match_existing_nodes(entities, owner_id)
                         
-                        owner_id = get_tenant_id()
-                        if entities and owner_id:
-                            entities = match_existing_nodes(entities, owner_id)
-                            suggestions["suggested_entities"] = entities
-                            
+                    suggestions["suggested_entities"] = entities
+
+                    new_entities = [e for e in entities if not e.get("existing_matches")]
+                    if new_entities or len(tasks) >= 2:
+                        # Rich content -> Show Suggestion Card via raw_dumps
                         from core.services.reply_delivery import deliver_outbound_reply
                         # Cancel any anaphora task
                         if _anaphora_task:
@@ -1523,13 +1529,10 @@ async def _process_webhook(update: dict):
                         supabase = tenant_aware_client()
                         with channel_tenant_scope():
                             try:
-                                # We use a fake source_id since there's no "document_id"
-                                # But we need an ID that the app can send back to confirm
-                                # Let's create an inbound raw_dump for the message if not already done,
-                                # or just use a dummy id since messages create tasks via /api/suggestions/confirm
                                 msg_dump_res = supabase.table('raw_dumps').insert({
                                     'content': text,
-                                    'source': 'telegram_bot',
+                                    'source': 'web',
+                                    'owner_id': owner_id,
                                     'direction': 'inbound',
                                     'message_type': 'text',
                                     'status': 'processed',
@@ -1541,13 +1544,15 @@ async def _process_webhook(update: dict):
 
                                 supabase.table('raw_dumps').insert({
                                     'content': "Suggestion Card",
-                                    'source': 'telegram_bot',
+                                    'source': 'web',
+                                    'owner_id': owner_id,
                                     'direction': 'outgoing',
                                     'message_type': 'suggestion',
                                     'status': 'completed',
                                     'sender': 'system',
                                     'metadata': {
-                                        'suggestion_breakdown': suggestions
+                                        'suggestion_breakdown': suggestions,
+                                        'entity_context': ctx.to_dict()
                                     }
                                 }).execute()
                             except Exception as e:

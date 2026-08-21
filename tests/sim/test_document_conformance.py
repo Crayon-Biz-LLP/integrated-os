@@ -11,9 +11,10 @@ class TestDocumentConformance:
         from api.index import app
         
         client = TestClient(app)
-        response = client.post("/api/document/confirm", json={
-            "document_id": -9999, # Fake ID
-            "selected_items": [{"type": "task", "title": "Test"}]
+        response = client.post("/api/suggestions/confirm", json={
+            "source_type": "document",
+            "source_id": -9999, # Fake ID
+            "selected_tasks": [{"type": "task", "title": "Test"}]
         })
         
         assert response.status_code in [401, 403, 404]
@@ -23,9 +24,10 @@ class TestDocumentConformance:
         from api.index import app
         client = TestClient(app)
         
-        response = client.post("/api/document/confirm", json={
-            "document_id": -9999,
-            "selected_items": [
+        response = client.post("/api/suggestions/confirm", json={
+            "source_type": "document",
+            "source_id": -9999,
+            "selected_tasks": [
                 {"type": "task", "title": "Audit code"},
                 {"type": "note", "title": "Meeting minutes"}
             ]

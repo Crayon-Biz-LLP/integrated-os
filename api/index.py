@@ -4777,7 +4777,8 @@ async def multimodal_input_route(request: Request):
                         "owner_id": owner_id,
                         "metadata": {
                             "document_id": document_id,
-                            "document_type": breakdown.get("document_type")
+                            "document_type": breakdown.get("document_type"),
+                            "entity_context": breakdown.get("entity_context")
                         }
                     }).execute()
                 except Exception as audit_e:
@@ -4796,6 +4797,7 @@ async def multimodal_input_route(request: Request):
                     "document_id": document_id,
                     "filename": filename,
                     "document_type": breakdown.get("document_type"),
+                            "entity_context": breakdown.get("entity_context"),
                     "summary": breakdown.get("summary"),
                     "key_facts": breakdown.get("key_facts", {}),
                     "suggested_actions": breakdown.get("suggested_actions", []),
@@ -4814,148 +4816,6 @@ async def multimodal_input_route(request: Request):
 
 
 # --- DOCUMENT INTELLIGENCE: CONFIRM AND CREATE ---
-@app.post("/api/document/confirm")
-async def document_confirm_route(request: Request):
-    """Confirm selected document items and batch-create tasks/events/notes.
-    
-    Body: {
-        "document_id": int,
-        "selected_items": [
-            {
-                "type": "task" | "event" | "note",
-                "title": str,
-                "owner": str | null,
-                "deadline": str | null,  // ISO date
-                "date": str | null,      // ISO date for events
-                "org_hint": str | null,
-                "description": str | null,
-                "edited": bool  // did user edit this item?
-            }
-        ]
-    }
-    """
-    owner_id = require_api_auth(request)
-    try:
-        body = await request.json()
-        document_id = body.get("document_id")
-        selected_items = body.get("selected_items", [])
-        
-        if not document_id:
-            raise HTTPException(status_code=400, detail="document_id required")
-        if not selected_items:
-            raise HTTPException(status_code=400, detail="No items selected")
-        
-        supabase = tenant_aware_client()
-        
-        # Ownership check
-        doc_res = supabase.table("documents").select("owner_id, extracted_text").eq("id", document_id).limit(1).execute()
-        if not doc_res.data:
-            raise HTTPException(status_code=404, detail="Document not found")
-        if doc_res.data[0].get("owner_id") != owner_id:
-            raise HTTPException(status_code=403, detail="Not authorized to confirm this document")
-        extracted_text = doc_res.data[0].get("extracted_text", "")
-        
-        created_items = []
-        created_entity_refs = []  # For compensation rollback
-        
-        try:
-            for item in selected_items:
-                item_type = item.get("type", "task")
-                title = item.get("title", "")
-                deadline = item.get("deadline")
-                date = item.get("date")
-                org_hint = item.get("org_hint")
-                description = item.get("description", "")
-                was_edited = item.get("edited", False)
-                
-                entity_id = None
-                
-                if item_type == "task":
-                    # Create task
-                    from core.pulse.tools import create_task_direct
-                    result = await create_task_direct(
-                        title=title,
-                        organization_name=org_hint,
-                        deadline=deadline,
-                        notes=description,
-                    )
-                    entity_id = result.get("task_id") if result else None
-                    if entity_id:
-                        created_entity_refs.append(("tasks", entity_id))
-                    
-                elif item_type == "event":
-                    # Events are tasks with reminder_at (no standalone event creation)
-                    from core.pulse.tools import create_task_direct
-                    result = await create_task_direct(
-                        title=title,
-                        organization_name=org_hint,
-                        reminder_at=date,
-                        notes=description,
-                    )
-                    entity_id = result.get("task_id") if result else None
-                    if entity_id:
-                        created_entity_refs.append(("tasks", entity_id))
-                    
-                elif item_type == "note":
-                    # Ingest as note
-                    from core.lib.ingest import ingest
-                    result = await ingest(
-                        text=f"{title}. {description}" if description else title,
-                        source="document_intelligence",
-                        classification="note",
-                        has_memory_value=True,
-                    )
-                    entity_id = result.get("message_id") if result else None
-                    if entity_id:
-                        created_entity_refs.append(("memories", entity_id))
-                
-                # Store the document item
-                supabase.table("document_items").insert({
-                    "owner_id": owner_id,
-                    "document_id": document_id,
-                    "item_type": item_type,
-                    "item_data": item,
-                    "created_entity_id": str(entity_id) if entity_id else None,
-                    "was_edited": was_edited,
-                }).execute()
-                
-                created_items.append({
-                    "type": item_type,
-                    "title": title,
-                    "entity_id": entity_id,
-                })
-                
-            # Layer 3 Conformance: enqueue doc_enrich to mine entities from the full body
-            if extracted_text:
-                from core.lib.enrichment_queue import enqueue_enrichment
-                enqueue_enrichment(
-                    job_type="doc_enrich",
-                    target_type="document",
-                    target_id=document_id,
-                    content=extracted_text
-                )
-                
-        except Exception as e:
-            # Compensation rollback on partial failure
-            print(f"Document confirm item creation failed, rolling back: {e}")
-            for table, eid in created_entity_refs:
-                try:
-                    supabase.table(table).delete().eq("id", eid).execute()
-                except Exception:
-                    pass
-            raise HTTPException(status_code=500, detail="Failed to create all items")
-            
-        return {
-            "success": True,
-            "created_items": created_items,
-            "count": len(created_items),
-        }
-    except Exception as e:
-        print(f"Document confirm error: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-
-# --- REGISTER DEVICE TOKEN (for push notifications) ---
 @app.post("/api/register-device")
 async def register_device_route(request: Request):
     """Register a device FCM token for push notifications."""
@@ -5838,19 +5698,24 @@ async def suggestions_confirm_route(request: Request):
         extracted_text = ""
         
         if source_type == "document":
-            doc_res = supabase.table("documents").select("owner_id, extracted_text").eq("id", source_id).limit(1).execute()
+            doc_res = supabase.table("documents").select("owner_id, extracted_text, parsed_breakdown").eq("id", source_id).limit(1).execute()
             if not doc_res.data:
                 raise HTTPException(status_code=404, detail="Document not found")
             if doc_res.data[0].get("owner_id") != owner_id:
                 raise HTTPException(status_code=403, detail="Not authorized")
             extracted_text = doc_res.data[0].get("extracted_text", "")
+            stored_ctx_dict = (doc_res.data[0].get("parsed_breakdown") or {}).get("entity_context")
         elif source_type == "message":
-            msg_res = supabase.table("raw_dumps").select("owner_id, content").eq("id", source_id).limit(1).execute()
+            msg_res = supabase.table("raw_dumps").select("owner_id, content, metadata").eq("id", source_id).limit(1).execute()
             if not msg_res.data:
                 raise HTTPException(status_code=404, detail="Message not found")
             if msg_res.data[0].get("owner_id") != owner_id:
                 raise HTTPException(status_code=403, detail="Not authorized")
             extracted_text = msg_res.data[0].get("content", "")
+            stored_ctx_dict = (msg_res.data[0].get("metadata") or {}).get("entity_context")
+            
+        from core.lib.entity_context import EntityContext
+        entity_context_obj = EntityContext.from_dict(stored_ctx_dict) if stored_ctx_dict else None
             
         created_items = []
         created_entity_refs = []
@@ -5885,13 +5750,32 @@ async def suggestions_confirm_route(request: Request):
                 if res and res.get('success'):
                     created_items.append({"type": node_type, "title": label, "entity_id": res.get("node_id")})
                     
+
+            # 1b. Merge user-selected entities into the metadata EntityContext
+            if entity_context_obj:
+                for item in created_items:
+                    if item["type"] == "organization" and not entity_context_obj.organization_id:
+                        entity_context_obj.organization_id = item["entity_id"]
+                        entity_context_obj.organization_name = item["title"]
+                    elif item["type"] == "person" and item["entity_id"] not in entity_context_obj.person_ids:
+                        if item["entity_id"]:
+                            entity_context_obj.person_ids.append(item["entity_id"])
+                            entity_context_obj.person_names.append(item["title"])
+                
+                # Apply Personal fallback if still no org
+                if not entity_context_obj.organization_id and not entity_context_obj.pending_org_id:
+                    personal_res = supabase.table('graph_nodes').select('id, label').ilike('label', 'Personal').eq('type', 'organization').eq('is_current', True).eq('owner_id', owner_id).limit(1).execute()
+                    if personal_res.data:
+                        entity_context_obj.organization_id = personal_res.data[0]['id']
+                        entity_context_obj.organization_name = personal_res.data[0]['label']
+
             # 2. Create tasks
             for item in selected_tasks:
                 item_type = item.get("type", "task")
                 title = item.get("title", "")
                 deadline = item.get("deadline")
                 date = item.get("date")
-                org_hint = item.get("org_hint")
+                
                 description = item.get("description", "")
                 
                 entity_id = None
@@ -5899,7 +5783,7 @@ async def suggestions_confirm_route(request: Request):
                 if item_type == "task":
                     result = await create_task_direct(
                         title=title,
-                        organization_name=org_hint,
+                        entity_context=entity_context_obj,
                         deadline=deadline,
                         notes=description,
                     )
@@ -5910,7 +5794,7 @@ async def suggestions_confirm_route(request: Request):
                 elif item_type == "event":
                     result = await create_task_direct(
                         title=title,
-                        organization_name=org_hint,
+                        entity_context=entity_context_obj,
                         reminder_at=date,
                         notes=description,
                     )

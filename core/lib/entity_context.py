@@ -50,6 +50,8 @@ class EntityContext:
     org_to_org_edges: list = field(default_factory=list)
     # [{source_label, target_label, relationship}]
     org_to_org_edge_labels: list = field(default_factory=list)
+    # List of {type, label, confidence, existing_matches}
+    detected_entities: list = field(default_factory=list)
     # Secondary org labels detected by LLM (for edge proposal)
 
     # Source tracking
@@ -219,7 +221,7 @@ def _find_existing_person(label: str, owner_id: str = None) -> Optional[dict]:
 
 # ── Entity processing ────────────────────────────────────────────────────────
 
-def _process_deterministic_entities(entities: list, ctx: EntityContext, owner_id: str = None):
+def _process_deterministic_entities(entities: list, ctx: EntityContext, owner_id: str = None, timing: str = "sync"):
     """Process deterministic entities (from detect_entities) into EntityContext."""
     for e in entities:
         if e.type == 'organization':
@@ -312,7 +314,7 @@ If no organizations or persons found, return {{"organizations": [], "persons": [
     return {"organizations": []}
 
 
-def _integrate_llm_result(llm_result: dict, ctx: EntityContext, owner_id: str = None):
+def _integrate_llm_result(llm_result: dict, ctx: EntityContext, owner_id: str = None, timing: str = "sync"):
     """Integrate LLM org + person detection results into EntityContext.
 
     Only adds orgs/persons that the deterministic layer missed.
@@ -351,7 +353,7 @@ def _integrate_llm_result(llm_result: dict, ctx: EntityContext, owner_id: str = 
                 ctx.org_to_org_edge_labels.append(label)
         else:
             # New org — create pending
-            pending_id = _create_pending_org(label, ctx.source_text, owner_id)
+            pending_id = _create_pending_org(label, ctx.source_text, owner_id) if timing != "card" else None
             if pending_id:
                 if is_primary and not ctx.pending_org_id and not ctx.organization_id:
                     ctx.pending_org_id = pending_id
@@ -364,6 +366,8 @@ def _integrate_llm_result(llm_result: dict, ctx: EntityContext, owner_id: str = 
     for person in persons:
         label = (person.get("name") or "").strip()
         confidence = person.get("confidence", 0.0)
+        if label and confidence >= 0.5:
+            ctx.detected_entities.append({"type": "person", "label": label, "confidence": confidence})
 
         if not label or len(label) < 2 or confidence < 0.5:
             continue
@@ -381,7 +385,7 @@ def _integrate_llm_result(llm_result: dict, ctx: EntityContext, owner_id: str = 
                 ctx.person_names.append(label)
         else:
             # Create pending person
-            pending_id = _create_pending_person(label, ctx.source_text, owner_id)
+            pending_id = _create_pending_person(label, ctx.source_text, owner_id) if timing != "card" else None
             if pending_id and pending_id not in ctx.pending_person_ids:
                 ctx.pending_person_ids.append(pending_id)
                 ctx.person_names.append(label)
@@ -482,7 +486,7 @@ async def extract_context_from_source(
     _propose_org_to_org_edges(ctx)
 
     # ── Phase 4: Personal org fallback (no org detected → use Personal) ──
-    if not ctx.organization_id and not ctx.pending_org_id:
+    if timing != "card" and not ctx.organization_id and not ctx.pending_org_id:
         try:
             from core.services.db import tenant_aware_client
             supabase = tenant_aware_client()

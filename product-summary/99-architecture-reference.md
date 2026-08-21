@@ -129,15 +129,18 @@ Single entry point: `document_extractor.extract_text(file_bytes, mime_type)`.
 
 ## Layer 2: Processing
 
-### Action Planner — The Single Pipeline
+### Action Planner — Dual Pipeline Processing
 
-All user intents route through a **unified Action Pipeline** — replacing the old 3-headed architecture (Webhook + Quick Process cron + Pulse staging sorter).
+Layer 2 processing uses a dual-path approach with a shared entity extraction foundation:
 
 ```
-User message → classify() → plan_actions() → executor()
-                                               ├── create_task_direct()
-                                               ├── create_note_direct()
-                                               └── update_task_status()
+Layer 2: Processing
+├── Main pipeline: classify() → plan_actions() → executor()
+│   └── Background channels (Telegram, WhatsApp, Email, Teams, Calls)
+├── Suggestion pipeline: extract_suggestions() → Suggestion Card → confirm
+│   └── Active channels (App messages + Document uploads)
+└── Shared entity extraction: extract_context_from_source()
+    └── Used by both pipelines for unified org/person linkage
 ```
 
 ### Typed Action Model
@@ -163,7 +166,7 @@ The planner queries 3 data planes to resolve ambiguous commands:
 
 ### Entity Resolution (Before Creation)
 
-Tasks and notes resolve their entity associations **before** creation via the **Entity Context Pipeline** — a single extraction function that replaces 5 legacy paths:
+Tasks and notes resolve their entity associations **before** creation via the **Entity Context Pipeline**. The suggestion pipeline isolates action extraction (extract_suggestions) from entity extraction (extract_context_from_source):
 
 ```
 text → extract_context_from_source(text)
@@ -181,7 +184,7 @@ text → extract_context_from_source(text)
 ```
 
 **Key properties:**
-- **Single pipeline**: All entity extraction goes through `extract_context_from_source()`
+- **Unified Entities**: All entity extraction (cards and backend) goes through `extract_context_from_source()`
 - **Personal fallback**: Tasks without detected org get linked to "Personal"
 - **No orphan nodes**: Every task/note gets an org (detected or Personal)
 - **Timing parameter**: `timing="sync"` (before creation) or `timing="async"` (after creation)
@@ -199,10 +202,10 @@ create_task_direct()
               └── extract_context_from_source() (if no EntityContext provided)
               └── get_embedding()
               
-document_confirm_route()
+suggestions_confirm_route()
   ├── INSERT tasks/notes (synchronous)
   └── INSERT pending_enrichment_job (job_type='doc_enrich')
-        └── Uses EntityContext from suggestion card (no re-extraction)
+        └── EntityContext is persisted in raw_dumps metadata and reused on confirm
 ```
 
 | Before (broken) | After (safe) |
@@ -210,7 +213,7 @@ document_confirm_route()
 | `loop.create_task(enrich(...))` — killed by the serverless runtime on return | `enqueue_enrichment(...)` — synchronous DB insert, survives cold starts |
 | No retry — silent failure | 3-retry dead-letter lifecycle |
 | No visibility | `pending_enrichment_jobs` table with status tracking |
-| Redundant entity extraction | EntityContext passed through, no re-extraction |
+| Redundant entity extraction | EntityContext stored in raw_dump metadata, reused on confirm |
 
 ### Multi-Intent Messages
 
