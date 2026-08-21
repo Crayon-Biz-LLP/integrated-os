@@ -1498,12 +1498,13 @@ async def _process_webhook(update: dict):
                 if suggestions:
                     # Run context extraction for entities
                     ctx = await extract_context_from_source(text, timing="card")
+                    
                     entities = ctx.detected_entities
                     tasks = suggestions.get("suggested_actions", [])
                     
                     from core.pulse.graph import match_existing_nodes
-                    from core.lib.auth import get_tenant_id
-                    owner_id = get_tenant_id()
+                    from core.services.db import get_tenant
+                    owner_id = get_tenant()
 
                     if entities and owner_id:
                         entities = match_existing_nodes(entities, owner_id)
@@ -1511,6 +1512,7 @@ async def _process_webhook(update: dict):
                     suggestions["suggested_entities"] = entities
 
                     new_entities = [e for e in entities if not e.get("existing_matches")]
+
                     if new_entities or len(tasks) >= 2:
                         # Rich content -> Show Suggestion Card via raw_dumps
                         from core.services.reply_delivery import deliver_outbound_reply

@@ -2,6 +2,7 @@
 import asyncio
 import os
 from supabase import create_client
+from core.services.db import tenant_scope
 
 
 async def main():
@@ -10,7 +11,7 @@ async def main():
         os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
     )
 
-    TEST_TENANT = 'e87f0279-0000-0000-0000-000000000000'
+    TEST_TENANT = 'e87f0279-3ec0-4875-af69-49894ee9da6f'
 
     print('=' * 60)
     print('MOCK UAT: Entity Context Pipeline')
@@ -73,11 +74,12 @@ async def main():
         extraction_method='test_uat_empty',
         source_text='Test task from UAT with empty context'
     )
-    task_id_a = await create_task_direct(
+    with tenant_scope(TEST_TENANT):
+        task_id_a = await create_task_direct(
         title='UAT Task A - Empty Context (should get Personal)',
-        owner_id=TEST_TENANT,
-        entity_context=empty_ctx
+                entity_context=empty_ctx
     )
+    task_id_a = task_id_a['task_id']
     print(f'   Task A created: {task_id_a}')
     if task_id_a:
         task_a = client.table('tasks').select(
@@ -86,7 +88,7 @@ async def main():
         has_org = bool(task_a.data.get('organization_id') or task_a.data.get('pending_org_id'))
         print(f'   Task A has org linkage: {has_org}')
         print(f'     organization_id: {task_a.data.get("organization_id")}')
-        print(f'     pending_org_id: {task_a.data[0].get("pending_org_id")}')
+        print(f'     pending_org_id: {task_a.data.get("pending_org_id")}')
         client.table('tasks').delete().eq('id', task_id_a).execute()
         print('   ✓ Cleaned up Task A')
 
@@ -96,11 +98,12 @@ async def main():
         extraction_method='test_uat_person',
         source_text='Test task with person'
     )
-    task_id_b = await create_task_direct(
+    with tenant_scope(TEST_TENANT):
+        task_id_b = await create_task_direct(
         title='UAT Task B - With Person',
-        owner_id=TEST_TENANT,
-        entity_context=person_ctx
+                entity_context=person_ctx
     )
+    task_id_b = task_id_b['task_id']
     print(f'   Task B created: {task_id_b}')
     if task_id_b:
         task_b = client.table('tasks').select(
