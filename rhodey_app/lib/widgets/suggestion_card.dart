@@ -153,12 +153,6 @@ class _SuggestionCardState extends State<SuggestionCard> {
               decoration: const InputDecoration(labelText: 'Title / Name'),
               style: AppTheme.bodySmall,
             ),
-            if (item.category == 'task')
-              TextField(
-                controller: orgCtrl,
-                decoration: const InputDecoration(labelText: 'Organization'),
-                style: AppTheme.bodySmall,
-              ),
           ],
         ),
         actions: [
