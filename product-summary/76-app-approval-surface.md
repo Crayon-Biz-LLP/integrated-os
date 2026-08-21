@@ -48,6 +48,13 @@ task re-opened, graph edge demoted (`emit_undo_correction`), Google sync
 un-applied where reversible. Undo is itself a ledger decision (`superseded_by`
 chain in `decisions`), so the audit trail stays honest.
 
+## Suggestion Cards (Active Ingestion)
+
+For active ingestion (App Chat messages & Document Uploads), the UI presents a **Suggestion Card** (`suggestion_card.dart`). 
+- **Smart Threshold:** Cards only interrupt the user if the backend detects *new* entities to learn, or multiple tasks to review. Simple tasks with known entities auto-execute silently.
+- **Unified Confirm:** Both document and chat suggestions are confirmed via a single endpoint (`/api/suggestions/confirm`).
+- **WYSIWYG Entity Linking:** The backend caches the exact `EntityContext` inside the card's `raw_dumps` metadata. When the user confirms, their UI choices (like `merge_with` an existing entity) are natively merged into this context, ensuring the tasks created are linked exactly as shown on the screen, without double LLM extraction.
+
 ## Where the routes live
 
 - Backend: `/api/auto-decisions/*` (confirm/reject/undo) in `api/index.py` +

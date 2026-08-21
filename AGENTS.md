@@ -148,6 +148,8 @@ Every change must pass the suite before it is considered done. See `tests/README
 - **Quick self-check before pushing**: `ruff check .` + `python3 scripts/check_marker_presence.py` + `python3 -m pytest tests/unit tests/sim -q --no-header -p no:cacheprovider` (hermetic). The pre-push hook runs the fast tier automatically.
 
 ## Session Anchored Summary (Trimmed)
+- **Aug 21 (Entity Context & Dual-Pipeline):** Consolidated 5 fragmented async extraction paths into a synchronous `extract_context_from_source` pipeline. Every task/note now has guaranteed org linkage (`organization_id` or `pending_org_id`, with a 'Personal' fallback). Clarified the Dual-Pipeline architecture: Active App channels (chat/docs) use `extract_suggestions` + `EntityContext` to generate Suggestion Cards; Passive channels use silent extraction. Fixed the broken App Chat Suggestion Card trigger (`source == 'web'`) and ensured 100% WYSIWYG task creation by persisting `EntityContext` in `raw_dumps` metadata. See `session-notes/77-aug21-unified-entity-extraction.md`.
+
 For full session-by-session history, see `session-notes/` in the project root. This file previously contained ~1700 lines of session summaries here — they have been moved to `session-notes/` to keep AGENTS.md manageable.
 
 ## How to Use
