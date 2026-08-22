@@ -23,6 +23,7 @@ class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
   final _todayCache = TodayCache();
   List<CalendarEventItem> _events = [];
   List<Map<String, dynamic>> _tasks = [];
+  bool _tasksExpanded = false;
   List<Map<String, dynamic>> _captures = [];
   bool _loading = true;
   String _eventError = '';
@@ -208,17 +209,21 @@ class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
                   if (_tasks.isNotEmpty) ...[
                     _SectionHeader(
                       title: 'Active Tasks',
-                      trailing: '${_tasks.length} items ▸',
+                      trailing: _tasksExpanded
+                          ? 'Show less ▴'
+                          : '${_tasks.length} items ▾',
+                      onTap: () => setState(() => _tasksExpanded = !_tasksExpanded),
                     ),
                     const SizedBox(height: 8),
-                    ..._tasks.take(5).map((t) {
+                    ...(_tasksExpanded ? _tasks : _tasks.take(5)).map((t) {
                       final taskId = t['id'] as int? ?? 0;
                       final title = t['title'] as String? ?? 'Untitled';
                       final deadline = t['deadline'] as String?;
                       final project = t['project_name'] as String?;
                       final organization = t['organization_name'] as String?;
+                      final organizationId = t['organization_id'] as String?;
                       final priority = t['priority'] as String?;
-                      final description = t['description'] as String?;
+                      final description = t['notes'] as String?;
                       return Dismissible(
                         key: ValueKey('task_$taskId'),
                         direction: DismissDirection.horizontal,
@@ -328,6 +333,7 @@ class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
                             description: description,
                             project: project,
                             organization: organization,
+                            organizationId: organizationId,
                             deadline: deadline,
                             priority: priority,
                           ),
@@ -434,6 +440,7 @@ class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
     String? description,
     String? project,
     String? organization,
+    String? organizationId,
     String? deadline,
     String? priority,
   }) {
@@ -481,7 +488,20 @@ class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
                 const SizedBox(height: 8),
               ],
               if (organization != null) ...[
-                _detailRow('Organization', organization),
+                InkWell(
+                  borderRadius: BorderRadius.circular(8),
+                  onTap: () => _showOrgPicker(ctx, taskId, organizationId, organization),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Row(
+                      children: [
+                        Expanded(child: _detailRow('Organization', organization)),
+                        const Icon(Icons.chevron_right,
+                            size: 16, color: AppTheme.textMuted),
+                      ],
+                    ),
+                  ),
+                ),
                 const SizedBox(height: 8),
               ],
               if (deadline != null) ...[
@@ -555,6 +575,166 @@ class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  void _showOrgPicker(
+    BuildContext detailCtx,
+    int taskId,
+    String? currentOrgId,
+    String? currentOrgLabel,
+  ) {
+    final orgs = <Map<String, dynamic>>[];
+    var loading = true;
+    var query = '';
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AppTheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (pickerCtx) => StatefulBuilder(
+        builder: (ctx, setState) {
+          if (loading) {
+            _api.getOrganizations().then((res) {
+              if (res.success && mounted) {
+                orgs.clear();
+                orgs.addAll(List<Map<String, dynamic>>.from(res.data ?? []));
+                setState(() => loading = false);
+              } else if (mounted) {
+                setState(() => loading = false);
+              }
+            });
+          }
+          final filtered = query.isEmpty
+              ? orgs
+              : orgs
+                  .where((o) => (o['label'] as String? ?? '')
+                      .toLowerCase()
+                      .contains(query.toLowerCase()))
+                  .toList();
+          return SafeArea(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Center(
+                    child: Container(
+                      width: 36,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: AppTheme.border.withValues(alpha: 0.5),
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    'Change organization',
+                    style: const TextStyle(
+                      fontFamily: 'PlusJakartaSans',
+                      fontSize: 17,
+                      fontWeight: FontWeight.w500,
+                      color: AppTheme.textPrimary,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    onChanged: (v) => setState(() => query = v),
+                    decoration: InputDecoration(
+                      hintText: 'Search organizations',
+                      prefixIcon: const Icon(Icons.search, size: 18),
+                      isDense: true,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: BorderSide(color: AppTheme.border),
+                      ),
+                      contentPadding:
+                          const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  if (loading)
+                    const Center(
+                      child: Padding(
+                        padding: EdgeInsets.all(24),
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    )
+                  else if (filtered.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.all(24),
+                      child: Text('No organizations found',
+                          style: TextStyle(color: AppTheme.textMuted)),
+                    )
+                  else
+                    Flexible(
+                      child: ListView.separated(
+                        shrinkWrap: true,
+                        itemCount: filtered.length,
+                        separatorBuilder: (_, _) => const Divider(height: 1),
+                        itemBuilder: (_, i) {
+                          final o = filtered[i];
+                          final id = o['id'] as String?;
+                          final selected = id == currentOrgId;
+                          return ListTile(
+                            dense: true,
+                            title: Text(
+                              o['label'] as String? ?? '',
+                              style: TextStyle(
+                                color: selected
+                                    ? AppTheme.green
+                                    : AppTheme.textPrimary,
+                                fontWeight: selected
+                                    ? FontWeight.w600
+                                    : FontWeight.w400,
+                              ),
+                            ),
+                            trailing: selected
+                                ? const Icon(Icons.check,
+                                    size: 18, color: AppTheme.green)
+                                : null,
+                            onTap: () async {
+                              if (id == null || id == currentOrgId) {
+                                Navigator.pop(ctx);
+                                return;
+                              }
+                              Navigator.pop(ctx);
+                              Navigator.pop(detailCtx);
+                              final res =
+                                  await _api.updateTaskOrganization(taskId, id);
+                              if (res.success && mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text(
+                                        'Linked to ${o['label'] ?? 'organization'}'),
+                                    duration: const Duration(seconds: 2),
+                                  ),
+                                );
+                              } else if (mounted) {
+                                ScaffoldMessenger.of(context).showSnackBar(
+                                  SnackBar(
+                                    content: Text(res.error ??
+                                        'Failed to update organization'),
+                                    backgroundColor: AppTheme.red,
+                                  ),
+                                );
+                              }
+                              await _loadAll();
+                            },
+                          );
+                        },
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          );
+        },
       ),
     );
   }
@@ -671,31 +851,36 @@ class _FocusCard extends StatelessWidget {
 class _SectionHeader extends StatelessWidget {
   final String title;
   final String? trailing;
-  const _SectionHeader({required this.title, this.trailing});
+  final VoidCallback? onTap;
+  const _SectionHeader({required this.title, this.trailing, this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Row(
-        children: [
-          Text(
-            title,
-            style: AppTheme.label.copyWith(
-              color: AppTheme.textTertiary,
-              fontSize: 11,
-            ),
-          ),
-          const Spacer(),
-          if (trailing != null)
+    return GestureDetector(
+      onTap: onTap,
+      behavior: HitTestBehavior.opaque,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: Row(
+          children: [
             Text(
-              trailing!,
-              style: AppTheme.caption.copyWith(
-                color: AppTheme.accent,
+              title,
+              style: AppTheme.label.copyWith(
+                color: AppTheme.textTertiary,
                 fontSize: 11,
               ),
             ),
-        ],
+            const Spacer(),
+            if (trailing != null)
+              Text(
+                trailing!,
+                style: AppTheme.caption.copyWith(
+                  color: AppTheme.accent,
+                  fontSize: 11,
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }

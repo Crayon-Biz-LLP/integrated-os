@@ -484,6 +484,31 @@ class ApiService {
     );
   }
 
+  // ── Org picker (task org correction) ───────────────────────
+
+  /// Lists the tenant's organizations for the task-detail org picker.
+  Future<ApiResult<List<Map<String, dynamic>>>> getOrganizations() async {
+    final result = await get('/api/organizations');
+    if (!result.success || result.data is! Map) {
+      return ApiResult.fail(result.error ?? 'Failed to load organizations');
+    }
+    final list = result.data['organizations'] as List? ?? [];
+    return ApiResult.ok(List<Map<String, dynamic>>.from(list));
+  }
+
+  /// Corrects a task's org via PATCH /api/tasks/{id} {organization_id}.
+  /// [orgId] must be a valid current org node UUID (tasks stay org-linked).
+  Future<ApiResult<dynamic>> updateTaskOrganization(
+    int taskId,
+    String orgId,
+  ) async {
+    return _send(
+      'PATCH',
+      '/api/tasks/$taskId',
+      body: {'organization_id': orgId},
+    );
+  }
+
   // ── Entity details (People tab consolidated into Entities) ─
 
   /// Open tasks mentioning a person (Entities edit dialog).
