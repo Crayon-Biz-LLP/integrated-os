@@ -98,7 +98,7 @@ async def _process_email_pending_decision(pending_id: int, decision: str, supaba
             from core.lib.entity_linker import resolve_entities
             entity_resolution = resolve_entities(
                 text=title,
-                planner_org_name=row.get('suggested_project'),
+                hint_org_name=row.get('suggested_project'),
                 write_signal_on_miss=True,
             )
             if entity_resolution.organization_name or entity_resolution.project_name:
@@ -110,15 +110,21 @@ async def _process_email_pending_decision(pending_id: int, decision: str, supaba
 
         ledger = []
         try:
-            from core.actions.planner import plan_actions
+            from core.lib.suggestion_extractor import extract_suggestions
+            from core.lib.entity_context import extract_context_from_source
             from core.actions.executor import execute_planned_actions
             from core.webhook.utils import build_action_ledger
             import os
             
             chat_id = int(os.getenv("TELEGRAM_CHAT_ID", "0"))
             original_text = row.get('message_text') or row.get('body') or title
-            actions = await plan_actions(text=original_text, title=title, intent="TASK", entity=resolved_entity)
+            ctx = await extract_context_from_source(original_text, timing="sync")
+            actions, _ = await extract_suggestions(text=original_text, title=title, intent="TASK", entity=resolved_entity)
             if actions:
+                for a in actions:
+                    if getattr(a, 'operation', '').startswith('create_') and not getattr(a, 'organization_id', None) and ctx.pending_org_id:
+                        a.organization_id = ctx.pending_org_id
+                        if hasattr(a, 'params'): a.params["organization_id"] = ctx.pending_org_id
                 results = await execute_planned_actions(actions, chat_id, text=original_text, source="email", entity=resolved_entity)
                 # Undo ledger (see core/webhook/utils.build_action_ledger) —
                 # persisted on the decision so undo can reverse side effects.

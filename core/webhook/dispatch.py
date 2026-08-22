@@ -478,11 +478,11 @@ async def _route_by_intent(intent: str, text: str, chat_id: int, session_id: str
         cid = set_decision_chain_id()
 
     handler_map = {
-        'TASK': 'plan_actions',
+        'TASK': 'extract_suggestions',
         'DAILY_BRIEF': 'handle_daily_brief',
         'QUERY': 'interrogate_brain',
-        'COMPLETION': 'plan_actions',
-        'NOTE': 'plan_actions',
+        'COMPLETION': 'extract_suggestions',
+        'NOTE': 'extract_suggestions',
         'DELEGATE': 'handle_delegate',
         'DECLARE_PRACTICE': 'handle_declare_practice',
         'ROLE_UPDATE': 'handle_role_update',
@@ -518,11 +518,11 @@ async def _route_by_intent(intent: str, text: str, chat_id: int, session_id: str
             active_anchor=active_anchor,
             classify_context=classify_ctx, anaphora_task=anaphora_task)
         if contains_hidden:
-            from core.actions.planner import plan_actions
+            from core.lib.suggestion_extractor import extract_suggestions
             from core.actions.executor import execute_planned_actions
             clarified = False
             try:
-                actions = await plan_actions(text, title, entity, active_anchor, intent=intent)
+                actions, _ = await extract_suggestions(text, title, entity, active_anchor, intent=intent)
             except NeedsClarification as nc:
                 # Phase 4: park the pending action so the reply resumes it,
                 # then ask — never silently acked or dropped. Skip execution
@@ -551,10 +551,10 @@ async def _route_by_intent(intent: str, text: str, chat_id: int, session_id: str
             deliberation = classification.get('deliberation')
             await ask_intent_disambiguation(text, possible_intents, chat_id, session_id, deliberation)
             return
-        from core.actions.planner import plan_actions
+        from core.lib.suggestion_extractor import extract_suggestions
         from core.actions.executor import execute_planned_actions
         try:
-            actions = await plan_actions(text, title, entity, active_anchor, intent=intent)
+            actions, _ = await extract_suggestions(text, title, entity, active_anchor, intent=intent)
         except NeedsClarification as nc:
             # Phase 4: park the pending action so the reply resumes it, then
             # ask instead of acknowledging (invariant #1).

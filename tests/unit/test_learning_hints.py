@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 from core.lib import learning_hints
 from core.lib.learning_hints import build_planner_hint, get_action_planner_hint
-from core.prompts.planner import build_planner_prompt
+from core.lib.suggestion_extractor import build_unified_prompt
 pytestmark = pytest.mark.learning
 
 
@@ -132,12 +132,12 @@ _MIN_PROMPT_ARGS = dict(
 
 
 def test_prompt_omits_learned_section_when_empty():
-    prompt = build_planner_prompt(**_MIN_PROMPT_ARGS)
+    prompt = build_unified_prompt(**_MIN_PROMPT_ARGS)
     assert "LEARNED FROM PAST CLARIFICATIONS" not in prompt
 
 
 def test_prompt_renders_learned_section_when_hint_present():
-    prompt = build_planner_prompt(**_MIN_PROMPT_ARGS,
+    prompt = build_unified_prompt(**_MIN_PROMPT_ARGS,
                                   learned_hints="- reschedule: you MUST include params.new_reminder_at.")
     assert "LEARNED FROM PAST CLARIFICATIONS" in prompt
     assert "MUST-FOLLOW" in prompt

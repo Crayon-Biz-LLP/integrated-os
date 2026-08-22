@@ -80,8 +80,8 @@ async def create_task_direct(
             from core.lib.entity_linker import resolve_entities
             entity_resolution = resolve_entities(
                 text=title,
-                planner_org_name=organization_name,
-                planner_proj_name=project_name,
+                hint_org_name=organization_name,
+                hint_proj_name=project_name,
                 write_signal_on_miss=True,
             )
             if entity_resolution.organization_id:
@@ -219,8 +219,8 @@ async def create_note_direct(
             from core.lib.entity_linker import resolve_entities
             entity_resolution = resolve_entities(
                 text=content,
-                planner_org_name=organization_name,
-                planner_proj_name=project_name,
+                hint_org_name=organization_name,
+                hint_proj_name=project_name,
                 write_signal_on_miss=True,
             )
             if entity_resolution.organization_id:

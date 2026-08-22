@@ -290,9 +290,9 @@ class UatResult:
 # ════════════════════════════════════════════════════════════════════════
 
 async def scenario_1_task_creation_with_org(seed: dict) -> UatResult:
-    """Create a task with org reference — verify planner->executor path.
+    """Create a task with org reference — verify extractor->executor path.
 
-    Uses direct function calls (plan_actions + execute_planned_actions)
+    Uses direct function calls (extract_suggestions + execute_planned_actions)
     to bypass the classify rate limiter."""
     r = UatResult("Task creation with org", tier=1)
     _reset_sends()

@@ -1494,78 +1494,108 @@ async def _process_webhook(update: dict):
                 from core.lib.suggestion_extractor import extract_suggestions
                 from core.lib.entity_context import extract_context_from_source
                 
-                suggestions = await extract_suggestions(text)
-                if suggestions:
-                    # Run context extraction for entities
-                    ctx = await extract_context_from_source(text, timing="card")
-                    
-                    entities = ctx.detected_entities
-                    tasks = suggestions.get("suggested_actions", [])
-                    
-                    from core.pulse.graph import match_existing_nodes
-                    from core.services.db import get_tenant
-                    owner_id = get_tenant()
-
-                    if entities and owner_id:
-                        entities = match_existing_nodes(entities, owner_id)
-                        
-                    suggestions["suggested_entities"] = entities
-
-                    new_entities = [e for e in entities if not e.get("existing_matches")]
-
-                    if new_entities or len(tasks) >= 2:
-                        # Rich content -> Show Suggestion Card via raw_dumps
-                        from core.services.reply_delivery import deliver_outbound_reply
-                        # Cancel any anaphora task
-                        if _anaphora_task:
-                            _anaphora_task.cancel()
-                            
-                        # Deliver a text reply first
-                        text_response = "I extracted a few items from your message. Please review:"
-                        await deliver_outbound_reply(
-                            message_text=text_response, 
-                        )
-                        
-                        # Then deliver the suggestion card as a specialized raw_dump
-                        from core.services.db import tenant_aware_client, channel_tenant_scope
-                        supabase = tenant_aware_client()
-                        with channel_tenant_scope():
-                            try:
-                                msg_dump_res = supabase.table('raw_dumps').insert({
-                                    'content': text,
-                                    'source': 'web',
-                                    'owner_id': owner_id,
-                                    'direction': 'inbound',
-                                    'message_type': 'text',
-                                    'status': 'processed',
-                                    'sender': 'user',
-                                }).execute()
-                                msg_id = msg_dump_res.data[0]['id'] if msg_dump_res.data else 0
+                # 1. Deterministic extraction (fast)
+                ctx = await extract_context_from_source(text, timing="card")
+                
+                # 2. Extract suggestions (absorbs planner)
+                actions, suggestion_dict = await extract_suggestions(text, title=title, entity=entity, active_anchor=active_anchor, intent=intent)
+                
+                matched_task_id = suggestion_dict.get("matched_task_id") if suggestion_dict else None
+                
+                if actions:
+                    # Execute immediately so no data is lost if user walks away
+                    if not matched_task_id and ctx.pending_org_id:
+                        # Link pending org upfront
+                        for a in actions:
+                            if a.operation == "create_task" and not a.organization_id:
+                                a.organization_id = ctx.pending_org_id
+                                a.params["organization_id"] = ctx.pending_org_id
                                 
-                                suggestions['message_id'] = msg_id
+                    from core.actions.executor import execute_planned_actions
+                    await execute_planned_actions(
+                        actions, chat_id, text=text, entity=entity, source=source, sender=sender,
+                        session_id=session_id, intent=intent, suppress_telegram=True, active_anchor=active_anchor
+                    )
+                    
+                    # Update matched_task_id if we created one
+                    for act in actions:
+                        if act.operation == "create_task" and "_created_task_id" in act.params:
+                            matched_task_id = act.params["_created_task_id"]
+                
+                if suggestion_dict:
+                    suggestion_dict["matched_task_id"] = matched_task_id
 
-                                supabase.table('raw_dumps').insert({
-                                    'content': "Suggestion Card",
-                                    'source': 'web',
-                                    'owner_id': owner_id,
-                                    'direction': 'outgoing',
-                                    'message_type': 'suggestion',
-                                    'status': 'completed',
-                                    'sender': 'system',
-                                    'metadata': {
-                                        'suggestion_breakdown': suggestions,
-                                        'entity_context': ctx.to_dict()
-                                    }
-                                }).execute()
-                            except Exception as e:
-                                audit_log_sync("webhook", "ERROR", f"Failed to insert suggestion raw_dump: {e}")
+                entities = ctx.detected_entities
+                from core.pulse.graph import match_existing_nodes
+                from core.services.db import get_tenant
+                owner_id = get_tenant()
+
+                if entities and owner_id:
+                    entities = match_existing_nodes(entities, owner_id)
+                    
+                if suggestion_dict:
+                    suggestion_dict["suggested_entities"] = entities
+
+                new_entities = [e for e in entities if not e.get("existing_matches")]
+
+                if new_entities:
+                    # Rich content -> Show Suggestion Card via raw_dumps purely for Entity Confirmation
+                    from core.services.reply_delivery import deliver_outbound_reply
+                    # Cancel any anaphora task
+                    if _anaphora_task:
+                        _anaphora_task.cancel()
                         
-                        report(req_trace_id)
-                        return {"success": True}
-                    else:
-                        # Simple message -> fall through to regular execution!
-                        pass
+                    # Deliver a text reply first
+                    text_response = "I extracted a few items from your message. Please review:"
+                    await deliver_outbound_reply(
+                        message_text=text_response, 
+                    )
+                    
+                    # Then deliver the suggestion card as a specialized raw_dump
+                    from core.services.db import tenant_aware_client, channel_tenant_scope
+                    supabase = tenant_aware_client()
+                    with channel_tenant_scope():
+                        try:
+                            msg_dump_res = supabase.table('raw_dumps').insert({
+                                'content': text,
+                                'source': 'web',
+                                'owner_id': owner_id,
+                                'direction': 'inbound',
+                                'message_type': 'text',
+                                'status': 'processed',
+                                'sender': 'user',
+                            }).execute()
+                            msg_id = msg_dump_res.data[0]['id'] if msg_dump_res.data else 0
+                            
+                            if suggestion_dict:
+                                suggestion_dict['message_id'] = msg_id
 
+                            supabase.table('raw_dumps').insert({
+                                'content': "Suggestion Card",
+                                'source': 'web',
+                                'owner_id': owner_id,
+                                'direction': 'outgoing',
+                                'message_type': 'suggestion',
+                                'status': 'completed',
+                                'sender': 'system',
+                                'metadata': {
+                                    'suggestion_breakdown': suggestion_dict,
+                                    'entity_context': ctx.to_dict()
+                                }
+                            }).execute()
+                        except Exception as e:
+                            audit_log_sync("webhook", "ERROR", f"Failed to insert suggestion raw_dump: {e}")
+                    
+                    report(req_trace_id)
+                    return {"success": True}
+                else:
+                    # We executed everything and there are no new entities to confirm. We are done!
+                    if _anaphora_task:
+                        _anaphora_task.cancel()
+                    report(req_trace_id)
+                    return {"success": True}
+
+            # For passive channels or simple queries, route directly
             await route_by_intent(intent, text, chat_id, session_id, classification=classification, source=source, sender=sender, active_anchor=active_anchor, anaphora_task=_anaphora_task)
         elif intent == 'CLARIFICATION_NEEDED':
             _anaphora_task.cancel()

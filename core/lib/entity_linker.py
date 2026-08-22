@@ -32,16 +32,16 @@ class EntityResolution:
 
 def resolve_entities(
     text: str,
-    planner_org_name: str = None,
-    planner_proj_name: str = None,
+    hint_org_name: str = None,
+    hint_proj_name: str = None,
     write_signal_on_miss: bool = True,
 ) -> EntityResolution:
     """Deterministically resolve entities from text.
 
     Args:
         text: Raw user message text
-        planner_org_name: Ignored (kept for backward compat)
-        planner_proj_name: Ignored (kept for backward compat)
+        hint_org_name: If set and deterministic resolution misses, written to org_creation_signals
+        hint_proj_name: If set and deterministic resolution misses, written to org_creation_signals
         write_signal_on_miss: If True, write to org_creation_signals on failure
 
     Returns:
@@ -76,7 +76,7 @@ def resolve_entities(
 
     # Write miss signal if nothing found
     if not result.organization_id and write_signal_on_miss:
-        _write_miss_signal(text, planner_org_name, planner_proj_name)
+        _write_miss_signal(text, hint_org_name, hint_proj_name)
         result.source = "miss"
         result.confidence = 0.0
 
@@ -86,27 +86,27 @@ def resolve_entities(
 
 def _write_miss_signal(
     text: str,
-    planner_org_name: str = None,
-    planner_proj_name: str = None,
+    hint_org_name: str = None,
+    hint_proj_name: str = None,
 ) -> None:
     """Write a signal when entity resolution explicitly tried to resolve an org but found nothing.
 
-    Only fires when the planner explicitly specified an org name (planner_org_name is set).
+    Only fires when the caller explicitly specified an org name (hint_org_name is set).
     Generic tasks like "Buy groceries" that naturally have no org context do NOT trigger a signal.
     This prevents org_creation_signals from being spammed with conversational noise.
     """
-    if not planner_org_name:
+    if not hint_org_name:
         return  # Silent skip: no explicit org resolution attempt — not a real miss
     try:
         supabase = tenant_aware_client()
         signal_data = {
-            "org_name": f"[unresolved_org={planner_org_name}] {planner_proj_name or text[:50]}",
+            "org_name": f"[unresolved_org={hint_org_name}] {hint_proj_name or text[:50]}",
             "source": "entity_linker",
         }
 
         supabase.table('org_creation_signals').insert(signal_data).execute()
         audit_log_sync("entity_linker", "INFO",
-                       f"Written miss signal: org={planner_org_name}, text={text[:80]}")
+                       f"Written miss signal: org={hint_org_name}, text={text[:80]}")
     except Exception as e:
         audit_log_sync("entity_linker", "WARNING",
                        f"Failed to write miss signal: {e}")

@@ -170,11 +170,12 @@ async def _resume_action_clarification(chat_id: int, text: str, thread_id: str, 
 
     # The answer completes the original request — re-plan with both.
     combined = f"{original_text}\n[User clarification:] {text}"
-    from core.actions.planner import plan_actions
+    from core.lib.suggestion_extractor import extract_suggestions
     from core.actions.executor import execute_planned_actions
     from core.actions.models import NeedsClarification
+    
     try:
-        actions = await plan_actions(combined, title=title, entity=entity, intent=intent)
+        actions, _ = await extract_suggestions(combined, title=title, entity=entity, intent=intent)
     except NeedsClarification as nc:
         # Still unclear — re-ask and keep the workflow active
         await send_telegram(chat_id, nc.to_question())

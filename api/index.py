@@ -5836,6 +5836,7 @@ async def suggestions_confirm_route(request: Request):
                 raise HTTPException(status_code=403, detail="Not authorized")
             extracted_text = doc_res.data[0].get("extracted_text", "")
             stored_ctx_dict = (doc_res.data[0].get("parsed_breakdown") or {}).get("entity_context")
+            matched_task_id = None
         elif source_type == "message":
             msg_res = supabase.table("raw_dumps").select("owner_id, content, metadata").eq("id", source_id).limit(1).execute()
             if not msg_res.data:
@@ -5843,7 +5844,9 @@ async def suggestions_confirm_route(request: Request):
             if msg_res.data[0].get("owner_id") != owner_id:
                 raise HTTPException(status_code=403, detail="Not authorized")
             extracted_text = msg_res.data[0].get("content", "")
-            stored_ctx_dict = (msg_res.data[0].get("metadata") or {}).get("entity_context")
+            metadata = msg_res.data[0].get("metadata") or {}
+            stored_ctx_dict = metadata.get("entity_context")
+            matched_task_id = (metadata.get("suggestion_breakdown") or {}).get("matched_task_id")
             
         from core.lib.entity_context import EntityContext
         entity_context_obj = EntityContext.from_dict(stored_ctx_dict) if stored_ctx_dict else None
@@ -5943,64 +5946,71 @@ async def suggestions_confirm_route(request: Request):
                         entity_context_obj.organization_id = personal_res.data[0]['id']
                         entity_context_obj.organization_name = personal_res.data[0]['label']
 
-            # 2. Create tasks
-            for item in selected_tasks:
-                item_type = item.get("type", "task")
-                title = item.get("title", "")
-                deadline = item.get("deadline")
-                date = item.get("date")
-                
-                description = item.get("description", "")
-                
-                entity_id = None
-                
-                if item_type == "task":
-                    result = await create_task_direct(
-                        title=title,
-                        entity_context=entity_context_obj,
-                        deadline=deadline,
-                        notes=description,
-                    )
-                    entity_id = result.get("task_id") if result else None
-                    if entity_id:
-                        created_entity_refs.append(("tasks", entity_id))
-                        
-                elif item_type == "event":
-                    result = await create_task_direct(
-                        title=title,
-                        entity_context=entity_context_obj,
-                        reminder_at=date,
-                        notes=description,
-                    )
-                    entity_id = result.get("task_id") if result else None
-                    if entity_id:
-                        created_entity_refs.append(("tasks", entity_id))
-                        
-                elif item_type == "note":
-                    result = await ingest(
-                        text=f"{title}. {description}" if description else title,
-                        source="suggestion_confirm",
-                        classification="note",
-                        has_memory_value=True,
-                    )
-                    entity_id = result.get("message_id") if result else None
-                    if entity_id:
-                        created_entity_refs.append(("memories", entity_id))
-                        
-                if source_type == "document":
-                    supabase.table("document_items").insert({
-                        "owner_id": owner_id,
-                        "document_id": source_id,
-                        "item_type": item_type,
-                        "item_data": item,
-                        "created_entity_id": str(entity_id) if entity_id else None,
-                    }).execute()
+            # 2. Update existing task or create tasks (for documents)
+            if source_type == "message" and matched_task_id:
+                # Task already created upfront, just link the confirmed entities
+                if entity_context_obj and entity_context_obj.organization_id:
+                    supabase.table("tasks").update({"organization_id": entity_context_obj.organization_id}).eq("id", matched_task_id).execute()
+                # Also link person nodes to the task (via pending_graph_edges or similar logic if supported, but typically we just attach org_id)
+            elif source_type == "document":
+                # Original document logic creates tasks here
+                for item in selected_tasks:
+                    item_type = item.get("type", "task")
+                    title = item.get("title", "")
+                    deadline = item.get("deadline")
+                    date = item.get("date")
                     
-                created_items.append({
-                    "type": item_type,
-                    "title": title,
-                    "entity_id": entity_id,
-                })
+                    description = item.get("description", "")
+                    
+                    entity_id = None
+                    
+                    if item_type == "task":
+                        result = await create_task_direct(
+                            title=title,
+                            entity_context=entity_context_obj,
+                            deadline=deadline,
+                            notes=description,
+                        )
+                        entity_id = result.get("task_id") if result else None
+                        if entity_id:
+                            created_entity_refs.append(("tasks", entity_id))
+                            
+                    elif item_type == "event":
+                        result = await create_task_direct(
+                            title=title,
+                            entity_context=entity_context_obj,
+                            reminder_at=date,
+                            notes=description,
+                        )
+                        entity_id = result.get("task_id") if result else None
+                        if entity_id:
+                            created_entity_refs.append(("tasks", entity_id))
+                            
+                    elif item_type == "note":
+                        result = await ingest(
+                            text=f"{title}. {description}" if description else title,
+                            source="suggestion_confirm",
+                            classification="note",
+                            has_memory_value=True,
+                        )
+                        entity_id = result.get("message_id") if result else None
+                        if entity_id:
+                            created_entity_refs.append(("memories", entity_id))
+                            
+                    if source_type == "document":
+                        supabase.table("document_items").insert({
+                            "owner_id": owner_id,
+                            "document_id": source_id,
+                            "item_type": item_type,
+                            "item_data": item,
+                            "created_entity_id": str(entity_id) if entity_id else None,
+                        }).execute()
+                        
+                    created_items.append({
+                        "type": item_type,
+                        "title": title,
+                        "entity_id": entity_id,
+                    })
                 
             # 3. Enqueue enrichment to catch edges
             if source_type == "document" and extracted_text:

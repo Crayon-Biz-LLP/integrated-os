@@ -3,13 +3,13 @@
 Covers `core/llm/providers.py` response_schema plumbing:
 - `openrouter_response_format` maps config → json_schema / json_object / None
 - `_schema_rejection` detects schema-rejection errors (for graceful degradation)
-- `PLANNER_ACTIONS_SCHEMA` is shape-level (operation enum + object params)
+- `SUGGESTION_SCHEMA` is shape-level (operation enum + object params)
 
 Run: python -m pytest tests/unit/test_providers_shape.py -v
 """
 
 from core.llm.providers import _schema_rejection, openrouter_response_format
-from core.prompts.planner import PLANNER_ACTIONS_SCHEMA
+from core.lib.suggestion_extractor import SUGGESTION_SCHEMA
 
 SCHEMA = {"type": "object", "properties": {"actions": {"type": "array"}}}
 
@@ -42,9 +42,9 @@ def test_schema_rejection_detection():
 
 
 def test_planner_shape_schema_has_operation_enum():
-    assert PLANNER_ACTIONS_SCHEMA["type"] == "object"
-    assert PLANNER_ACTIONS_SCHEMA["required"] == ["actions"]
-    items = PLANNER_ACTIONS_SCHEMA["properties"]["actions"]["items"]
+    assert SUGGESTION_SCHEMA["type"] == "object"
+    assert SUGGESTION_SCHEMA["required"] == ["document_type", "summary", "actions"]
+    items = SUGGESTION_SCHEMA["properties"]["actions"]["items"]
     ops = items["properties"]["operation"]["enum"]
     for op in (
         "create_task", "create_note", "create_event", "query_info", "close_task",

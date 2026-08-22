@@ -180,7 +180,7 @@ async def _process_channel_pending_decision(channel: str, pending_id: int, decis
 
     if is_approved:
         # Process immediately via Action Planner
-        from core.actions.planner import plan_actions
+        from core.lib.suggestion_extractor import extract_suggestions
         from core.actions.executor import execute_planned_actions
         
         chat_id = int(os.getenv("TELEGRAM_CHAT_ID", "0"))
@@ -191,7 +191,7 @@ async def _process_channel_pending_decision(channel: str, pending_id: int, decis
             from core.lib.entity_linker import resolve_entities
             entity_resolution = resolve_entities(
                 text=title,
-                planner_org_name=msg.get('suggested_project'),
+                hint_org_name=msg.get('suggested_project'),
                 write_signal_on_miss=True,
             )
             if entity_resolution.organization_name or entity_resolution.project_name:
@@ -203,13 +203,19 @@ async def _process_channel_pending_decision(channel: str, pending_id: int, decis
         
         try:
             original_text = msg.get('body') or title
-            actions = await plan_actions(
+            from core.lib.entity_context import extract_context_from_source
+            ctx = await extract_context_from_source(original_text, timing="sync")
+            actions, _ = await extract_suggestions(
                 text=original_text,
                 title=title,
                 intent="TASK",
                 entity=resolved_entity,
             )
             if actions:
+                for a in actions:
+                    if getattr(a, 'operation', '').startswith('create_') and not getattr(a, 'organization_id', None) and ctx.pending_org_id:
+                        a.organization_id = ctx.pending_org_id
+                        if hasattr(a, 'params'): a.params["organization_id"] = ctx.pending_org_id
                 results = await execute_planned_actions(actions, chat_id, text=original_text, source=channel, entity=resolved_entity)
                 # Undo ledger: every action that actually committed, with the
                 # id needed to reverse it (created ids for creates, target ids

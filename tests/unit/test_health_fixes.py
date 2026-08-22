@@ -166,7 +166,7 @@ async def test_channel_approval_records_ledger():
          patch.object(wu, "fire_briefing_refresh"), \
          patch.object(wu, "emit_observation"), \
          patch.object(wu, "audit_log_sync"), \
-         patch("core.actions.planner.plan_actions", new=AsyncMock(return_value=[])), \
+         patch("core.lib.suggestion_extractor.extract_suggestions", new=AsyncMock(return_value=[])), \
          patch("core.actions.executor.execute_planned_actions", new=AsyncMock(return_value=[])):
         await wu._process_channel_pending_decision(
             channel="teams", pending_id=424243, decision="approve"

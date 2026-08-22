@@ -21,7 +21,7 @@ async def _save_fallback_note(text: str, chat_id: int, entity: str = None, sourc
     is retrievable even if the pipeline failed to extract actions.
 
     This is Guard 3 of 3 (see also: classify pre-filter in classify.py,
-    planner context injection in planner.py + planner prompt).
+    entity extraction in entity_context.py + suggestion extraction in suggestion_extractor.py).
     """
     try:
         from core.llm import get_embedding
@@ -419,93 +419,8 @@ async def execute_planned_actions(
     results: List[ExecutionResult] = []
     completed_actions = []  # Track for rollback
     
-    execute_actions = []
-    intercepted_tasks = []
+    execute_actions = valid_actions
     
-    # Intercept tasks extracted from NOTE intents for user approval.
-    # TASK intents are NOT intercepted — clear commands like "Remind me to..."
-    # execute immediately without asking for confirmation.
-    # NOTE intents still get intercepted because they might contain extracted
-    # actions the user didn't explicitly intend.
-    if intent == "NOTE":
-        for action in valid_actions:
-            if action.operation in ("create_task", "create_event"):
-                intercepted_tasks.append(action)
-            else:
-                execute_actions.append(action)
-    else:
-        execute_actions = valid_actions
-        
-    if intercepted_tasks and session_id:
-        signals = []
-        for act in intercepted_tasks:
-            sig = {
-                "type": "deadline" if act.operation == "create_event" else "task_imperative",
-                "title": act.params.get("title") or act.human_label or "New Task",
-                "reminder_at": act.params.get("time") or act.params.get("reminder_at")
-            }
-            if act.params.get("organization_name"):
-                sig["organization_name"] = act.params["organization_name"]
-            signals.append(sig)
-            
-        # ── Extract entity context from the full text ──
-        entity_ctx_for_workflow = None
-        if text:
-            try:
-                from core.lib.entity_context import extract_context_from_source
-                entity_ctx_for_workflow = await extract_context_from_source(text, cached_entities=_cached_entities, timing="sync")
-            except Exception as ec_e:
-                audit_log_sync("executor", "WARNING", f"EntityContext extraction failed (non-critical): {ec_e}")
-        
-        w_id = str(uuid.uuid4())
-        
-        try:
-            # Build payload with entity context for guaranteed org linkage
-            payload = {'signals': signals}
-            payload['original_text'] = text  # ALWAYS store
-            if entity_ctx_for_workflow:
-                payload['entity_context'] = entity_ctx_for_workflow.to_dict()
-                # Build new_orgs from EntityContext for backward compat with workflow resume
-                if entity_ctx_for_workflow.pending_org_label:
-                    payload['new_orgs'] = [{'label': entity_ctx_for_workflow.pending_org_label, 'pending_id': entity_ctx_for_workflow.pending_org_id}]
-            
-            # Clear old active workflows for this thread to prevent duplicates
-            supabase.table('conversation_workflows').update({'status': 'cancelled'}).eq('thread_id', session_id).eq('status', 'active').execute()
-            
-            supabase.table('conversation_workflows').insert({
-                'id': w_id,
-                'chat_id': chat_id,
-                'thread_id': session_id,
-                'workflow_type': 'batch',
-                'status': 'active',
-                'awaiting_user_input': True,
-                'payload': payload,
-            }).execute()
-            
-            msg_lines = ["📋 I found these items:"]
-            item_num = 1
-            # Build new_orgs list from EntityContext for display
-            new_orgs_display = []
-            if entity_ctx_for_workflow and entity_ctx_for_workflow.pending_org_label:
-                new_orgs_display = [{'label': entity_ctx_for_workflow.pending_org_label, 'pending_id': entity_ctx_for_workflow.pending_org_id}]
-            if new_orgs_display:
-                for org_info in new_orgs_display:
-                    msg_lines.append(f"  {item_num}. 🏢 New client: {org_info['label']}")
-                    item_num += 1
-            for sig in signals:
-                icon = "📅" if sig["type"] == "deadline" else "📝"
-                title = sig["title"]
-                msg_lines.append(f"  {item_num}. {icon} {title}")
-                item_num += 1
-            msg_lines.append("\nWant me to handle them?")
-            
-            if not suppress_telegram:
-                await send_telegram(chat_id, "\n".join(msg_lines))
-        except Exception as e:
-            audit_log_sync("executor", "WARNING", f"Failed to create batch workflow: {e}")
-            # Fallback: if we fail to create the workflow, we just execute them
-            execute_actions.extend(intercepted_tasks)
-
     for action in execute_actions:
         if action.operation == "no_op":
             continue
@@ -703,14 +618,7 @@ async def execute_planned_actions(
                 dedup_org_id = action.params.get("organization_id") or action.organization_id or ""
                 dedup_raw = f"{title.lower().strip()}:{dedup_org_id}"
                 dedup_key = hashlib.md5(dedup_raw.encode()).hexdigest()[:16] if title else None
-                # Build EntityContext from full text for guaranteed org linkage
                 _entity_ctx = None
-                if text:
-                    try:
-                        from core.lib.entity_context import extract_context_from_source
-                        _entity_ctx = await extract_context_from_source(text, cached_entities=_cached_entities)
-                    except Exception as ec_e:
-                        audit_log_sync("executor", "WARNING", f"EntityContext extraction failed (non-critical): {ec_e}")
 
                 result = await create_task_direct(
                         title=title,
@@ -758,14 +666,7 @@ async def execute_planned_actions(
                 from core.pulse.tools import create_note_direct
                 # Guard 2c: Fall back to resolved_entity if planner didn't provide organization_name
                 note_org_name = action.params.get("organization_name") or resolved_entity
-                # Build EntityContext from full text for guaranteed org linkage
                 _note_entity_ctx = None
-                if text:
-                    try:
-                        from core.lib.entity_context import extract_context_from_source
-                        _note_entity_ctx = await extract_context_from_source(text, cached_entities=_cached_entities)
-                    except Exception as ec_e:
-                        audit_log_sync("executor", "WARNING", f"EntityContext extraction failed for note (non-critical): {ec_e}")
 
                 result = await create_note_direct(
                         content=content,
@@ -800,14 +701,7 @@ async def execute_planned_actions(
 
             try:
                 from core.pulse.tools import create_task_direct
-                # Build EntityContext from full text for guaranteed org linkage
                 _event_entity_ctx = None
-                if text:
-                    try:
-                        from core.lib.entity_context import extract_context_from_source
-                        _event_entity_ctx = await extract_context_from_source(text, cached_entities=_cached_entities)
-                    except Exception as ec_e:
-                        audit_log_sync("executor", "WARNING", f"EntityContext extraction failed for event (non-critical): {ec_e}")
 
                 result = await create_task_direct(
                         title=title,

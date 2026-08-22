@@ -10,7 +10,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch
 
-from core.prompts.planner import build_planner_prompt
+from core.lib.suggestion_extractor import build_unified_prompt
 
 pytestmark = pytest.mark.decision
 
@@ -28,7 +28,7 @@ FIXED_PLANNER = dict(
 
 
 def test_planner_tenant1_pin_reproduces():
-    rendered = build_planner_prompt(**FIXED_PLANNER)
+    rendered = build_unified_prompt(**FIXED_PLANNER)
     assert rendered == GOLDEN.read_text(), (
         "planner_tenant1.txt pin drifted from the rendered prompt — a planner "
         "prompt change landed without a deliberate golden update"
@@ -37,7 +37,7 @@ def test_planner_tenant1_pin_reproduces():
 
 def test_planner_non_ist_tenant_embeds_own_zone():
     with patch("core.services.user_settings.resolve_timezone", return_value="Asia/Tokyo"):
-        rendered = build_planner_prompt(**FIXED_PLANNER)
+        rendered = build_unified_prompt(**FIXED_PLANNER)
     assert "JST (UTC+09:00)" in rendered
     assert "+09:00" in rendered
     assert "+05:30" not in rendered

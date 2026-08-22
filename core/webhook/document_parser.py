@@ -14,7 +14,7 @@ async def parse_document(extracted_text: str) -> Optional[dict]:
     
     Delegates to the unified suggestion extractor and context extractor.
     """
-    breakdown = await extract_suggestions(extracted_text)
+    actions, breakdown = await extract_suggestions(extracted_text, intent="NOTE")
     if not breakdown:
         return None
         

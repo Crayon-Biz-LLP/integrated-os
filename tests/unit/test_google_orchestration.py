@@ -206,11 +206,12 @@ def test_check_conflict_returns_blocking_event_summary():
         assert check_conflict("2026-06-25T15:00:00+05:30") == "Deep work block"
 
 
-def test_check_conflict_returns_none_when_free():
-    service = _mock_service()
-    service.events.return_value.list.return_value.execute.return_value = {"items": []}
-    with patch("core.services.google_service.get_cached_service", return_value=service):
-        assert check_conflict("2026-06-25T15:00:00+05:30") is None
+    def test_check_conflict_returns_none_when_free():
+        service = _mock_service()
+        service.events.return_value.list.return_value.execute.return_value = {"items": []}
+        with patch("core.services.google_service.get_cached_service", return_value=service):
+            with patch("core.services.google_service.get_outlook_calendar_events_range", return_value=[]):
+                assert check_conflict("2026-06-25T15:00:00+05:30") is None
 
 
 def test_get_google_calendar_events_parses_date_and_datetime():

@@ -164,12 +164,12 @@ async def test_resume_entityless_time_answer_still_resumes(monkeypatch):
     executed = []
 
     async def _fake_plan(text, title="", entity="", active_anchor=None, intent=None):
-        return [MagicMock()]
+        return [MagicMock()], None
 
     async def _fake_execute(actions, chat_id, **kwargs):
         executed.append((actions, chat_id, kwargs))
 
-    monkeypatch.setattr("core.actions.planner.plan_actions", _fake_plan)
+    monkeypatch.setattr("core.lib.suggestion_extractor.extract_suggestions", _fake_plan)
     monkeypatch.setattr("core.actions.executor.execute_planned_actions", _fake_execute)
 
     handled, _ = await wf._resume_action_clarification(12345, "friday", "thread-1", _make_workflow())
@@ -202,12 +202,12 @@ async def test_resume_replans_with_answer_and_resolves(monkeypatch):
 
     async def _fake_plan(text, title="", entity="", active_anchor=None, intent=None):
         planned["seen_text"] = text
-        return [MagicMock()]
+        return [MagicMock()], None
 
     async def _fake_execute(actions, chat_id, **kwargs):
         executed.append((actions, chat_id, kwargs))
 
-    monkeypatch.setattr("core.actions.planner.plan_actions", _fake_plan)
+    monkeypatch.setattr("core.lib.suggestion_extractor.extract_suggestions", _fake_plan)
     monkeypatch.setattr("core.actions.executor.execute_planned_actions", _fake_execute)
 
     handled, ancillary = await wf._resume_action_clarification(
@@ -246,9 +246,9 @@ async def test_resume_no_actions_closes_loop_honestly(monkeypatch):
     monkeypatch.setattr("core.lib.telemetry.emit_observation", _fake_emit)
 
     async def _fake_plan(text, title="", entity="", active_anchor=None, intent=None):
-        return []  # nothing resolvable
+        return [], None  # nothing resolvable
 
-    monkeypatch.setattr("core.actions.planner.plan_actions", _fake_plan)
+    monkeypatch.setattr("core.lib.suggestion_extractor.extract_suggestions", _fake_plan)
 
     handled, _ = await wf._resume_action_clarification(12345, "next week sometime", "thread-1", _make_workflow())
 

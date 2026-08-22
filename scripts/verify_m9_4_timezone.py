@@ -112,8 +112,8 @@ def render_system_instruction() -> str:
 
 
 def render_planner() -> str:
-    from core.prompts.planner import build_planner_prompt
-    return build_planner_prompt(**FIXED_PLANNER)
+    from core.lib.suggestion_extractor import build_unified_prompt
+    return build_unified_prompt(**FIXED_PLANNER)
 
 
 # ── 1. Byte-identical for Danny ─────────────────────────────────────────────

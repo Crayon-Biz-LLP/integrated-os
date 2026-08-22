@@ -33,7 +33,7 @@ _ENVELOPE_FIELDS = {
 
 
 class NeedsClarification(Exception):
-    """Raised by `plan_actions()` when the LLM plan fails schema validation.
+    """Raised by `extract_suggestions()` when the LLM plan fails schema validation.
 
     Carries enough context for the dispatch layer to ask the user a precise
     follow-up question instead of silently dropping or acknowledging the action.
