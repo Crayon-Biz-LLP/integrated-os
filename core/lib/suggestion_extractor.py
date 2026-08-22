@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 import re
 from typing import Optional, List, Tuple
@@ -77,9 +76,12 @@ def build_unified_prompt(
         anchor_type = active_anchor.get('type', '')
         anchor_org_id = active_anchor.get('last_org_id')
         parts = []
-        if anchor_name: parts.append(f"Entity: {anchor_name}")
-        if anchor_type: parts.append(f"Type: {anchor_type}")
-        if anchor_org_id: parts.append(f"Organization ID: {anchor_org_id}")
+        if anchor_name:
+            parts.append(f"Entity: {anchor_name}")
+        if anchor_type:
+            parts.append(f"Type: {anchor_type}")
+        if anchor_org_id:
+            parts.append(f"Organization ID: {anchor_org_id}")
         if parts:
             thread_context = "\nTHREAD CONTEXT: " + " | ".join(parts)
 
@@ -194,7 +196,8 @@ async def extract_suggestions(text: str, title: str = "", entity: str = "", acti
         if t["id"] not in seen_tasks:
             seen_tasks.add(t["id"])
             gid = t.get("google_event_id")
-            if gid: task_google_event_ids.add(gid)
+            if gid:
+                task_google_event_ids.add(gid)
             next_occ = base_id_to_time.get(gid) if gid else None
             org_name = t.get("graph_nodes", {}).get("label") if t.get("graph_nodes") else None
             candidates.append({
@@ -205,7 +208,8 @@ async def extract_suggestions(text: str, title: str = "", entity: str = "", acti
     seen_events = set()
     for e in upcoming_events:
         base_id = re.sub(r'_\d{8}T\d{6}Z$', '', e["id"])
-        if base_id in task_google_event_ids: continue
+        if base_id in task_google_event_ids:
+            continue
         if e["id"] not in seen_events:
             seen_events.add(e["id"])
             candidates.append({"type": "event", "id": e["id"], "title": e["title"], "time": e["time"]})
@@ -222,7 +226,8 @@ async def extract_suggestions(text: str, title: str = "", entity: str = "", acti
     filtered_candidates = []
     for c in candidates:
         candidate_words = c["title"].lower().split()
-        if c.get("organization_name"): candidate_words.extend(c["organization_name"].lower().split())
+        if c.get("organization_name"):
+            candidate_words.extend(c["organization_name"].lower().split())
         if any(w in candidate_words for w in search_words if len(w) >= 3):
             filtered_candidates.append(c)
             

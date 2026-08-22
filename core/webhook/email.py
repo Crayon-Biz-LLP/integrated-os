@@ -124,7 +124,8 @@ async def _process_email_pending_decision(pending_id: int, decision: str, supaba
                 for a in actions:
                     if getattr(a, 'operation', '').startswith('create_') and not getattr(a, 'organization_id', None) and ctx.pending_org_id:
                         a.organization_id = ctx.pending_org_id
-                        if hasattr(a, 'params'): a.params["organization_id"] = ctx.pending_org_id
+                        if hasattr(a, 'params'):
+                            a.params["organization_id"] = ctx.pending_org_id
                 results = await execute_planned_actions(actions, chat_id, text=original_text, source="email", entity=resolved_entity)
                 # Undo ledger (see core/webhook/utils.build_action_ledger) —
                 # persisted on the decision so undo can reverse side effects.

@@ -1485,6 +1485,9 @@ async def _process_webhook(update: dict):
         # All intents go through the LLM classify; the `contains_hidden_action` 
         # field in classify output handles multi-intent detection.
         
+        title = classification.get('title', text) if classification else text
+        entity = classification.get('entity') if classification else None
+
         if confidence >= CONFIDENCE_HIGH:
             print(f"[HANDLER_DEBUG] Routing: intent={intent}, confidence={confidence}, text={text!r}", flush=True)
             
