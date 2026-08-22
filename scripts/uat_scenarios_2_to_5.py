@@ -9,8 +9,8 @@ client = create_client(
     os.environ.get('SUPABASE_SERVICE_ROLE_KEY')
 )
 
-# Use Tenant-1's tenant (correct UUID, has full graph)
-TENANT_1 = 'c302706e-fe61-422a-b384-68e3bc8f6f8e'
+# Use Test Tenant
+TEST_TENANT = 'e87f0279-3ec0-4875-af69-49894ee9da6f'
 
 
 async def scenario_1_person_detection():
@@ -19,7 +19,7 @@ async def scenario_1_person_detection():
     print('SCENARIO 1: Person Detection')
     print('=' * 60)
 
-    with tenant_scope(TENANT_1):
+    with tenant_scope(TEST_TENANT):
         from core.lib.entity_context import extract_context_from_source
 
         # Test with text containing known persons
@@ -52,7 +52,7 @@ async def scenario_2_org_to_org_edges():
     print('SCENARIO 2: Org-to-Org Edge Creation')
     print('=' * 60)
 
-    with tenant_scope(TENANT_1):
+    with tenant_scope(TEST_TENANT):
         from core.lib.entity_context import extract_context_from_source
 
         # Multi-org text: BetaCorp (unknown) + AcmeCorp (known)
@@ -85,7 +85,7 @@ async def scenario_3_pending_approval():
     print('SCENARIO 3: Pending Node Approval Flow')
     print('=' * 60)
 
-    with tenant_scope(TENANT_1):
+    with tenant_scope(TEST_TENANT):
         from core.lib.entity_context import extract_context_from_source
 
         # Create a pending org
@@ -111,13 +111,13 @@ async def scenario_3_pending_approval():
         print('\n   Calling _resolve_pending_org_on_approval...')
 
         try:
-            _resolve_pending_org_on_approval(ctx.pending_org_id, TENANT_1)
+            _resolve_pending_org_on_approval(ctx.pending_org_id, TEST_TENANT)
             print('   ✅ Resolution completed')
 
             # Check if a graph_node was created
             gn = client.table('graph_nodes').select('id, label, type').ilike(
                 'label', 'AcmeCorporation'
-            ).eq('type', 'organization').eq('is_current', True).eq('owner_id', TENANT_1).execute()
+            ).eq('type', 'organization').eq('is_current', True).eq('owner_id', TEST_TENANT).execute()
 
             if gn.data:
                 print(f'   ✅ Graph node created: {gn.data[0]["label"]} (id={gn.data[0]["id"]})')
@@ -126,7 +126,7 @@ async def scenario_3_pending_approval():
 
             # Check if tasks with pending_org_id were updated
             tasks = client.table('tasks').select('id, title, pending_org_id, organization_id').eq(
-                'owner_id', TENANT_1
+                'owner_id', TEST_TENANT
             ).ilike('title', '%AcmeCorporation%').execute()
 
             for t in tasks.data:
@@ -146,7 +146,7 @@ async def scenario_4_enrichment_queue():
     print('SCENARIO 4: Enrichment Queue Integration')
     print('=' * 60)
 
-    with tenant_scope(TENANT_1):
+    with tenant_scope(TEST_TENANT):
         from core.lib.entity_context import extract_context_from_source
         from core.pulse.tools import create_task_direct
 
