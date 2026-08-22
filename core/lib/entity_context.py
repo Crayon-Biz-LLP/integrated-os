@@ -224,6 +224,14 @@ def _find_existing_person(label: str, owner_id: str = None) -> Optional[dict]:
 def _process_deterministic_entities(entities: list, ctx: EntityContext, owner_id: str = None, timing: str = "sync"):
     """Process deterministic entities (from detect_entities) into EntityContext."""
     for e in entities:
+        # Populate detected_entities so they aren't lost to the UI
+        ctx.detected_entities.append({
+            "type": e.type,
+            "label": e.label,
+            "confidence": 1.0,
+            "source": "deterministic"
+        })
+
         if e.type == 'organization':
             if e.db_id and not e.is_new:
                 # Existing org — use it (prefer existing over pending)
@@ -232,11 +240,14 @@ def _process_deterministic_entities(entities: list, ctx: EntityContext, owner_id
                     ctx.organization_name = e.label
             elif e.is_new:
                 # New org — create pending node
-                pending_id = _create_pending_org(e.label, ctx.source_text, owner_id)
+                pending_id = _create_pending_org(e.label, ctx.source_text, owner_id) if timing != "card" else None
                 if pending_id and not ctx.pending_org_id:
                     ctx.pending_org_id = pending_id
                     ctx.pending_org_label = e.label
-                elif not pending_id:
+                elif not pending_id and timing == "card" and not ctx.pending_org_id:
+                    # Dry run — simulate pending org
+                    ctx.pending_org_label = e.label
+                elif not pending_id and timing != "card":
                     # Org already exists as approved — find its graph_node id
                     existing = _find_existing_org(e.label, owner_id)
                     if existing and not ctx.organization_id:
@@ -249,10 +260,13 @@ def _process_deterministic_entities(entities: list, ctx: EntityContext, owner_id
                     ctx.person_ids.append(e.db_id)
                     ctx.person_names.append(e.label)
             elif e.is_new:
-                pending_id = _create_pending_person(e.label, ctx.source_text, owner_id)
+                pending_id = _create_pending_person(e.label, ctx.source_text, owner_id) if timing != "card" else None
                 if pending_id:
                     if pending_id not in ctx.pending_person_ids:
                         ctx.pending_person_ids.append(pending_id)
+                        ctx.person_names.append(e.label)
+                elif timing == "card":
+                    if e.label not in ctx.person_names:
                         ctx.person_names.append(e.label)
 
 
@@ -469,7 +483,7 @@ async def extract_context_from_source(
         else:
             from core.lib.entity_detector import detect_entities
             entities = detect_entities(text)
-        _process_deterministic_entities(entities, ctx, resolved_owner_id)
+        _process_deterministic_entities(entities, ctx, resolved_owner_id, timing=timing)
     except Exception as e:
         audit_log_sync("entity_context", "WARNING",
             f"Deterministic entity detection failed: {e}")
@@ -477,7 +491,7 @@ async def extract_context_from_source(
     # ── Phase 2: LLM extraction (always runs, catches implicit orgs + persons) ──
     try:
         llm_result = await _llm_extract_orgs_and_persons(text)
-        _integrate_llm_result(llm_result, ctx, resolved_owner_id)
+        _integrate_llm_result(llm_result, ctx, resolved_owner_id, timing=timing)
     except Exception as e:
         audit_log_sync("entity_context", "WARNING",
             f"LLM entity extraction failed: {e}")
