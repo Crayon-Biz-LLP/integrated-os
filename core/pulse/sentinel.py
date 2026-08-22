@@ -74,9 +74,8 @@ def get_recently_ended_events(minutes_ended_min=5, minutes_ended_max=30):
 def get_upcoming_events(minutes_ahead=60):
     """Fetch events starting between now and X minutes from now."""
     service = get_cached_service('calendar', 'v3')
-    if service is None:
-        return []  # tenant has no Google creds (M5) — nothing to scan
-
+    events = []
+    
     # Needs timezone awareness, use UTC because format_rfc3339 expects it or naive.
     # Google API requires RFC3339 format.
     now = datetime.now(timezone.utc)
@@ -85,19 +84,32 @@ def get_upcoming_events(minutes_ahead=60):
     rfc_start = now.isoformat()
     rfc_end = end_time.isoformat()
 
+    if service:
+        try:
+            events_res = service.events().list(
+                calendarId='primary',
+                timeMin=rfc_start,
+                timeMax=rfc_end,
+                singleEvents=True,
+                orderBy='startTime'
+            ).execute()
+            events.extend(events_res.get('items', []))
+        except Exception as e:
+            audit_log_sync("sentinel", "ERROR", f"Failed to fetch Google upcoming events: {e}")
+
     try:
-        events_res = service.events().list(
-            calendarId='primary',
-            timeMin=rfc_start,
-            timeMax=rfc_end,
-            singleEvents=True,
-            orderBy='startTime'
-        ).execute()
-        
-        return events_res.get('items', [])
+        from core.services.outlook_service import get_outlook_calendar_events_range
+        outlook_ev = get_outlook_calendar_events_range(now, end_time)
+        for e in outlook_ev:
+            events.append({
+                'id': e.get('id'),
+                'summary': e.get('title'),
+                'start': {'dateTime': e.get('time')}
+            })
     except Exception as e:
-        audit_log_sync("sentinel", "ERROR", f"Failed to fetch upcoming events: {e}")
-        return []
+        audit_log_sync("sentinel", "ERROR", f"Failed to fetch Outlook upcoming events: {e}")
+
+    return events
 
 async def fetch_event_context(title: str, supabase):
     """S2: Rich meeting prep context using Context Registry."""

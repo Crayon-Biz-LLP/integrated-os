@@ -62,6 +62,7 @@ def get_outlook_calendar_events(target_date):
             for item in data.get("value", []):
                 events.append({
                     "time": item["start"]["dateTime"],
+                    "end_time": item["end"]["dateTime"],
                     "title": item.get("subject", "Untitled"),
                     "source": "outlook",
                     "id": item.get("id"),
@@ -112,6 +113,7 @@ def get_outlook_calendar_events_range(start_date, end_date):
             for item in data.get("value", []):
                 events.append({
                     "time": item["start"]["dateTime"],
+                    "end_time": item["end"]["dateTime"],
                     "title": item.get("subject", "Untitled"),
                     "source": "outlook",
                     "id": item.get("id"),

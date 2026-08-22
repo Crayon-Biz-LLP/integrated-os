@@ -34,11 +34,7 @@ class TodayCache {
           .whereType<Map>()
           .map((m) => m.cast<String, dynamic>())
           .toList();
-      final captures = ((decoded['captures'] as List?) ?? [])
-          .whereType<Map>()
-          .map((m) => m.cast<String, dynamic>())
-          .toList();
-      return TodayCacheData(events: events, tasks: tasks, captures: captures);
+      return TodayCacheData(events: events, tasks: tasks);
     } catch (_) {
       return null;
     }
@@ -48,7 +44,6 @@ class TodayCache {
   Future<void> save({
     required List<CalendarEventItem> events,
     required List<Map<String, dynamic>> tasks,
-    required List<Map<String, dynamic>> captures,
   }) async {
     try {
       final prefs = await SharedPreferences.getInstance();
@@ -66,7 +61,6 @@ class TodayCache {
               )
               .toList(),
           'tasks': tasks,
-          'captures': captures,
         }),
       );
     } catch (_) {
@@ -89,13 +83,11 @@ class TodayCache {
 class TodayCacheData {
   final List<CalendarEventItem> events;
   final List<Map<String, dynamic>> tasks;
-  final List<Map<String, dynamic>> captures;
 
   const TodayCacheData({
     required this.events,
     required this.tasks,
-    required this.captures,
   });
 
-  bool get isEmpty => events.isEmpty && tasks.isEmpty && captures.isEmpty;
+  bool get isEmpty => events.isEmpty && tasks.isEmpty;
 }

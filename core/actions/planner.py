@@ -62,6 +62,17 @@ async def plan_actions(text: str, title: str = "", entity: str = "", active_anch
     from core.services.google_service import get_upcoming_calendar_events
     upcoming_events = await asyncio.to_thread(get_upcoming_calendar_events, 14)
     
+    # 3b. Fetch Outlook calendar events
+    try:
+        from core.services.outlook_service import get_outlook_calendar_events_range
+        from datetime import datetime, timezone, timedelta
+        now = datetime.now(timezone.utc)
+        end_time = now + timedelta(days=14)
+        outlook_ev = await asyncio.to_thread(get_outlook_calendar_events_range, now, end_time)
+        upcoming_events.extend(outlook_ev)
+    except Exception as e:
+        print(f"Error fetching outlook events for planner: {e}")
+    
     # Pre-process upcoming events into base IDs to find next occurrence times
     base_id_to_time = {}
     for e in upcoming_events:

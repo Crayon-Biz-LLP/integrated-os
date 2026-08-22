@@ -387,18 +387,29 @@ def get_google_calendar_events(target_date):
 
 def check_conflict(start_iso):
     try:
-        service = get_cached_service('calendar', 'v3')
         rfc_time = format_rfc3339(start_iso)
         start_dt = datetime.fromisoformat(rfc_time.replace('Z', '+00:00'))
         end_dt = start_dt + timedelta(minutes=30)
-        events_res = service.events().list(
-            calendarId='primary',
-            timeMin=rfc_time,
-            timeMax=end_dt.isoformat(),
-            singleEvents=True
-        ).execute()
-        events = events_res.get('items', [])
-        return events[0].get('summary') if events else None
+        
+        service = get_cached_service('calendar', 'v3')
+        if service:
+            events_res = service.events().list(
+                calendarId='primary',
+                timeMin=rfc_time,
+                timeMax=end_dt.isoformat(),
+                singleEvents=True
+            ).execute()
+            events = events_res.get('items', [])
+            if events:
+                return events[0].get('summary')
+        
+        from core.services.outlook_service import get_outlook_calendar_events_range
+        outlook_events = get_outlook_calendar_events_range(start_dt, end_dt)
+        for oe in outlook_events:
+            # We don't have to check overlap precisely here, if it falls in the range, it's a conflict
+            return oe.get('title')
+            
+        return None
     except Exception as e:
         audit_log_sync("google_service", "WARNING", f"Conflict check failed: {e}")
         return None

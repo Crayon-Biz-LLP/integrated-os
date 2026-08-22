@@ -1620,6 +1620,7 @@ async def get_calendar_events(request: Request, date: str = None, start: str = N
                     'id': e.get('id'),
                     'summary': e.get('title'),
                     'start': {'dateTime': e['time']},
+                    'end': {'dateTime': e.get('end_time', '')},
                     'source': 'outlook',
                 })
         except Exception as ol_err:

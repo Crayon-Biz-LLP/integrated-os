@@ -24,7 +24,6 @@ class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
   List<CalendarEventItem> _events = [];
   List<Map<String, dynamic>> _tasks = [];
   bool _tasksExpanded = false;
-  List<Map<String, dynamic>> _captures = [];
   bool _loading = true;
   String _eventError = '';
 
@@ -65,7 +64,6 @@ class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
     setState(() {
       _events = cached.events;
       _tasks = cached.tasks;
-      _captures = cached.captures;
       _loading = false;
     });
   }
@@ -75,7 +73,6 @@ class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
     // Open + committed ("I'll do it") tasks — a committed task stays visible
     // here until it's actually completed, not closed the moment it's taken on.
     final taskFut = _api.getTasks(status: 'todo,in_progress');
-    final capFut = _api.getCaptures(limit: 10);
 
     // Partial render: paint each section the moment it lands instead of
     // holding a full-screen spinner until the SLOWEST call (calendar, which
@@ -99,18 +96,10 @@ class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
         if (r.success) _tasks = r.data!;
       });
     });
-    capFut.then((r) {
-      if (!mounted) return;
-      setState(() {
-        _loading = false;
-        if (r.success) _captures = r.data!;
-      });
-    });
-
-    await Future.wait([calFut, taskFut, capFut]);
+    await Future.wait([calFut, taskFut]);
     if (!mounted) return;
     // Write-behind: keep the last-known snapshot for the next instant open.
-    await _todayCache.save(events: _events, tasks: _tasks, captures: _captures);
+    await _todayCache.save(events: _events, tasks: _tasks);
   }
 
   @override
@@ -343,27 +332,7 @@ class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
                     const SizedBox(height: 20),
                   ],
 
-                  // Captures
-                  if (_captures.isNotEmpty) ...[
-                    _SectionHeader(
-                      title: "Recent Captures",
-                      trailing: '${_captures.length} items ▸',
-                    ),
-                    const SizedBox(height: 8),
-                    ..._captures
-                        .take(5)
-                        .map(
-                          (c) => _CaptureRowPreview(
-                            title: c['content'] as String? ?? '',
-                            time: _formatTimestamp(
-                              c['created_at'] as String? ?? '',
-                            ),
-                          ),
-                        ),
-                    const SizedBox(height: 20),
-                  ],
-
-                  if (_tasks.isEmpty && _captures.isEmpty && _events.isEmpty)
+                  if (_tasks.isEmpty && _events.isEmpty)
                     const Padding(
                       padding: EdgeInsets.all(32),
                       child: Center(
@@ -453,9 +422,10 @@ class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
       builder: (ctx) => SafeArea(
         child: Padding(
           padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Center(
                 child: Container(
@@ -572,7 +542,7 @@ class _TodayScreenState extends State<TodayScreen> with WidgetsBindingObserver {
                   ),
                 ],
               ),
-            ],
+            ),
           ),
         ),
       ),
@@ -1002,36 +972,3 @@ class _TaskRow extends StatelessWidget {
   }
 }
 
-class _CaptureRowPreview extends StatelessWidget {
-  final String title;
-  final String time;
-  const _CaptureRowPreview({required this.title, required this.time});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      decoration: BoxDecoration(
-        color: AppTheme.surface,
-        borderRadius: BorderRadius.circular(AppTheme.cardRadius),
-        border: Border.all(color: AppTheme.border, width: 1),
-      ),
-      child: Row(
-        children: [
-          const Text('🟢', style: TextStyle(fontSize: 10)),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              title,
-              style: AppTheme.body.copyWith(fontSize: 13),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-          Text(time, style: AppTheme.monoCaption),
-        ],
-      ),
-    );
-  }
-}
