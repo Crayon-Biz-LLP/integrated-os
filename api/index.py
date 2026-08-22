@@ -5887,6 +5887,11 @@ async def suggestions_confirm_route(request: Request):
                         supabase.table('pending_graph_edges').update({'source_label': target_label}).eq('source_label', source_label).eq('owner_id', owner_id).execute()
                         supabase.table('pending_graph_edges').update({'target_label': target_label}).eq('target_label', source_label).eq('owner_id', owner_id).execute()
                         
+                        # 3b. Repoint tables that might have been linked to the pending org
+                        supabase.table('tasks').update({'organization_id': target_id, 'pending_org_id': None}).eq('pending_org_id', pending_id).execute()
+                        supabase.table('memories').update({'organization_id': target_id, 'pending_org_id': None}).eq('pending_org_id', pending_id).execute()
+                        supabase.table('raw_dumps').update({'organization_id': target_id, 'pending_org_id': None}).eq('pending_org_id', pending_id).execute()
+                        
                         # Update concept nodes
                         concepts_res = supabase.table('pending_nodes').select('id, eval_context').eq('node_type', 'concept').eq('owner_id', owner_id).execute()
                         if concepts_res and concepts_res.data:
