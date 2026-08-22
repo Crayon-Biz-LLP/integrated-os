@@ -453,7 +453,7 @@ async def get_tasks_route(request: Request, status: str = None, limit: int = 50,
         # NOTE: requires migration 75 (tasks.organization_id -> graph_nodes).
         select_cols = ('id, title, status, priority, deadline, created_at, '
                        'organization_id, direction, committed_to, recurrence, '
-                       'graph_nodes(label)')
+                       'graph_nodes(label), projects(name)')
         # Only select notes when the column exists (pre-migration safe)
         if _notes_ok(supabase, 'tasks'):
             select_cols += ', notes'
@@ -490,10 +490,140 @@ async def get_tasks_route(request: Request, status: str = None, limit: int = 50,
         for t in tasks:
             org = t.pop('graph_nodes', None) or {}
             t['organization_name'] = org.get('label') if isinstance(org, dict) else None
+            proj = t.pop('projects', None) or {}
+            t['project_name'] = proj.get('name') if isinstance(proj, dict) else None
         return {"tasks": tasks}
     except Exception as e:
         print(f"Get tasks error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+# --- GET ORGANIZATIONS (org picker source for task correction) ---
+@app.get("/api/organizations")
+async def get_organizations_route(request: Request):
+    """List the tenant's current organization nodes for the app's org picker.
+
+    Mirrors the org list the web filter uses (graph_nodes where
+    type='organization', is_current=true). Every task must be linked to an
+    org, so this is the canonical selector for the task-correction flow.
+    """
+    require_api_auth(request)
+    try:
+        supabase = tenant_aware_client()
+        res = (
+            supabase.table("graph_nodes")
+            .select("id, label")
+            .eq("type", "organization")
+            .eq("is_current", True)
+            .order("label")
+            .execute()
+        )
+        orgs = [{"id": n["id"], "label": n["label"]} for n in (res.data or [])]
+        return {"organizations": orgs}
+    except Exception as e:
+        print(f"Get organizations error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# --- PATCH TASK (org correction from app task detail view) ---
+@app.patch("/api/tasks/{task_id}")
+async def patch_task_route(request: Request, task_id: int):
+    """Update a task. Only `organization_id` is user-editable (org correction).
+
+    Every task must stay linked to an org, so `organization_id` is required and
+    may not be null. On reassignment the stale `pending_org_id` is cleared
+    (a manual correction resolves any pending linkage). The correction is
+    persisted to the decisions ledger so Rhodey learns routing preferences
+    (vision criterion #4).
+    """
+    require_api_auth(request)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    new_org_id = body.get("organization_id")
+    if not new_org_id or not str(new_org_id).strip():
+        raise HTTPException(status_code=400, detail="organization_id is required")
+
+    supabase = tenant_aware_client()
+
+    # Load the task (tenant-scoped by owner_id).
+    task_res = (
+        supabase.table("tasks")
+        .select("id, title, organization_id, pending_org_id")
+        .eq("id", task_id)
+        .execute()
+    )
+    if not task_res.data:
+        raise HTTPException(status_code=404, detail="Task not found")
+    task = task_res.data[0]
+    old_org_id = task.get("organization_id")
+
+    # Validate the target org exists, is an org, is current, and tenant-owned.
+    org_res = (
+        supabase.table("graph_nodes")
+        .select("id, label")
+        .eq("id", new_org_id)
+        .eq("type", "organization")
+        .eq("is_current", True)
+        .execute()
+    )
+    if not org_res.data:
+        raise HTTPException(
+            status_code=400, detail="organization_id is not a valid current org"
+        )
+    new_org_label = org_res.data[0]["label"]
+
+    update_data = {"organization_id": new_org_id}
+    if task.get("pending_org_id"):
+        update_data["pending_org_id"] = None
+    supabase.table("tasks").update(update_data).eq("id", task_id).execute()
+
+    # Invalidate task caches + briefing cache (mirror _complete_task).
+    try:
+        from core.pulse.context import context_provider
+        context_provider.caches["tasks"].invalidate()
+        context_provider.caches["recent_tasks"].invalidate()
+    except Exception:
+        pass
+    try:
+        from core.lib.redis_cache import cache_delete
+        cache_delete(briefing_cache_key())
+    except Exception:
+        pass
+
+    # Learning loop: persist the correction (skip noise if unchanged).
+    if str(old_org_id) != str(new_org_id):
+        old_org_label = None
+        if old_org_id:
+            old_res = (
+                supabase.table("graph_nodes")
+                .select("label")
+                .eq("id", old_org_id)
+                .eq("is_current", True)
+                .execute()
+            )
+            old_org_label = old_res.data[0]["label"] if old_res.data else None
+        record_decision(
+            decision_type="task_org_correction",
+            title=f"Reassigned task org: {task.get('title', '')[:80]}",
+            context=f"Org: {old_org_label or 'unknown'} → {new_org_label}",
+            rationale="User corrected org linkage from the app task detail view.",
+            entity_type="task",
+            entity_id=str(task_id),
+            source="app",
+            reversible=True,
+            metadata={
+                "task_id": task_id,
+                "old_org_id": old_org_id,
+                "new_org_id": new_org_id,
+                "old_org_label": old_org_label,
+                "new_org_label": new_org_label,
+            },
+        )
+
+    fire_briefing_refresh(source="task_org_change")
+    return {"success": True, "organization_id": new_org_id}
 
 # --- GET CAPTURES (for Dump tab — recent raw dumps) ---
 @app.get("/api/captures")
@@ -5735,9 +5865,52 @@ async def suggestions_confirm_route(request: Request):
                 
                 merge_with = entity.get("merge_with")
                 if merge_with and merge_with.get("id"):
-                    # User explicitly chose to merge with an existing node
-                    # The node already exists, so we just acknowledge it
-                    created_items.append({"type": node_type, "title": label, "entity_id": merge_with.get("id")})
+                    target_id = merge_with.get("id")
+                    
+                    # 1. Find the pending source node
+                    p_res = supabase.table('pending_nodes').select('id, label').eq('owner_id', owner_id).ilike('label', label).in_('status', ['pending', 'flagged']).limit(1).execute()
+                    pending_node = p_res.data[0] if p_res and p_res.data else None
+                    
+                    # 2. Find target label
+                    t_res = supabase.table('graph_nodes').select('label, type').eq('id', target_id).limit(1).execute()
+                    target_label = t_res.data[0]['label'] if t_res and t_res.data else None
+                    
+                    if pending_node and target_label:
+                        source_label = pending_node['label']
+                        pending_id = pending_node['id']
+                        
+                        # 3. Repoint pending edges
+                        supabase.table('pending_graph_edges').update({'source_label': target_label}).eq('source_label', source_label).eq('owner_id', owner_id).execute()
+                        supabase.table('pending_graph_edges').update({'target_label': target_label}).eq('target_label', source_label).eq('owner_id', owner_id).execute()
+                        
+                        # Update concept nodes
+                        concepts_res = supabase.table('pending_nodes').select('id, eval_context').eq('node_type', 'concept').eq('owner_id', owner_id).execute()
+                        if concepts_res and concepts_res.data:
+                            for c in concepts_res.data:
+                                ctx = c.get('eval_context') or {}
+                                if ctx.get('linked_entity') == source_label:
+                                    ctx['linked_entity'] = target_label
+                                    supabase.table('pending_nodes').update({'eval_context': ctx}).eq('id', c['id']).execute()
+                        
+                        # 4. Mark pending node as merged
+                        supabase.table('pending_nodes').update({'status': 'merged'}).eq('id', pending_id).execute()
+                        
+                        # 5. Record decision
+                        try:
+                            from core.decisions import record_decision
+                            record_decision(
+                                decision_type="graph_node_merge",
+                                title=f"Merged pending '{source_label}' into '{target_label}'",
+                                entity_type="graph_node",
+                                entity_id=str(pending_id),
+                                confidence=1.0,
+                                source="suggestion_confirm",
+                            )
+                        except Exception:
+                            pass
+                            
+                    # Note: We return the *target's* label here so EntityContext doesn't get a mismatched pair (Issue #2 fix)
+                    created_items.append({"type": node_type, "title": target_label or label, "entity_id": target_id})
                     continue
 
                 res = await create_graph_node_with_db_record(
