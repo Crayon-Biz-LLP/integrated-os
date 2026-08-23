@@ -1503,6 +1503,7 @@ async def conversation_history_route(request: Request, limit: int = 100, offset:
                 'session_id': None,
                 'metadata': meta,
                 'title': meta.get('title'),
+                'message_type': row.get('message_type'),
             })
 
         entries.sort(key=lambda e: e.get('created_at') or '', reverse=True)
