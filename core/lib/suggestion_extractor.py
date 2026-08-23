@@ -132,7 +132,7 @@ Rules for actions:
 - query_info: fetches information from the brain.
 - target_id MUST be the exact numeric ID for existing Tasks, or string ID for existing Events. Not used for create operations.
 - IMPORTANT: If the request refers to an existing task from the Candidates list, set "matched_task_id" to its numeric ID, and use operations like reschedule/update_metadata/close_task instead of create_task. If it's a new task, matched_task_id should be null.
-- For NOTE intent → create_note. For TASK intent → create_task. For COMPLETION → close_task.
+- Intent gives context (NOTE → mostly create_note, TASK → mostly create_task), but you can output MULTIPLE actions if the text implies it. E.g., if it's a NOTE but mentions a scheduled meeting, output BOTH create_note AND create_event.
 - Return empty array or no_op for actions if nothing matches.
 - Document Type: <invoice|meeting_minutes|contract|report|receipt|proposal|message|other>
 - Summary: <2-3 sentence summary>

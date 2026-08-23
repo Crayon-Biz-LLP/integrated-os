@@ -346,6 +346,13 @@ def _integrate_llm_result(llm_result: dict, ctx: EntityContext, owner_id: str = 
 
         # Skip if already detected deterministically
         label_lower = label.lower()
+        
+        # Add to detected entities for the suggestion card if not already there
+        if not any(e.get("label", "").lower() == label_lower for e in ctx.detected_entities):
+            confidence = org.get("confidence", 1.0)
+            if confidence >= 0.5:
+                ctx.detected_entities.append({"type": "organization", "label": label, "confidence": confidence})
+
         if (ctx.organization_name and ctx.organization_name.lower() == label_lower):
             if is_primary:
                 pass
@@ -380,14 +387,14 @@ def _integrate_llm_result(llm_result: dict, ctx: EntityContext, owner_id: str = 
     for person in persons:
         label = (person.get("name") or "").strip()
         confidence = person.get("confidence", 0.0)
-        if label and confidence >= 0.5:
-            ctx.detected_entities.append({"type": "person", "label": label, "confidence": confidence})
-
         if not label or len(label) < 2 or confidence < 0.5:
             continue
 
-        # Skip if already detected deterministically
         label_lower = label.lower()
+        if not any(e.get("label", "").lower() == label_lower for e in ctx.detected_entities):
+            ctx.detected_entities.append({"type": "person", "label": label, "confidence": confidence})
+
+        # Skip if already detected deterministically
         if any(pn.lower() == label_lower for pn in ctx.person_names):
             continue
 
