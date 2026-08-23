@@ -311,6 +311,14 @@ async def extract_suggestions(text: str, title: str = "", entity: str = "", acti
                 "matched_task_id": parsed.get("matched_task_id"),
                 "suggested_actions": raw_actions
             }
+        elif raw_actions:
+            # Fallback for conversational notes that LLM doesn't label as a document
+            suggestion_dict = {
+                "document_type": parsed.get("document_type") or "message",
+                "summary": parsed.get("summary") or (text[:197] + "..." if len(text) > 200 else text),
+                "matched_task_id": parsed.get("matched_task_id"),
+                "suggested_actions": raw_actions
+            }
             
         if actions:
             audit_log_sync("suggestion_extractor", "INFO", f"Generated {len(actions)} actions")

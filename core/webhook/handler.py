@@ -1567,17 +1567,13 @@ async def _process_webhook(update: dict):
                     suggestion_dict["matched_task_id"] = matched_task_id
 
                 if should_show_card:
-                    from core.services.reply_delivery import deliver_outbound_reply
                     if _anaphora_task:
                         _anaphora_task.cancel()
                         
-                    text_response = "I extracted a few items from your message. Please review:"
-                    await deliver_outbound_reply(message_text=text_response)
-                    
                     with channel_tenant_scope():
                         try:
                             supabase.table('raw_dumps').insert({
-                                'content': "Suggestion Card",
+                                'content': suggestion_dict.get("summary", "Suggestion Card") if suggestion_dict else "Suggestion Card",
                                 'source': 'web',
                                 'owner_id': owner_id,
                                 'direction': 'outgoing',
