@@ -126,6 +126,7 @@ class ContextProvider:
                 'is_active': enrich.get('is_active', True),
                 'org_type': enrich.get('org_type'),
                 'parent_organization_id': enrich.get('parent_organization_id'),
+                'is_personal': meta.get('is_personal', False),
             })
         self.caches['organizations'].set(orgs)
         return orgs

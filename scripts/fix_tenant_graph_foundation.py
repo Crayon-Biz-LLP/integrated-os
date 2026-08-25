@@ -198,16 +198,18 @@ async def main(dry_run: bool = False, owner_id: str = None):
     users = client.table('users').select('id, name').execute()
     
     # Get all user_settings
-    settings = client.table('user_settings').select('user_id, personal_orgs, context').execute()
+    settings = client.table('user_settings').select('user_id, user_orgs, context').execute()
     settings_map = {}
     for s in (settings.data or []):
-        # Parse personal_orgs from JSON string if needed
-        personal_orgs = s.get('personal_orgs') or []
-        if isinstance(personal_orgs, str):
+        # Parse user_orgs from JSON string if needed, derive personal_orgs
+        user_orgs = s.get('user_orgs') or []
+        if isinstance(user_orgs, str):
             try:
-                personal_orgs = json.loads(personal_orgs)
+                user_orgs = json.loads(user_orgs)
             except Exception:
-                personal_orgs = []
+                user_orgs = []
+        # Derive personal_orgs from user_orgs (is_personal flag)
+        personal_orgs = [d.get('name', '') for d in user_orgs if d.get('is_personal') and d.get('name')]
         s['personal_orgs'] = personal_orgs
         settings_map[s['user_id']] = s
     

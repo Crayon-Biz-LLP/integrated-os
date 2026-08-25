@@ -164,6 +164,24 @@ def brief_tenant(uid: str, auth_secret: str | None = None, trigger: str = "cron"
 # PAUSED (Aug 13): the scheduled tick is removed. The VPS Desktop bridge
 # (core/skills/beeper_desktop.py, cron every 5 min on the always-on Oracle
 # box) is now the primary capture path — it reads the Desktop API token from
+@app.function(
+    secrets=secrets,
+    timeout=900,
+    min_containers=0
+)
+def process_suggestion_confirm_background(payload: dict):
+    """Background worker for /api/suggestions/confirm heavy lifting."""
+    owner_id = payload.get("owner_id")
+    if not owner_id:
+        print("[process_suggestion_confirm_background] Missing owner_id")
+        return
+        
+    from core.services.db import tenant_scope
+    with tenant_scope(owner_id):
+        from api.index import _run_suggestion_confirm_background
+        import asyncio
+        asyncio.run(_run_suggestion_confirm_background(payload))
+
 # the VPS .env, not the Modal secret, and it works with the Mac off. The
 # legacy Matrix token here is dead, and two pollers would double the LLM
 # cost. The function stays defined so it can be invoked manually if ever

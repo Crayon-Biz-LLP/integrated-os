@@ -703,6 +703,8 @@ async def _process_pulse_impl(auth_secret: str = None, request_id: str = None, t
         if persona_context:
             system_persona += persona_context
         org_map = {o['id']: o['name'] for o in orgs_list}
+        # O(1) set for work/life split — built from graph node's is_personal flag
+        personal_org_ids = {o['id'] for o in orgs_list if o.get('is_personal', False)}
         audit_log_sync("pulse", "INFO", f"📦 Phase 1 context fetched in parallel ({len(people)} people, {len(orgs_list)} orgs)")
 
         # ── Priority decay ──
@@ -755,23 +757,26 @@ async def _process_pulse_impl(auth_secret: str = None, request_id: str = None, t
             o_id = t.get('organization_id')
             o_name = org_map.get(o_id, 'INBOX')
 
-            # M2: personal/life org names come from user_settings (per tenant);
-            # default preserves Danny's pre-M2 list until his row is seeded.
-            from core.services.user_settings import resolve_personal_orgs
-            personal_orgs = resolve_personal_orgs()
-            o_name_lower = o_name.lower()
+            # Work/life split: O(1) set lookup on graph node's is_personal flag.
+            # Falls back to name-substring match for legacy nodes without metadata.
+            is_personal = o_id in personal_org_ids if o_id else False
+            if not is_personal:
+                # Fallback: check name against personal_org_names from user_settings
+                from core.services.user_settings import resolve_personal_orgs
+                personal_orgs = resolve_personal_orgs()
+                is_personal = any(po.lower() in o_name.lower() for po in personal_orgs)
 
             if is_weekend:
-                # Weekend mode: only personal/Ashraya tasks pass through
-                if not any(po.lower() in o_name_lower for po in personal_orgs):
+                # Weekend mode: only personal tasks pass through
+                if not is_personal:
                     continue
             elif hour < 19:
-                if not any(po.lower() in o_name_lower for po in personal_orgs) or o_name == 'INBOX':
+                if not is_personal or o_name == 'INBOX':
                     pass
                 else:
                     continue
             else:
-                if any(po.lower() in o_name_lower for po in personal_orgs):
+                if is_personal:
                     pass
                 else:
                     continue

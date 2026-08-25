@@ -6,6 +6,7 @@ import json
 import asyncio
 import uuid
 import difflib
+import re
 from typing import Optional
 from core.lib.audit_logger import audit_log_sync
 from core.lib.telemetry import emit_observation
@@ -52,12 +53,26 @@ def match_existing_nodes(entities: list[dict], owner_id: str) -> list[dict]:
     if res_user.data and res_user.data[0].get("name"):
         owner_name_lower = str(res_user.data[0]["name"]).lower().strip()
 
-    # Fetch live nodes
-    res_live = supabase.table("graph_nodes").select("id, label, type").eq("owner_id", owner_id).eq("is_current", True).execute()
+    # Fetch live nodes — entity types only. graph_nodes also carries task and
+    # memory nodes (thousands, ever-growing); fetching them unfiltered hits
+    # PostgREST's default 1000-row page cap and silently truncates the result,
+    # so older org/person nodes vanish from matching entirely (Aug 25 root
+    # cause: Solvstrat unmatched despite existing). The matcher loop below can
+    # only ever use these types anyway.
+    _ENTITY_NODE_TYPES = ["person", "organization", "place", "event", "emotional_state"]
+    res_live = (supabase.table("graph_nodes")
+                .select("id, label, type")
+                .in_("type", _ENTITY_NODE_TYPES)
+                .eq("is_current", True)
+                .execute())
     live_nodes = res_live.data or []
 
-    # Fetch pending nodes
-    res_pending = supabase.table("pending_nodes").select("id, label, node_type").eq("owner_id", owner_id).in_("status", ["pending", "flagged"]).execute()
+    # Fetch pending nodes — same entity-type restriction for the same reason.
+    res_pending = (supabase.table("pending_nodes")
+                   .select("id, label, node_type")
+                   .in_("node_type", _ENTITY_NODE_TYPES)
+                   .in_("status", ["pending", "flagged"])
+                   .execute())
     pending_nodes = res_pending.data or []
 
     enriched = []
@@ -121,7 +136,17 @@ def match_existing_nodes(entities: list[dict], owner_id: str) -> list[dict]:
         ent_copy = dict(ent)
         ent_copy["existing_matches"] = unique_matches
         enriched.append(ent_copy)
-        
+
+    # Observability: the fetch/match boundary was invisible for weeks — a
+    # silent 1000-row truncation took multi-round archaeology to diagnose.
+    # One line makes empty-fetch vs no-match instantly distinguishable.
+    audit_log_sync(
+        "pulse", "INFO",
+        f"match_existing_nodes: entities={len(entities)} "
+        f"live_nodes={len(live_nodes)} pending_nodes={len(pending_nodes)} "
+        f"matched={sum(1 for e in enriched if e.get('existing_matches'))}"
+    )
+
     return enriched
 
 
@@ -131,7 +156,8 @@ async def create_graph_node_with_db_record(
     source_text: str = "",
     context: str = None,
     source_tag: str = "pending_approval",
-    force: bool = False
+    force: bool = False,
+    entity_context=None
 ) -> dict:
     """Create a domain table row + graph_nodes entry + root edge.
 
@@ -200,26 +226,43 @@ async def create_graph_node_with_db_record(
                 raise Exception("Graph node id missing after upsert")
             audit_log_sync("pulse", "INFO", f"Person node ready: '{label}' (node {graph_node_id})")
 
-            # Resolve org from source_text for the pending edge + enrichment.
-            # Read live org NODES (mirror table gone).
+            # Resolve org for the pending edge + enrichment (Bug 2 fix).
+            # Priority: 1) entity_context's primary org (LLM already disambiguated),
+            # 2) affiliation pattern ("<Person> ... from/at/of <Org>"),
+            # 3) hardened substring match (longest-label-first, word-boundary).
             matched_org_name = None
-            if source_text and source_text.strip() not in ("", "batch"):
+            match_source = None
+            ec_org_name = (getattr(entity_context, "organization_name", None) or "").strip()
+            if ec_org_name:
+                matched_org_name = ec_org_name
+                match_source = "entity_context"
+            if not matched_org_name and source_text and source_text.strip() not in ("", "batch"):
                 orgs_res = supabase.table('graph_nodes').select('label').eq('type', 'organization').eq('is_current', True).execute()
-                source_lower = source_text.lower()
+                live_orgs = []
                 for o in (orgs_res.data or []):
                     oname = (o.get('label') or '').strip()
-                    if oname.lower() in NOISE_LABELS:
-                        continue
-                    if f" {oname.lower()} " in f" {source_lower} ":
+                    if oname and oname.lower() not in NOISE_LABELS:
+                        live_orgs.append(oname)
+                source_lower = source_text.lower()
+                # Tier 2: affiliation pattern, longest label first
+                for oname in sorted(live_orgs, key=len, reverse=True):
+                    if re.search(rf'\b(?:from|at|of)\s+{re.escape(oname.lower())}\b', source_lower):
                         matched_org_name = oname
+                        match_source = "affiliation_pattern"
                         break
-                    canonical = resolve_alias(oname)
-                    if canonical != oname and f" {canonical.lower()} " in f" {source_lower} ":
-                        matched_org_name = oname
-                        break
-                    if len(oname) >= 6 and oname.lower() in source_lower:
-                        matched_org_name = oname
-                        break
+                # Tier 3: word-boundary containment, longest label first
+                if not matched_org_name:
+                    for oname in sorted(live_orgs, key=len, reverse=True):
+                        o_lower = oname.lower()
+                        if re.search(rf'\b{re.escape(o_lower)}\b', source_lower):
+                            matched_org_name = oname
+                            match_source = "substring"
+                            break
+                        canonical = resolve_alias(oname)
+                        if canonical != oname and re.search(rf'\b{re.escape(canonical.lower())}\b', source_lower):
+                            matched_org_name = oname
+                            match_source = "substring_alias"
+                            break
 
             if matched_org_name:
                 res = insert_pending_edge(
@@ -233,7 +276,7 @@ async def create_graph_node_with_db_record(
                         "target_type": "organization"
                     }
                 )
-                audit_log_sync("pulse", "INFO", f"Post-creation hook: Set org '{matched_org_name}' on person '{label}' + proposed WORKS_AT (status: {res.get('status')})")
+                audit_log_sync("pulse", "INFO", f"Post-creation hook: Set org '{matched_org_name}' on person '{label}' + proposed WORKS_AT via {match_source} (status: {res.get('status')})")
             else:
                 audit_log_sync("pulse", "INFO", f"Post-creation hook: No confident org match found for person {label}.")
 
@@ -399,7 +442,7 @@ async def _backfill_existing_content_for_entity(
         # ── Backfill memories (notes) that mention this entity label ──
         try:
             mem_res = supabase.table('memories') \
-                .select('id, metadata') \
+                .select('id, metadata, content') \
                 .eq('is_current', True) \
                 .eq('memory_type', 'note') \
                 .ilike('content', f'%{label_lower}%') \
@@ -408,7 +451,11 @@ async def _backfill_existing_content_for_entity(
 
             if mem_res and mem_res.data:
                 backfilled_count = 0
+                label_word_pat = re.compile(rf'\b{re.escape(label_lower)}\b')
                 for mem in mem_res.data:
+                    # Word-boundary check — ilike('%label%') also matches substrings ("David" in "Davidson")
+                    if not label_word_pat.search((mem.get('content') or '').lower()):
+                        continue
                     current_meta = mem.get('metadata') or {}
                     if isinstance(current_meta, str):
                         try:
@@ -463,7 +510,11 @@ async def _backfill_existing_content_for_entity(
 
             if task_res and task_res.data:
                 backfilled_count = 0
+                label_word_pat = re.compile(rf'\b{re.escape(label_lower)}\b')
                 for task in task_res.data:
+                    # Word-boundary check — same substring guard as memory backfill
+                    if not label_word_pat.search((task.get('title') or '').lower()):
+                        continue
                     update_data = {}
 
                     if entity_id_field == 'organization_id':
@@ -770,8 +821,15 @@ Format:
             temperature=0.0
         )
         
-        # Clean response and parse
-        content = response.strip()
+        # Clean response and parse (generate_content_with_fallback returns LLMResponse, not str)
+        content = (getattr(response, "text", None) or "").strip()
+        if not content:
+            audit_log_sync("pulse", "WARNING",
+                f"Gap D: LLM edge inference returned empty response for {label} ({node_type}). "
+                f"provider={getattr(response, 'provider', '?')}, model={getattr(response, 'model', '?')}, "
+                f"success={getattr(response, 'success', '?')}, degraded={getattr(response, 'degraded', '?')}, "
+                f"reason={getattr(response, 'degraded_reason', '?')}, attempts={getattr(response, 'attempts', '?')}")
+            return []
         if content.startswith("```json"):
             content = content[7:-3]
         elif content.startswith("```"):

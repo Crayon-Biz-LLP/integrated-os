@@ -86,10 +86,10 @@ def build_email_classify_prompt(
         user_name: from user_settings (fallback: env USER_NAME / "Danny")
         user_context: one-line 'who they are' (fallback: Danny-era identity)
     """
-    from core.services.user_settings import resolve_user_name, resolve_context, resolve_domains
+    from core.services.user_settings import resolve_user_name, resolve_context, resolve_user_orgs
     user_name = user_name or resolve_user_name()
     user_context = user_context or resolve_context()
-    domain_names = [d.get("name", "") for d in resolve_domains() if d.get("name")]
+    domain_names = [d.get("name", "") for d in resolve_user_orgs() if d.get("name")]
 
     mailbox_context = _mailbox_context(mailbox_type, user_name, domain_names)
     arrival_context = _arrival_context(mailbox_type, domain_names)

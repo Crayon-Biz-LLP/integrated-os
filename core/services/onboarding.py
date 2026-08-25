@@ -107,8 +107,8 @@ def normalize_world(payload: dict, existing_timezone: str | None) -> dict:
         if (o.get("name") or "").strip()
     ]
 
-    domains = []
-    for d in (payload.get("domains") or []):
+    user_orgs = []
+    for d in (payload.get("user_orgs") or payload.get("domains") or []):
         name = (d.get("name") or "").strip()
         if not name:
             continue
@@ -124,18 +124,9 @@ def normalize_world(payload: dict, existing_timezone: str | None) -> dict:
         # route to MINISTRY instead of the catch-all INBOX.
         if not keywords:
             keywords = [name.lower()]
-        domains.append({"name": name, "keywords": keywords})
-
-    personal_orgs = payload.get("personal_orgs")
-    if not personal_orgs:
-        # Derive from the RAW payload — the normalized domain dicts drop
-        # non-essential keys like 'kind'.
-        personal_orgs = [
-            (d.get("name") or "").strip()
-            for d in (payload.get("domains") or [])
-            if (d.get("name") or "").strip()
-            and str(d.get("kind") or "").lower() in ("personal", "life")
-        ]
+        # Derive is_personal from legacy 'kind' field or explicit flag
+        is_personal = bool(d.get("is_personal")) or str(d.get("kind") or "").lower() in ("personal", "life")
+        user_orgs.append({"name": name, "keywords": keywords, "is_personal": is_personal})
 
     tasks = []
     for t in (payload.get("tasks") or []):
@@ -180,8 +171,7 @@ def normalize_world(payload: dict, existing_timezone: str | None) -> dict:
         # Asia/Kolkata default). The device timezone can be sent by the app
         # so a fresh tenant's briefing times are in THEIR local time.
         "timezone": timezone,
-        "domains": domains,
-        "personal_orgs": [str(o).strip() for o in personal_orgs if str(o).strip()],
+        "user_orgs": user_orgs,
         "root_label": (payload.get("root_label") or "").strip(),
         # M9.7: briefing schedule preset (classic/balanced/bookends/
         # through_the_day) — seed_world writes the resolved row. Absent →

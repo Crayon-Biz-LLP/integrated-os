@@ -222,24 +222,24 @@ def main() -> None:
     _psql(sql, dsn, password)
     print(f"✅ Seeded {len(rows)} M6 config rows for tenant #1 ({args.user}) — idempotent (re-run safe).")
 
-    # M17: tenant #1's personal_orgs are authoritative row data now that
+    # M17: tenant #1's user_orgs are authoritative row data now that
     # load_settings treats an existing row as fully authoritative (null
-    # personal_orgs would otherwise resolve to [] for him). Idempotent.
-    from core.services.user_settings import DEFAULT_PERSONAL_ORGS
-    po_json = json.dumps(DEFAULT_PERSONAL_ORGS)
+    # user_orgs would otherwise resolve to [] for him). Idempotent.
+    from core.services.user_settings import DEFAULT_USER_ORGS
+    uo_json = json.dumps(DEFAULT_USER_ORGS)
     _psql(
-        f"insert into public.user_settings (user_id, personal_orgs) values "
-        f"('{uid}', {_lit(po_json)}) "
-        f"on conflict (user_id) do update set personal_orgs = excluded.personal_orgs, updated_at = now()",
+        f"insert into public.user_settings (user_id, user_orgs) values "
+        f"('{uid}', {_lit(uo_json)}) "
+        f"on conflict (user_id) do update set user_orgs = excluded.user_orgs, updated_at = now()",
         dsn, password,
     )
-    _po_verify = _psql(
-        f"select personal_orgs::text from public.user_settings where user_id = '{uid}'",
+    _uo_verify = _psql(
+        f"select user_orgs::text from public.user_settings where user_id = '{uid}'",
         dsn, password,
     )
-    if _po_verify != po_json:
-        raise SystemExit("❌ personal_orgs verification failed: " + _po_verify[:80])
-    print(f"✅ Seeded tenant #1 user_settings.personal_orgs ({len(DEFAULT_PERSONAL_ORGS)} orgs) — idempotent.")
+    if _uo_verify != uo_json:
+        raise SystemExit("❌ user_orgs verification failed: " + _uo_verify[:80])
+    print(f"✅ Seeded tenant #1 user_settings.user_orgs ({len(DEFAULT_USER_ORGS)} orgs) — idempotent.")
 
     # Self-verify: every key now holds exactly the intended value
     bad = []

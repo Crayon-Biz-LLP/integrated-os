@@ -38,6 +38,7 @@ class _SuggestionItem {
   double? confidence;
   List<Map<String, dynamic>>? existingMatches;
   Map<String, dynamic>? mergeWith;
+  Map<String, dynamic>? rawAction;
 
   _SuggestionItem({
     required this.category,
@@ -52,6 +53,7 @@ class _SuggestionItem {
     this.confidence,
     this.existingMatches,
     this.mergeWith,
+    this.rawAction,
   }) {
     if (existingMatches != null && existingMatches!.isNotEmpty && mergeWith == null) {
       mergeWith = existingMatches![0];
@@ -68,6 +70,7 @@ class _SuggestionItem {
         'date': date,
         'description': description,
         'edited': edited,
+        'raw_action': rawAction,
       };
     } else {
       return {
@@ -94,14 +97,29 @@ class _SuggestionCardState extends State<SuggestionCard> {
     final List<_SuggestionItem> items = [];
     final actions = widget.breakdown['suggested_actions'] as List? ?? [];
     for (var action in actions) {
+      String op = action['operation'] ?? '';
+      String t = action['human_label'] ?? action['title'] ?? '';
+      if (t.isEmpty && action['params'] is Map) {
+        t = action['params']['title'] ?? action['params']['content'] ?? '';
+      }
+      String mappedType = 'task';
+      if (op == 'create_event' || op == 'delete_event') {
+        mappedType = 'event';
+      } else if (op == 'create_note') {
+        mappedType = 'note';
+      } else if (action['type'] != null) {
+        mappedType = action['type'];
+      }
+
       items.add(_SuggestionItem(
         category: 'task',
-        type: action['type'] ?? 'task',
-        title: action['title'] ?? '',
+        type: mappedType,
+        title: t,
         owner: action['owner'],
-        deadline: action['deadline'],
-        date: action['date'],
-        description: action['description'],
+        deadline: action['deadline'] ?? (action['params'] is Map ? action['params']['deadline'] : null),
+        date: action['date'] ?? (action['params'] is Map ? action['params']['time'] : null),
+        description: action['description'] ?? (action['params'] is Map ? action['params']['notes'] : null),
+        rawAction: action,
       ));
     }
     
@@ -184,6 +202,28 @@ class _SuggestionCardState extends State<SuggestionCard> {
     
     setState(() => _confirmed = true);
     widget.onConfirm(selectedTasks, selectedEntities);
+  }
+
+  String _entityLabel(_SuggestionItem item) {
+    final matches = item.existingMatches;
+    if (matches != null && matches.isNotEmpty) {
+      final scope = matches.first['scope'];
+      if (scope == 'live') return 'Existing: ${matches.first['label']} (${item.type})';
+      if (scope == 'pending') return 'Pending: ${matches.first['label']} (${item.type})';
+    }
+    if (item.mergeWith != null) return 'Merge: ${item.mergeWith!['label']} (${item.type})';
+    return 'New ${item.type}';
+  }
+
+  Color _entityColor(_SuggestionItem item) {
+    final matches = item.existingMatches;
+    if (matches != null && matches.isNotEmpty) {
+      final scope = matches.first['scope'];
+      if (scope == 'live') return AppTheme.green;
+      if (scope == 'pending') return AppTheme.amber;
+    }
+    if (item.mergeWith != null) return AppTheme.green;
+    return AppTheme.blue;
   }
 
   IconData _typeIcon(String category, String type) {
@@ -312,21 +352,13 @@ class _SuggestionCardState extends State<SuggestionCard> {
                             if (item.category == 'entity')
                               Row(
                                 children: [
-                                  if (item.mergeWith != null)
-                                    Expanded(
-                                      child: Text(
-                                        'Existing: ${item.mergeWith!['label']} (${item.type})',
-                                        style: AppTheme.caption.copyWith(fontSize: 10, color: AppTheme.green),
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                    )
-                                  else
-                                    Expanded(
-                                      child: Text(
-                                        'New ${item.type}',
-                                        style: AppTheme.caption.copyWith(fontSize: 10, color: AppTheme.blue),
-                                      ),
+                                  Expanded(
+                                    child: Text(
+                                      _entityLabel(item),
+                                      style: AppTheme.caption.copyWith(fontSize: 10, color: _entityColor(item)),
+                                      overflow: TextOverflow.ellipsis,
                                     ),
+                                  ),
                                   if (item.confidence != null)
                                     Row(
                                       mainAxisSize: MainAxisSize.min,

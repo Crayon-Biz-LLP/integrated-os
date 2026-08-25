@@ -319,6 +319,25 @@ class ApiService {
   }
 
 
+  /// Reject/skip a suggestion card.
+  Future<ApiResult<dynamic>> rejectSuggestions(
+    String sourceType,
+    dynamic sourceId,
+  ) async {
+    debugPrint('[API] rejectSuggestions: source=$sourceId');
+    try {
+      return post(
+        '/api/suggestions/reject',
+        body: {
+          'source_type': sourceType,
+          'source_id': sourceId,
+        },
+      );
+    } catch (e) {
+      return ApiResult.fail('$e');
+    }
+  }
+
   // ── Messages (history) ────────────────────────────────────────
 
   /// Fetches message history from /api/messages.

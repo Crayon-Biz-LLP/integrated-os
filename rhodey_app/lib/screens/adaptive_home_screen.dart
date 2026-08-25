@@ -3868,31 +3868,41 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
             filename: breakdown['filename'],
             onConfirm: (selectedTasks, selectedEntities) async {
               if (sourceId == null) return;
-              final result = await _api.confirmSuggestions(
-                isDoc ? 'document' : 'message',
-                sourceId,
-                selectedTasks,
-                selectedEntities,
-              );
-              // Optimistic removal to avoid stuck card
-              setState(() {
-                _messages.removeWhere((m) => m.id == msg.id);
-              });
-              if (result.success && mounted) {
-                final count = result.data['count'] ?? 0;
-                final confirmMsg = ChatMessage(
-                  id: 'doc-confirm-${DateTime.now().millisecondsSinceEpoch}',
-                  role: MessageRole.rhodey,
-                  text: '✅ Created $count ${count == 1 ? 'item' : 'items'}.',
-                  timestamp: DateTime.now(),
+              try {
+                final result = await _api.confirmSuggestions(
+                  isDoc ? 'document' : 'message',
+                  sourceId,
+                  selectedTasks,
+                  selectedEntities,
                 );
-                setState(() {
-                  _messages.add(confirmMsg);
-                });
-                _scrollToBottom();
+                if (result.success && mounted) {
+                  setState(() {
+                    _messages.removeWhere((m) => m.id == msg.id);
+                  });
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Processing items in background...')),
+                  );
+                } else if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Failed to confirm suggestions: ${result.error ?? 'Unknown error'}')),
+                  );
+                }
+              } catch (e) {
+                if (mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Error: $e')),
+                  );
+                }
               }
             },
-            onSkip: () {
+            onSkip: () async {
+              if (sourceId != null) {
+                try {
+                  await _api.rejectSuggestions(isDoc ? 'document' : 'message', sourceId);
+                } catch (e) {
+                  print('Failed to reject suggestion: $e');
+                }
+              }
               // Just remove the card
               setState(() {
                 _messages.removeWhere((m) => m.id == msg.id);

@@ -124,10 +124,10 @@ def _paginate(
 
 def extract_facts(owner_id: str) -> dict:
     """Deterministic, owner-scoped fact bundle with source references."""
-    from core.services.user_settings import resolve_context, resolve_domains
+    from core.services.user_settings import resolve_context, resolve_user_orgs
 
     context = resolve_context(owner_id)
-    domains = [d.get("name", "") for d in resolve_domains(owner_id) if d.get("name")]
+    domains = [d.get("name", "") for d in resolve_user_orgs(owner_id) if d.get("name")]
 
     try:
         from core.lib.graph_rules import resolve_root_label

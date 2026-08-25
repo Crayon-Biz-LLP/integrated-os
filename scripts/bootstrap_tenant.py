@@ -137,10 +137,12 @@ def main() -> None:
     parser.add_argument("--email", default=None)
     parser.add_argument("--timezone", default="Asia/Kolkata", help="IANA timezone")
     parser.add_argument("--context", default=None, help="One-line 'who they are' for prompt slots (M2)")
+    parser.add_argument("--user-orgs", default=None,
+                        help="JSON list of {name, keywords, is_personal} user orgs (M17; defaults to Danny's life domains)")
     parser.add_argument("--domains", default=None,
-                        help="JSON list of {name, keywords} routing domains (M2; defaults to Danny's life domains)")
+                        help="DEPRECATED: use --user-orgs. JSON list of {name, keywords} routing domains")
     parser.add_argument("--personal-orgs", default=None,
-                        help="JSON list of personal/life org names for the work-life split (M2)")
+                        help="DEPRECATED: use --user-orgs. JSON list of personal/life org names")
     parser.add_argument("--api-key", default=None,
                         help="Per-user API key for the app (stored as SHA-256 hash; printed once)")
     parser.add_argument("--dsn", default=None, help="Override connection (local copy DB)")
@@ -160,26 +162,33 @@ def main() -> None:
     # 2. user_settings row
     if args.apply:
         from core.services.user_settings import (
-            DEFAULT_CONTEXT, DEFAULT_DOMAINS, DEFAULT_PERSONAL_ORGS,
+            DEFAULT_CONTEXT, DEFAULT_USER_ORGS,
         )
-        domains = args.domains if args.domains is not None else json.dumps(DEFAULT_DOMAINS)
-        personal_orgs = (
-            args.personal_orgs if args.personal_orgs is not None
-            else json.dumps(DEFAULT_PERSONAL_ORGS)
-        )
+        # Handle --user-orgs (preferred) or deprecated --domains + --personal-orgs
+        if args.user_orgs is not None:
+            user_orgs = args.user_orgs
+        elif args.domains is not None:
+            # Legacy: convert domains + personal_orgs to user_orgs shape
+            domains_list = json.loads(args.domains) if isinstance(args.domains, str) else args.domains
+            po_list = json.loads(args.personal_orgs) if args.personal_orgs and isinstance(args.personal_orgs, str) else (args.personal_orgs or [])
+            user_orgs = json.dumps([
+                {"name": d.get("name", ""), "keywords": d.get("keywords", []), "is_personal": d.get("name", "") in po_list}
+                for d in domains_list if d.get("name")
+            ])
+        else:
+            user_orgs = json.dumps(DEFAULT_USER_ORGS)
         context = args.context if args.context is not None else DEFAULT_CONTEXT
         _psql(
             "insert into public.user_settings "
-            "(user_id, timezone, domains, personal_orgs, voice, context) "
-            f"values ('{uid}', {_lit(args.timezone)}, {_lit(domains)}::jsonb, "
-            f"{_lit(personal_orgs)}::jsonb, NULL, {_lit(context)}) "
+            "(user_id, timezone, user_orgs, voice, context) "
+            f"values ('{uid}', {_lit(args.timezone)}, {_lit(user_orgs)}::jsonb, "
+            f"NULL, {_lit(context)}) "
             "on conflict (user_id) do update set timezone = excluded.timezone, "
-            "domains = coalesce(excluded.domains, public.user_settings.domains), "
-            "personal_orgs = coalesce(excluded.personal_orgs, public.user_settings.personal_orgs), "
+            "user_orgs = coalesce(excluded.user_orgs, public.user_settings.user_orgs), "
             "context = coalesce(excluded.context, public.user_settings.context), updated_at = now()",
             dsn, password,
         )
-        print("  user_settings: upserted (timezone, domains, personal_orgs, context)")
+        print("  user_settings: upserted (timezone, user_orgs, context)")
     else:
         print("  user_settings: would upsert (dry-run)")
 

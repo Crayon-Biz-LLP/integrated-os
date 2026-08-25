@@ -38,9 +38,10 @@ def test_defaults_are_danny_era():
     assert d.name == "Danny"
     assert d.timezone == "Asia/Kolkata"
     assert d.context.startswith("Danny (Yashwant Daniel)")
-    names = [x["name"] for x in d.domains]
+    names = [x["name"] for x in d.user_orgs]
     assert "Solvstrat" in names and "Ashraya" in names and "Qhord" in names
-    assert "Personal" in d.personal_orgs
+    personal_names = [x["name"] for x in d.user_orgs if x.get("is_personal")]
+    assert "Personal" in personal_names
 
 
 def test_env_override_name_and_timezone(monkeypatch):
@@ -169,8 +170,8 @@ def test_routing_rules_text_from_default_domains():
 
 
 def test_routing_rules_text_custom_domains():
-    with patch.object(us, "resolve_domains", return_value=[
-            {"name": "Acme", "keywords": ["acme"]}]):
+    with patch.object(us, "resolve_user_orgs", return_value=[
+            {"name": "Acme", "keywords": ["acme"], "is_personal": False}]):
         rr = us.routing_rules_text()
     assert "→ Acme" in rr
     assert "Solvstrat" not in rr

@@ -30,7 +30,7 @@ from __future__ import annotations
 import time
 
 from core.services.db import tenant_aware_client, get_tenant
-from core.services.user_settings import resolve_domains
+from core.services.user_settings import resolve_user_orgs
 
 
 CACHE_TTL_SECONDS = 900  # 15 min — examples shouldn't go stale mid-day
@@ -170,7 +170,7 @@ def _resolve_entity_for_org(org: str, uid: str | None) -> str:
     if not org:
         return "INBOX"
     org_lower = org.lower()
-    for d in resolve_domains(uid):
+    for d in resolve_user_orgs(uid):
         name = (d.get("name") or "").strip()
         if not name:
             continue

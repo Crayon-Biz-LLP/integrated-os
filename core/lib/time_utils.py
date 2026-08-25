@@ -216,11 +216,17 @@ def resolve_relative_dates(text: str, reference_date: datetime) -> str:
     text_lower = text.lower()
     result = text
 
+    # "day after tomorrow" or "day after" -> "on June 22, 2026"
+    day_after_pattern = r'\bday\s+after(?:\s+tomorrow)?\b'
+    if re.search(day_after_pattern, text_lower):
+        day_after = reference_date + timedelta(days=2)
+        date_str = day_after.strftime('%B %d, %Y')
+        result = re.sub(day_after_pattern, f'on {date_str}', result, flags=re.I)
+
     # "tomorrow" -> "on June 21, 2026"
     if re.search(r'\btomorrow\b', text_lower):
         tomorrow = reference_date + timedelta(days=1)
         date_str = tomorrow.strftime('%B %d, %Y')
-        # Replace the word in the original text (preserving case context)
         result = re.sub(r'\btomorrow\b', f'on {date_str}', result, flags=re.I)
 
     # "today" / "tonight" -> "on June 20, 2026"
@@ -228,17 +234,6 @@ def resolve_relative_dates(text: str, reference_date: datetime) -> str:
         if re.search(rf'\b{word}\b', text_lower):
             date_str = reference_date.strftime('%B %d, %Y')
             result = re.sub(rf'\b{word}\b', f'on {date_str}', result, flags=re.I)
-
-    # "this Monday/Tuesday/..." -> next occurrence from reference_date
-    for i, day in enumerate(_DAY_NAMES):
-        pattern = rf'\bthis\s+{day}\b'
-        if re.search(pattern, text_lower):
-            days_ahead = i - reference_date.weekday()
-            if days_ahead <= 0:
-                days_ahead += 7
-            target = reference_date + timedelta(days=days_ahead)
-            date_str = target.strftime('%A, %B %d, %Y')
-            result = re.sub(pattern, f'on {date_str}', result, flags=re.I)
 
     # "next Monday/Tuesday/..." -> next occurrence in the following week
     for i, day in enumerate(_DAY_NAMES):
@@ -248,7 +243,18 @@ def resolve_relative_dates(text: str, reference_date: datetime) -> str:
             if days_ahead <= 0:
                 days_ahead += 7
             target = reference_date + timedelta(days=days_ahead + 7)
-            date_str = target.strftime('%A, %B %d, %Y')
+            date_str = target.strftime('%B %d, %Y')
+            result = re.sub(pattern, f'on {date_str}', result, flags=re.I)
+
+    # "this Monday/Tuesday/..." or bare "Monday/Tuesday/..." -> next occurrence from reference_date
+    for i, day in enumerate(_DAY_NAMES):
+        pattern = rf'\b(this\s+)?{day}\b'
+        if re.search(pattern, result, flags=re.I): # search in result so we don't match already replaced "next Tuesday"
+            days_ahead = i - reference_date.weekday()
+            if days_ahead <= 0:
+                days_ahead += 7
+            target = reference_date + timedelta(days=days_ahead)
+            date_str = target.strftime('%B %d, %Y')
             result = re.sub(pattern, f'on {date_str}', result, flags=re.I)
 
     # "in/by N days/weeks" -> "on {reference_date + N units}"
@@ -360,6 +366,13 @@ def resolve_expiry(content: str, created_at: datetime) -> Optional[datetime]:
         if parsed_time and parsed_time > created_at:
             return parsed_time
         return _end_of_day(created_at)
+
+    # "day after tomorrow" / "day after" — expires at end of 2 days out
+    if re.search(r'\bday\s+after(?:\s+tomorrow)?\b', text_lower):
+        day_after = created_at + timedelta(days=2)
+        if parsed_time:
+            return day_after.replace(hour=parsed_time.hour, minute=parsed_time.minute, second=0, microsecond=0)
+        return _end_of_day(day_after)
 
     # "tomorrow" — expires at end of next day
     if re.search(r'\btomorrow\b', text_lower):

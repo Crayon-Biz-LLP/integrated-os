@@ -54,7 +54,7 @@ async def seed_world(supabase, uid: str, world: dict) -> dict:
 
     created = {"people": 0, "organizations": 0, "tasks": 0, "errors": []}
 
-    # ── 1. user_settings (context, domains, personal_orgs, timezone) ──
+    # ── 1. user_settings (context, user_orgs, timezone) ──
     try:
         from core.lib.time_utils import is_valid_timezone
         timezone = (world.get("timezone") or "").strip()
@@ -62,12 +62,25 @@ async def seed_world(supabase, uid: str, world: dict) -> dict:
             # Same guard as onboarding's normalize_world: never write a
             # garbage IANA name into user_settings.timezone.
             timezone = "Asia/Kolkata"
+        # Write user_orgs (preferred) or fall back to legacy domains+personal_orgs
+        user_orgs = world.get("user_orgs") or []
+        if not user_orgs and world.get("domains"):
+            # Legacy path: convert domains+personal_orgs to user_orgs shape
+            personal_orgs_list = world.get("personal_orgs") or []
+            user_orgs = [
+                {
+                    "name": d.get("name", ""),
+                    "keywords": d.get("keywords", []),
+                    "is_personal": d.get("name", "") in personal_orgs_list,
+                }
+                for d in world.get("domains", [])
+                if d.get("name")
+            ]
         settings = {
             "user_id": uid,
             "timezone": timezone,
             "context": world.get("context") or "",
-            "domains": json.dumps(world.get("domains") or []),
-            "personal_orgs": json.dumps(world.get("personal_orgs") or []),
+            "user_orgs": json.dumps(user_orgs),
         }
         # M15: role persona — only written when present so a test/old DB
         # without the column (migration 93) is never broken by the upsert.
@@ -152,6 +165,9 @@ async def seed_world(supabase, uid: str, world: dict) -> dict:
         except Exception as e:
             created["errors"].append(f"person {name}: {e}")
 
+    # Build is_personal lookup from user_orgs for tagging graph nodes
+    user_orgs_map = {d.get("name"): d.get("is_personal", False) for d in (world.get("user_orgs") or []) if d.get("name")}
+
     for o in world.get("organizations") or []:
         name = (o.get("name") or "").strip()
         if not name:
@@ -165,13 +181,28 @@ async def seed_world(supabase, uid: str, world: dict) -> dict:
             )
             if res.get("success"):
                 created["organizations"] += 1
+                # Tag graph node with is_personal metadata for briefing filter
+                is_personal = user_orgs_map.get(name, False)
+                if is_personal:
+                    try:
+                        supabase.table("graph_nodes").update(
+                            {"metadata": {"is_personal": True}}
+                        ).eq("id", res.get("node_id")).execute()
+                    except Exception:
+                        pass
             else:
                 created["errors"].append(f"org {name}: {res.get('message')}")
         except Exception as e:
             created["errors"].append(f"org {name}: {e}")
 
     # ── 2b. Personal orgs as graph nodes + user person node + root edges ──
-    personal_orgs = world.get("personal_orgs") or []
+    # Derive personal org names from user_orgs (preferred) or legacy personal_orgs
+    user_orgs_data = world.get("user_orgs") or []
+    personal_org_names = [
+        d.get("name", "") for d in user_orgs_data if d.get("is_personal")
+    ]
+    if not personal_org_names:
+        personal_org_names = world.get("personal_orgs") or []
     root_label = (world.get("root_label") or "").strip()
     # Derive root label from context if not provided
     if not root_label:
@@ -180,10 +211,12 @@ async def seed_world(supabase, uid: str, world: dict) -> dict:
             root_label = ctx.split(" - ")[0].split(" — ")[0].strip()[:50]
     PERSONAL_ORG_LABELS = {"Personal", "Family"}
     personal_org_ids = {}  # label → node_id
-    for org_name in personal_orgs:
+    for org_name in personal_org_names:
         if org_name not in PERSONAL_ORG_LABELS:
             continue
         try:
+            # Set is_personal on graph node metadata for briefing filter
+            from core.pulse.graph import create_graph_node_with_db_record
             res = await create_graph_node_with_db_record(
                 label=org_name,
                 node_type="organization",
@@ -191,8 +224,16 @@ async def seed_world(supabase, uid: str, world: dict) -> dict:
                 source_tag="onboarding_seed",
             )
             if res.get("success"):
-                personal_org_ids[org_name] = res.get("node_id")
+                node_id = res.get("node_id")
+                personal_org_ids[org_name] = node_id
                 created["organizations"] += 1
+                # Tag graph node with is_personal metadata
+                try:
+                    supabase.table("graph_nodes").update(
+                        {"metadata": {"is_personal": True}}
+                    ).eq("id", node_id).execute()
+                except Exception:
+                    pass  # non-critical — briefing falls back to name match
         except Exception as e:
             created["errors"].append(f"personal_org {org_name}: {e}")
 

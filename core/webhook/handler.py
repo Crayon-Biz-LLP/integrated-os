@@ -1518,7 +1518,7 @@ async def _process_webhook(update: dict):
                     suggestion_dict["suggested_entities"] = entities
 
                 new_entities = [e for e in entities if not e.get("existing_matches")]
-                should_show_card = bool(new_entities)
+                should_show_card = (intent in ('NOTE', 'TASK') and len(new_entities) >= 1)
                 
                 # 4. ALWAYS log inbound message for the App (web)
                 msg_id = 0
@@ -1541,7 +1541,7 @@ async def _process_webhook(update: dict):
                         
                         audit_log_sync("webhook", "ERROR", f"Failed to insert inbound raw_dump: {e}")
                 
-                # 5. Execute actions immediately
+                # 5. Execute actions or defer them to the suggestion card
                 if actions:
                     if not matched_task_id and ctx.pending_org_id:
                         for a in actions:
@@ -1550,18 +1550,30 @@ async def _process_webhook(update: dict):
                                 if hasattr(a, "params"):
                                     a.params["organization_id"] = ctx.pending_org_id
                                 
-                    from core.actions.executor import execute_planned_actions
-                    # If we are showing the card, suppress the normal executor success message (the card IS the reply).
-                    # If we are NOT showing the card, let the executor send its normal success push!
-                    await execute_planned_actions(
-                        actions, chat_id, text=text, entity=entity, source=source, sender=sender,
-                        session_id=session_id, intent=intent, suppress_telegram=should_show_card, active_anchor=active_anchor
-                    )
-                    
-                    # Update matched_task_id if we created one
-                    for act in actions:
-                        if getattr(act, "operation", "") == "create_task" and "_created_task_id" in getattr(act, "params", {}):
-                            matched_task_id = act.params["_created_task_id"]
+                    if should_show_card:
+                        # Actions are deferred — they'll execute on confirm
+                        if suggestion_dict:
+                            suggestion_dict["suggested_actions"] = [
+                                {
+                                    "operation": a.operation, 
+                                    "target_id": a.target_id,
+                                    "confidence": getattr(a, "confidence", 1.0),
+                                    "human_label": (a.human_label if a.human_label else None) or a.params.get("title") or a.params.get("content") or a.params.get("notes") or "Untitled", 
+                                    "params": a.params
+                                }
+                                for a in actions
+                            ]
+                    else:
+                        from core.actions.executor import execute_planned_actions
+                        await execute_planned_actions(
+                            actions, chat_id, text=text, entity=entity, source=source, sender=sender,
+                            session_id=session_id, intent=intent, suppress_telegram=False, active_anchor=active_anchor
+                        )
+                        
+                        # Update matched_task_id if we created one
+                        for act in actions:
+                            if getattr(act, "operation", "") == "create_task" and "_created_task_id" in getattr(act, "params", {}):
+                                matched_task_id = act.params["_created_task_id"]
                 
                 if suggestion_dict:
                     suggestion_dict["matched_task_id"] = matched_task_id
@@ -1573,7 +1585,7 @@ async def _process_webhook(update: dict):
                     with channel_tenant_scope():
                         try:
                             supabase.table('raw_dumps').insert({
-                                'content': suggestion_dict.get("summary", "Suggestion Card") if suggestion_dict else "Suggestion Card",
+                                'content': suggestion_dict.get("summary", text[:100]) if suggestion_dict else text[:100],
                                 'source': 'web',
                                 'owner_id': owner_id,
                                 'direction': 'outgoing',

@@ -14,11 +14,10 @@ World JSON shape (seed_world):
 {
   "context": "Priya, COO at Acme, Bengaluru.",
   "timezone": "Asia/Kolkata",
-  "domains": [
-    {"name": "Acme", "keywords": ["acme", "client", "delivery"]},
-    {"name": "Personal", "keywords": ["home", "family", "bills"]}
+  "user_orgs": [
+    {"name": "Acme", "keywords": ["acme", "client", "delivery"], "is_personal": false},
+    {"name": "Personal", "keywords": ["home", "family", "bills"], "is_personal": true}
   ],
-  "personal_orgs": ["Personal"],
   "root_label": "Priya",  # optional — their 'me' node label for archive ingest
   "email_archive_label": "",  # optional — Gmail label to scan; '' = INBOX only
   "github_owner": "",  # optional — Actions dispatch target

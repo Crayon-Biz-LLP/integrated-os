@@ -39,20 +39,19 @@ DEFAULT_TIMEZONE = "Asia/Kolkata"
 # core/prompts/email_classify.py / core/pulse/briefing.py). Every keyword and
 # multi-word phrase in the HEAD PROJECT ROUTING clause must survive here —
 # scripts/verify_m2_equivalence.py enforces this (routing keyword gate).
-DEFAULT_DOMAINS: list[dict] = [
-    {"name": "Solvstrat", "keywords": ["solvstrat", "tech", "client", "zoho", "api"]},
-    {"name": "Qhord", "keywords": ["qhord", "os", "product", "pricing"]},
-    {"name": "Crayon", "keywords": ["crayon", "corporate", "governance", "corporate governance", "business tax", "business taxes", "legal compliance"]},
-    {"name": "Ashraya", "keywords": ["ashraya", "church", "ministry", "church administration", "operations", "accounts", "chennai north", "chennai central", "pastor"]},
-    {"name": "Personal", "keywords": ["personal", "home", "family", "bills", "finances", "personal finances", "spiritual practices", "bible reading", "prayer", "volunteering"]},
-    {"name": "Atna", "keywords": ["atna", "middleware", "platform"]},
+# Each entry carries an is_personal flag for the work/life split.
+DEFAULT_USER_ORGS: list[dict] = [
+    {"name": "Solvstrat", "keywords": ["solvstrat", "tech", "client", "zoho", "api"], "is_personal": False},
+    {"name": "Qhord", "keywords": ["qhord", "os", "product", "pricing"], "is_personal": False},
+    {"name": "Crayon", "keywords": ["crayon", "corporate", "governance", "corporate governance", "business tax", "business taxes", "legal compliance"], "is_personal": False},
+    {"name": "Ashraya", "keywords": ["ashraya", "church", "ministry", "church administration", "operations", "accounts", "chennai north", "chennai central", "pastor"], "is_personal": True},
+    {"name": "Personal", "keywords": ["personal", "home", "family", "bills", "finances", "personal finances", "spiritual practices", "bible reading", "prayer", "volunteering"], "is_personal": True},
+    {"name": "Atna", "keywords": ["atna", "middleware", "platform"], "is_personal": False},
 ]
 
-# Org names treated as personal/life domains by the pulse briefing's
-# work/life split (core/pulse/briefing.py) — seed value for Danny.
-DEFAULT_PERSONAL_ORGS = [
-    "Personal", "Ashraya", "Ashraya Chennai", "Chennai North", "Chennai Central", "Ashraya India",
-]
+# Backward-compatible aliases for any remaining un-migrated callers.
+DEFAULT_DOMAINS = DEFAULT_USER_ORGS
+DEFAULT_PERSONAL_ORGS = ["Personal", "Ashraya", "Ashraya Chennai", "Chennai North", "Chennai Central", "Ashraya India"]
 
 DEFAULT_CONTEXT = "Danny (Yashwant Daniel), founder of Crayon, Chennai, India."
 
@@ -75,28 +74,27 @@ class UserSettings:
     user_id: str | None
     name: str = DEFAULT_USER_NAME
     timezone: str = DEFAULT_TIMEZONE
-    domains: list[dict] = field(default_factory=lambda: list(DEFAULT_DOMAINS))
-    personal_orgs: list[str] = field(default_factory=lambda: list(DEFAULT_PERSONAL_ORGS))
+    user_orgs: list[dict] = field(default_factory=lambda: list(DEFAULT_USER_ORGS))
     voice: str | None = None
     context: str = DEFAULT_CONTEXT
 
     @property
-    def domain_names(self) -> list[str]:
-        """The domain labels, e.g. ['Solvstrat', 'Qhord', ...]."""
-        return [d.get("name", "") for d in self.domains if d.get("name")]
+    def user_org_names(self) -> list[str]:
+        """The org labels, e.g. ['Solvstrat', 'Qhord', ...]."""
+        return [d.get("name", "") for d in self.user_orgs if d.get("name")]
+
+    # Backward-compatible aliases for callers not yet migrated.
+    @property
+    def domains(self) -> list[dict]:
+        return self.user_orgs
 
     @property
-    def domain_keywords(self) -> dict[str, list[str]]:
-        """domain name (lower) -> list of lowercase routing keywords."""
-        out: dict[str, list[str]] = {}
-        for d in self.domains:
-            name = (d.get("name") or "").strip()
-            if not name:
-                continue
-            kws = [k.lower() for k in (d.get("keywords") or []) if str(k).strip()]
-            kws.append(name.lower())
-            out[name.lower()] = kws
-        return out
+    def domain_names(self) -> list[str]:
+        return self.user_org_names
+
+    @property
+    def personal_orgs(self) -> list[str]:
+        return [d.get("name", "") for d in self.user_orgs if d.get("is_personal")]
 
 
 # ── Loader (cached per process, keyed by user id) ───────────────────────────
@@ -118,8 +116,7 @@ def defaults() -> UserSettings:
         user_id=None,
         name=_env_name(),
         timezone=_env_timezone(),
-        domains=list(DEFAULT_DOMAINS),
-        personal_orgs=list(DEFAULT_PERSONAL_ORGS),
+        user_orgs=list(DEFAULT_USER_ORGS),
         voice=os.getenv("RHODEY_VOICE"),
         context=os.getenv("USER_CONTEXT", DEFAULT_CONTEXT),
     )
@@ -161,10 +158,13 @@ def load_settings(user_id: str) -> UserSettings:
     except Exception:
         pass  # fail-open: env / default name
     try:
+        # Select * to be resilient across schema transitions:
+        # - Before migration 106: user_orgs column doesn't exist yet
+        # - After migration 107: domains/personal_orgs columns are dropped
         res = (
             get_supabase()
             .table("user_settings")
-            .select("user_id, timezone, domains, voice, context, personal_orgs")
+            .select("*")
             .eq("user_id", user_id)
             .limit(1)
             .maybe_single()
@@ -187,60 +187,83 @@ def load_settings(user_id: str) -> UserSettings:
         base.timezone = row["timezone"]
     # M17: an EXISTING row is authoritative — a null/empty field means "not
     # set by this tenant" and resolves to neutral ("" / []), never tenant
-    # #1's values. Danny's row carries his own context/domains/personal_orgs,
+    # #1's values. Danny's row carries his own context/user_orgs,
     # so his rendering is unchanged (proven by the M6/M9 gates + goldens).
     if "voice" in row:
         base.voice = row.get("voice") or ""
     if "context" in row:
         base.context = (row.get("context") or "").strip()
-    if "domains" in row:
-        parsed = _parse_domains(row["domains"])
+    # Read user_orgs (preferred) — fall back to legacy domains+personal_orgs
+    if "user_orgs" in row and row["user_orgs"] is not None:
+        parsed = _parse_user_orgs(row["user_orgs"])
         if parsed is not None:
-            base.domains = parsed
-    if "personal_orgs" in row:
-        _po = row.get("personal_orgs")
-        if isinstance(_po, str):
-            try:
-                _po = json.loads(_po)
-            except Exception:
-                _po = None
-        base.personal_orgs = [
-            str(x).strip() for x in (_po or []) if str(x).strip()
-        ]
+            base.user_orgs = parsed
+    elif "domains" in row:
+        # Legacy path: migrate domains+personal_orgs into user_orgs shape
+        parsed_domains = _parse_domains(row["domains"])
+        personal_orgs_list = []
+        if "personal_orgs" in row:
+            _po = row.get("personal_orgs")
+            if isinstance(_po, str):
+                try:
+                    _po = json.loads(_po)
+                except Exception:
+                    _po = None
+            personal_orgs_list = [
+                str(x).strip() for x in (_po or []) if str(x).strip()
+            ]
+        if parsed_domains is not None:
+            base.user_orgs = [
+                {
+                    "name": d.get("name", ""),
+                    "keywords": d.get("keywords", []),
+                    "is_personal": d.get("name", "") in personal_orgs_list,
+                }
+                for d in parsed_domains
+                if d.get("name")
+            ]
     _settings_cache[user_id] = base
     return base
 
 
-def _parse_domains(raw) -> list[dict] | None:
-    """Parse a stored domains value into dict form.
+def _parse_user_orgs(raw) -> list[dict] | None:
+    """Parse stored user_orgs into dict form with is_personal flag.
 
     Returns None when the value is a legacy string-array (tenant #1's stored
-    shape) — callers then keep the Danny-era DEFAULT_DOMAINS fallback so his
-    routing is byte-identical. Returns [] for a present-but-empty value so a
-    tenant with no domains gets neutral, never tenant #1's.
+    shape) — callers then keep the DEFAULT_USER_ORGS fallback. Returns [] for
+    a present-but-empty value so a tenant with no orgs gets neutral.
     """
     if raw is None or (isinstance(raw, str) and not raw.strip()):
         return []
-    domains = raw
-    if isinstance(domains, str):
+    user_orgs = raw
+    if isinstance(user_orgs, str):
         try:
-            domains = json.loads(domains)
+            user_orgs = json.loads(user_orgs)
         except Exception:
             return []
-    if not isinstance(domains, list):
+    if not isinstance(user_orgs, list):
         return []
-    if all(isinstance(d, str) for d in domains):
+    if all(isinstance(d, str) for d in user_orgs):
         # Legacy tenant-#1 shape (plain name strings) → keep default routing.
         return None
     parsed = [
         {
             "name": str(d.get("name", "")).strip(),
             "keywords": [str(k).lower() for k in (d.get("keywords") or [])],
+            "is_personal": bool(d.get("is_personal", False)),
         }
-        for d in domains
+        for d in user_orgs
         if isinstance(d, dict) and d.get("name")
     ]
     return parsed
+
+
+def _parse_domains(raw) -> list[dict] | None:
+    """Legacy parser — delegates to _parse_user_orgs, stripping is_personal."""
+    parsed = _parse_user_orgs(raw)
+    if parsed is None:
+        return None
+    return [{"name": d["name"], "keywords": d["keywords"]} for d in parsed]
 
 
 def _effective_user_id(user_id: str | None) -> str | None:
@@ -292,35 +315,36 @@ def resolve_timezone(user_id: str | None = None) -> str:
     return _env_timezone()
 
 
-def resolve_domains(user_id: str | None = None) -> list[dict]:
-    """Routing domains for the classifier/pulse.
+def resolve_user_orgs(user_id: str | None = None) -> list[dict]:
+    """Routing domains for the classifier/pulse, with is_personal flag.
 
     M17 privacy guarantee (mirrors resolve_context): once a tenant identity
-    is resolved, domains come from THEIR settings row only — a tenant with
-    no domains gets [] (no routing block), never tenant #1's DEFAULT_DOMAINS.
+    is resolved, user_orgs come from THEIR settings row only — a tenant with
+    no orgs gets [] (no routing block), never tenant #1's DEFAULT_USER_ORGS.
     The Danny-era defaults serve only unscoped legacy calls (CLI/pre-db/78).
     """
     user_id = _effective_user_id(user_id)
     if user_id:
         try:
-            return load_settings(user_id).domains or []
+            return load_settings(user_id).user_orgs or []
         except Exception:
             pass
         return []
-    return list(DEFAULT_DOMAINS)
+    return list(DEFAULT_USER_ORGS)
+
+
+def resolve_domains(user_id: str | None = None) -> list[dict]:
+    """Backward-compatible alias — returns user_orgs dicts."""
+    return resolve_user_orgs(user_id)
 
 
 def resolve_personal_orgs(user_id: str | None = None) -> list[str]:
-    """Personal/life org names for the pulse work-life split.
-
-    M17: tenant-scoped calls return the tenant's own row (or [] when unset)
-    — never tenant #1's Ashraya/Church list. The Danny-era default serves
-    only unscoped legacy calls.
-    """
+    """Backward-compatible alias — returns is_personal org names."""
     user_id = _effective_user_id(user_id)
     if user_id:
         try:
-            return load_settings(user_id).personal_orgs or []
+            settings = load_settings(user_id)
+            return [d.get("name", "") for d in (settings.user_orgs or []) if d.get("is_personal")]
         except Exception:
             pass
         return []
@@ -504,9 +528,9 @@ def routing_rules_text(user_id: str | None = None) -> str:
     hardcoded PROJECT ROUTING rule so Danny's routing is byte-identical once
     his domains are seeded.
     """
-    domains = resolve_domains(user_id)
+    user_orgs = resolve_user_orgs(user_id)
     lines = []
-    for d in domains:
+    for d in user_orgs:
         name = (d.get("name") or "").strip()
         if not name:
             continue

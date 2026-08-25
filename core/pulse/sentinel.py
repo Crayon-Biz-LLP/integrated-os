@@ -189,6 +189,8 @@ async def _process_sentinel_impl(auth_secret: str, trigger: str = "cron"):
                     continue
                     
                 start_dt = datetime.fromisoformat(start_raw.replace('Z', '+00:00'))
+                if start_dt.tzinfo is None:
+                    start_dt = start_dt.replace(tzinfo=timezone.utc)
                 mins_until = int((start_dt - now).total_seconds() / 60)
                 
                 if mins_until < 0 or mins_until > 45:

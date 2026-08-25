@@ -89,8 +89,11 @@ class EntityContext:
             person_names=data.get("person_names") or [],
             pending_person_ids=data.get("pending_person_ids") or [],
             org_to_org_edges=data.get("org_to_org_edges") or [],
+            org_to_org_edge_labels=data.get("org_to_org_edge_labels") or [],
+            detected_entities=data.get("detected_entities") or [],
             source_text=data.get("source_text") or "",
             extraction_method=data.get("extraction_method") or "",
+            extraction_timing=data.get("extraction_timing") or "",
         )
 
 
@@ -366,7 +369,8 @@ def _integrate_llm_result(llm_result: dict, ctx: EntityContext, owner_id: str = 
         existing = _find_existing_org(label, owner_id)
 
         if existing:
-            if is_primary and not ctx.organization_id:
+            if is_primary:
+                # LLM primary always wins over deterministic first-match
                 ctx.organization_id = existing['id']
                 ctx.organization_name = label
             # Secondary existing orgs — track for org-to-org edge
@@ -376,12 +380,20 @@ def _integrate_llm_result(llm_result: dict, ctx: EntityContext, owner_id: str = 
             # New org — create pending
             pending_id = _create_pending_org(label, ctx.source_text, owner_id) if timing != "card" else None
             if pending_id:
-                if is_primary and not ctx.pending_org_id and not ctx.organization_id:
+                if is_primary:
+                    # LLM primary always wins — override any pending or existing org
                     ctx.pending_org_id = pending_id
                     ctx.pending_org_label = label
                 # Secondary new orgs — track for org-to-org edge
                 elif label not in ctx.org_to_org_edge_labels:
                     ctx.org_to_org_edge_labels.append(label)
+            elif timing == "card" and is_primary:
+                # Card timing: can't create pending node, but set label for UI display
+                ctx.pending_org_label = label
+                # Clear deterministic first-match if LLM says a different org is primary
+                if ctx.organization_name and ctx.organization_name.lower() != label.lower():
+                    ctx.organization_id = None
+                    ctx.organization_name = None
 
     # Integrate persons from LLM
     for person in persons:
@@ -410,6 +422,11 @@ def _integrate_llm_result(llm_result: dict, ctx: EntityContext, owner_id: str = 
             if pending_id and pending_id not in ctx.pending_person_ids:
                 ctx.pending_person_ids.append(pending_id)
                 ctx.person_names.append(label)
+            else:
+                # New person, no pending node (card timing or creation failed)
+                # Still add name so the suggestion card UI shows them
+                if label not in ctx.person_names:
+                    ctx.person_names.append(label)
 
 
 def _propose_org_to_org_edges(ctx: EntityContext):

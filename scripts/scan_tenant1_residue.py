@@ -221,21 +221,17 @@ def derive_blocklist(offline: bool) -> tuple[list[str], bool]:
                             derived.add(v)
             except Exception:
                 pass  # table optional
-            for r in db.table("user_settings").select("domains, personal_orgs").execute().data:
-                doms = r.get("domains") or []
-                if isinstance(doms, str):  # jsonb can come back as a JSON string
+            for r in db.table("user_settings").select("user_orgs").execute().data:
+                uorgs = r.get("user_orgs") or []
+                if isinstance(uorgs, str):  # jsonb can come back as a JSON string
                     try:
-                        doms = json.loads(doms)
+                        uorgs = json.loads(uorgs)
                     except Exception:
-                        doms = []
-                for dom in doms:
-                    n = (dom.get("name") or "").strip() if isinstance(dom, dict) else str(dom).strip()
+                        uorgs = []
+                for org in uorgs:
+                    n = (org.get("name") or "").strip() if isinstance(org, dict) else str(org).strip()
                     if n:
                         derived.add(n)
-                for org in (r.get("personal_orgs") or []):
-                    org = str(org).strip()
-                    if org:
-                        derived.add(org)
             try:
                 for r in (
                     tenant_aware_client()

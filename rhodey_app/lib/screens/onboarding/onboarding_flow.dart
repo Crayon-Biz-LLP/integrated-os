@@ -514,10 +514,12 @@ class _OnboardingFlowState extends State<OnboardingFlow> {
       'context': _contextController.text.trim(),
       'people': _people,
       'tasks': _tasks,
-      'domains': _domains,
-      'personal_orgs': _domains
-          .where((d) => (d['kind'] as String? ?? 'work') == 'personal')
-          .map((d) => d['name'] as String)
+      'user_orgs': _domains
+          .map((d) => {
+            'name': d['name'] as String,
+            'keywords': d['keywords'] as List<dynamic>? ?? [],
+            'is_personal': (d['kind'] as String? ?? 'work') == 'personal',
+          })
           .toList(),
       // M9.7: briefing schedule + device timezone (both optional — server
       // defaults to balanced / the admin-set timezone).

@@ -5804,6 +5804,36 @@ async def oauth_exchange(request: Request):
         pass
     return {"connected": True, "scopes": scopes}
 # --- UNIFIED SUGGESTIONS: CONFIRM AND CREATE ---
+@app.post("/api/suggestions/reject")
+async def suggestions_reject_route(request: Request):
+    """Persist a skip/reject decision from a suggestion card."""
+    owner_id = require_api_auth(request)
+    _ = owner_id
+    try:
+        body = await request.json()
+        source_type = body.get("source_type")
+        source_id = body.get("source_id")
+        
+        if not source_type or not source_id:
+            raise HTTPException(status_code=400, detail="source_type and source_id required")
+            
+        from core.decisions import record_decision
+        record_decision(
+            decision_type="suggestion_reject",
+            title=f"Rejected suggestion card for {source_type} {source_id}",
+            entity_type=source_type,
+            entity_id=str(source_id),
+            confidence=1.0,
+            source="suggestion_card",
+        )
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Internal server error")
+
 @app.post("/api/suggestions/confirm")
 async def suggestions_confirm_route(request: Request):
     """Confirm selected tasks and entities from a suggestion card.
@@ -5818,15 +5848,46 @@ async def suggestions_confirm_route(request: Request):
     owner_id = require_api_auth(request)
     try:
         body = await request.json()
-        source_type = body.get("source_type")
-        source_id = body.get("source_id")
-        selected_tasks = body.get("selected_tasks", [])
-        selected_entities = body.get("selected_entities", [])
+        body["owner_id"] = owner_id
         
-        if not source_type or not source_id:
-            raise HTTPException(status_code=400, detail="source_type and source_id required")
-            
-        supabase = tenant_aware_client()
+        # Offload all heavy lifting to Modal background worker.
+        # Bug 10: Modal cold start / unavailability must never lose a confirm —
+        # fall back to synchronous in-process execution on any spawn failure.
+        spawned = False
+        try:
+            import modal
+            modal.Function.from_name("rhodey-os", "process_suggestion_confirm_background").spawn(body)
+            spawned = True
+        except Exception as modal_err:
+            audit_log_sync("api", "WARNING",
+                f"suggestion_confirm: Modal spawn failed ({modal_err}); falling back to synchronous execution")
+        
+        if not spawned:
+            from core.services.db import tenant_scope
+            with tenant_scope(owner_id):
+                await _run_suggestion_confirm_background(body)
+            return {"success": True, "status": "processed_sync"}
+        
+        return {"success": True, "status": "processing_in_background"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def _run_suggestion_confirm_background(body: dict):
+    owner_id = body.get("owner_id")
+    source_type = body.get("source_type")
+    source_id = body.get("source_id")
+    selected_tasks = body.get("selected_tasks", [])
+    selected_entities = body.get("selected_entities", [])
+    
+    if not source_type or not source_id or not owner_id:
+        return
+        
+    supabase = tenant_aware_client()
+    try:
         extracted_text = ""
         
         if source_type == "document":
@@ -5867,7 +5928,20 @@ async def suggestions_confirm_route(request: Request):
                 node_type = entity.get("type", "concept")
                 if not label:
                     continue
-                
+
+                # Guard: check for existing live node to prevent duplicates
+                from core.lib.graph_rules import normalize_label
+                existing_check = supabase.table('graph_nodes') \
+                    .select('id, label') \
+                    .eq('type', node_type) \
+                    .eq('normalized_label', normalize_label(label)) \
+                    .eq('is_current', True) \
+                    .eq('owner_id', owner_id) \
+                    .limit(1).execute()
+                if existing_check and existing_check.data:
+                    created_items.append({"type": node_type, "title": label, "entity_id": existing_check.data[0]['id']})
+                    continue
+
                 merge_with = entity.get("merge_with")
                 if merge_with and merge_with.get("id"):
                     target_id = merge_with.get("id")
@@ -5928,18 +6002,30 @@ async def suggestions_confirm_route(request: Request):
                     node_type=node_type, 
                     source_text=extracted_text[:500],
                     source_tag="suggestion_confirm",
-                    force=True
+                    force=True,
+                    entity_context=entity_context_obj
                 )
                 if res and res.get('success'):
                     created_items.append({"type": node_type, "title": label, "entity_id": res.get("node_id")})
                     
 
-            # 1b. Merge user-selected entities into the metadata EntityContext
+            # 1b. Merge user-selected entities into the metadata EntityContext.
+            # The stored context's org is AUTHORITATIVE — this loop only promotes a
+            # pending/newly-created org to live, and never lets a second confirmed
+            # org overwrite the first (Bug 7: no last-org-wins).
             if entity_context_obj:
                 for item in created_items:
-                    if item["type"] == "organization" and not entity_context_obj.organization_id:
-                        entity_context_obj.organization_id = item["entity_id"]
-                        entity_context_obj.organization_name = item["title"]
+                    if item["type"] == "organization":
+                        stored_pending_label = (entity_context_obj.pending_org_label or "").strip().lower()
+                        if not entity_context_obj.organization_id or (
+                            stored_pending_label and stored_pending_label == str(item["title"] or "").strip().lower()
+                        ):
+                            # Promote: pending org from extraction becomes live
+                            entity_context_obj.organization_id = item["entity_id"]
+                            entity_context_obj.organization_name = item["title"]
+                            entity_context_obj.pending_org_id = None
+                            entity_context_obj.pending_org_label = None
+                        break  # Bug 7: first confirmed org wins
                     elif item["type"] == "person" and item["entity_id"] not in entity_context_obj.person_ids:
                         if item["entity_id"]:
                             entity_context_obj.person_ids.append(item["entity_id"])
@@ -5952,12 +6038,100 @@ async def suggestions_confirm_route(request: Request):
                         entity_context_obj.organization_id = personal_res.data[0]['id']
                         entity_context_obj.organization_name = personal_res.data[0]['label']
 
-            # 2. Update existing task or create tasks (for documents)
-            if source_type == "message" and matched_task_id:
-                # Task already created upfront, just link the confirmed entities
-                if entity_context_obj and entity_context_obj.organization_id:
-                    supabase.table("tasks").update({"organization_id": entity_context_obj.organization_id}).eq("id", matched_task_id).execute()
-                # Also link person nodes to the task (via pending_graph_edges or similar logic if supported, but typically we just attach org_id)
+            # 1c. Auto-approve pending graph edges tied to the confirmed entities whose
+            # BOTH endpoints are now live — confirming the card IS the user's approval
+            # of these links. Pre-check endpoints so process_pending_edge_decision's
+            # missing-node branch doesn't reject unrelated still-pending edges.
+            try:
+                from core.pulse.graph import process_pending_edge_decision
+                confirmed_labels = {str(item.get("title") or "").strip().lower() for item in created_items if item.get("title")}
+                confirmed_labels |= {str(e.get("label") or "").strip().lower() for e in selected_entities}
+                if confirmed_labels:
+                    live_res = supabase.table('graph_nodes').select('label').eq('is_current', True).eq('owner_id', owner_id).execute()
+                    live_labels = {(n.get('label') or '').strip().lower() for n in (live_res.data or [])}
+                    pe_res = supabase.table('pending_graph_edges').select('id, source_label, target_label') \
+                        .eq('owner_id', owner_id).eq('status', 'pending').limit(200).execute()
+                    approved_edges = 0
+                    for edge in (pe_res.data or []):
+                        s_l = (edge.get('source_label') or '').strip().lower()
+                        t_l = (edge.get('target_label') or '').strip().lower()
+                        touches_confirmed = s_l in confirmed_labels or t_l in confirmed_labels
+                        if touches_confirmed and s_l in live_labels and t_l in live_labels:
+                            edge_res = await process_pending_edge_decision(edge['id'], 'approve', auto_decided=True)
+                            if edge_res.get('success'):
+                                approved_edges += 1
+                    if approved_edges:
+                        audit_log_sync("api", "INFO", f"suggestion_confirm: auto-approved {approved_edges} pending graph edge(s) via card confirm")
+            except Exception as e:
+                audit_log_sync("api", "WARNING", f"suggestion_confirm: edge auto-approval failed: {e}")
+
+            # 2. Update existing task or create tasks (for documents/messages)
+            if source_type == "message":
+                if selected_tasks:
+                    from core.actions.executor import execute_planned_actions
+                    from core.actions.models import Action
+                    
+                    actions_to_execute = []
+                    for item in selected_tasks:
+                        raw = item.get("raw_action")
+                        if not raw:
+                            continue
+                        
+                        try:
+                            # If edited on the UI, override title
+                            if item.get("edited") and item.get("title"):
+                                if raw.get("params") and isinstance(raw["params"], dict):
+                                    if "title" in raw["params"]:
+                                        raw["params"]["title"] = item["title"]
+                                    elif "content" in raw["params"]:
+                                        raw["params"]["content"] = item["title"]
+                                    elif "notes" in raw["params"]:
+                                        raw["params"]["notes"] = item["title"]
+                                raw["human_label"] = item["title"]
+
+                            act = Action(
+                                operation=raw.get("operation", "no_op"),
+                                target_id=raw.get("target_id"),
+                                params=raw.get("params", {}),
+                                human_label=raw.get("human_label"),
+                                confidence=raw.get("confidence")
+                            )
+                            actions_to_execute.append(act)
+                        except Exception as e:
+                            print(f"Error parsing action for execution: {e}")
+                            
+                    # Only update matched_task_id if the user actually confirmed the modification action
+                    confirmed_target_ids = [str(a.target_id) for a in actions_to_execute if a.target_id]
+                    if matched_task_id and str(matched_task_id) in confirmed_target_ids and entity_context_obj and entity_context_obj.organization_id:
+                        supabase.table("tasks").update({"organization_id": entity_context_obj.organization_id}).eq("id", matched_task_id).execute()
+                    
+                    if actions_to_execute:
+                        import uuid
+                        results = await execute_planned_actions(
+                            actions_to_execute,
+                            chat_id=0,
+                            text=extracted_text,
+                            source="suggestion_confirm",
+                            sender="user",
+                            session_id=str(uuid.uuid4()),
+                            suppress_telegram=True,
+                            active_anchor=None,
+                            entity_context=entity_context_obj
+                        )
+                        
+                        if results:
+                            for res in results:
+                                if res.status == "committed":
+                                    created_items.append({"type": res.operation, "title": res.title or f"{res.operation} completed"})
+                                        
+                        # Write confirmed entity_context back to raw_dumps metadata
+                        if entity_context_obj and source_id:
+                            msg_res = supabase.table("raw_dumps").select("metadata").eq("id", source_id).limit(1).execute()
+                            if msg_res and msg_res.data:
+                                meta = msg_res.data[0].get("metadata") or {}
+                                meta["entity_context"] = entity_context_obj.to_dict()
+                                supabase.table("raw_dumps").update({"metadata": meta}).eq("id", source_id).execute()
+                                
             elif source_type == "document":
                 # Original document logic creates tasks here
                 for item in selected_tasks:
@@ -6027,24 +6201,23 @@ async def suggestions_confirm_route(request: Request):
                     content=extracted_text
                 )
                 
-        except Exception:
+        except Exception as e:
             import traceback
             traceback.print_exc()
-            for table, eid in created_entity_refs:
-                try:
-                    supabase.table(table).delete().eq("id", eid).execute()
-                except Exception:
-                    pass
-            raise HTTPException(status_code=500, detail="Failed to create all items")
+            audit_log_sync("api", "ERROR", f"suggestion_confirm: inner processing failed: {e}\n{traceback.format_exc()}")
+            from core.services.reply_delivery import deliver_outbound_reply
+            await deliver_outbound_reply(f"⚠️ Failed to process suggestions: {str(e)}", notify_push=True)
+            raise
             
-        return {
-            "success": True,
-            "created_items": created_items,
-            "count": len(created_items),
-        }
-    except HTTPException:
-        raise
-    except Exception:
+        count = len(created_items)
+        if count > 0:
+            from core.services.reply_delivery import deliver_outbound_reply
+            await deliver_outbound_reply(f"✅ Created {count} items from suggestion.", notify_push=True)
+        return
+    except Exception as e:
         import traceback
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail="Internal server error")
+        audit_log_sync("api", "ERROR", f"suggestion_confirm: background worker failed: {e}\n{traceback.format_exc()}")
+        from core.services.reply_delivery import deliver_outbound_reply
+        await deliver_outbound_reply(f"⚠️ Internal error processing suggestions: {str(e)}", notify_push=True)
+        raise

@@ -70,8 +70,7 @@ def test_derived_common_word_is_filtered():
     an ordinary English word is not evidence of a leak (the exact false
     positive this fix kills)."""
     db = _mock_db(
-        settings=[{"user_id": "u1", "domains": [{"name": "Errands", "keywords": ["errands"]}],
-                   "personal_orgs": []}]
+        settings=[{"user_id": "u1", "user_orgs": [{"name": "Errands", "keywords": ["errands"], "is_personal": False}]}]
     )
     with patch.object(_db_mod, "get_supabase", return_value=db), \
          patch.object(_db_mod, "tenant_aware_client", return_value=db):
@@ -84,8 +83,7 @@ def test_derived_distinctive_token_survives():
     """A genuinely distinctive org name (proper noun) still becomes a token —
     the filter only drops ordinary English words."""
     db = _mock_db(
-        settings=[{"user_id": "u1", "domains": [{"name": "Qhord"}],
-                   "personal_orgs": []}]
+        settings=[{"user_id": "u1", "user_orgs": [{"name": "Qhord", "keywords": [], "is_personal": False}]}]
     )
     with patch.object(_db_mod, "get_supabase", return_value=db), \
          patch.object(_db_mod, "tenant_aware_client", return_value=db):
@@ -100,8 +98,9 @@ def test_all_derived_sources_are_filtered():
         users=[{"name": "Danny"}],
         aliases=[{"alias": "Marcus", "canonical_name": "Marcus"}],
         settings=[{"user_id": "u1",
-                   "domains": [{"name": "Work"}],
-                   "personal_orgs": ["Family", "Solvstrat"]}],
+                   "user_orgs": [{"name": "Work", "keywords": [], "is_personal": False},
+                                  {"name": "Family", "keywords": [], "is_personal": True},
+                                  {"name": "Solvstrat", "keywords": [], "is_personal": True}]}],
         vault_urls=[{"content": "https://danny-integrated-os.supabase.co"}],
     )
     with patch.object(_db_mod, "get_supabase", return_value=db), \

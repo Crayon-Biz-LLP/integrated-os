@@ -141,6 +141,23 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
     # --- GAP C: Schedule/calendar query pattern → QUERY deterministically ---
     # Questions about meetings, schedules, calendars are always QUERY.
     # This saves an LLM call and prevents misclassification as TASK/NOTE.
+    #
+    # QUESTION GATE: the fast path is only taken when the message is shaped
+    # like a question (ends with '?' or starts with an interrogative). The
+    # schedule keywords below are content nouns that appear in statements too
+    # ("We have a meeting today at 8:30 PM with PB") — force-routing those to
+    # QUERY suppressed the suggestion card and broke the confirm pipeline
+    # entirely (Run-3 PB incident). Statements fall through to the LLM,
+    # which has entity context, conversation history, and learned corrections.
+    _text = text.strip()
+    _is_question = bool(
+        _text.endswith('?')
+        or re.match(
+            r"^(what|whats|when|do|does|is|am|are|any|how|show|list|can|could)\b",
+            _text,
+            re.IGNORECASE,
+        )
+    )
     _schedule_pattern = re.compile(
         r'\b(meetings?\s+(this\s+)?(week|month|today|tomorrow)'
         r'|what(\'s|\sis)\s+(on\s+)?(my\s+)?(calendar|schedule)'
@@ -153,8 +170,8 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
         r'|agenda|upcoming|what\s+(do\s+I|does\s+my)\s+day|week\s+(ahead|coming\s+up)|events\s+this|day\s+look|my\s+calendar|my\s+schedule)\b',
         re.IGNORECASE
     )
-    if _schedule_pattern.search(text.strip()):
-        audit_log_sync("classify", "INFO", f"Gap C: Schedule pattern detected → QUERY ({text[:60]}...)")
+    if _schedule_pattern.search(_text) and _is_question:
+        audit_log_sync("classify", "INFO", f"Gap C: Schedule pattern detected → QUERY ({_text[:60]}...)")
         return {
             "intent": "QUERY",
             "confidence": 1.0,

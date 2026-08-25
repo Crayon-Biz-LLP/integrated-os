@@ -132,10 +132,20 @@ Rules for actions:
 - query_info: fetches information from the brain.
 - target_id MUST be the exact numeric ID for existing Tasks, or string ID for existing Events. Not used for create operations.
 - IMPORTANT: If the request refers to an existing task from the Candidates list, set "matched_task_id" to its numeric ID, and use operations like reschedule/update_metadata/close_task instead of create_task. If it's a new task, matched_task_id should be null.
-- Intent gives context (NOTE → mostly create_note, TASK → mostly create_task), but you can output MULTIPLE actions if the text implies it. E.g., if it's a NOTE but mentions a scheduled meeting, output BOTH create_note AND create_event.
+- Intent gives context (NOTE → mostly create_note, TASK → mostly create_task), but you MUST output MULTIPLE actions when the text implies it:
+  - Mentioned a scheduled meeting/booked time → create_event
+  - Mentioned something to DO (follow up, send, prepare, submit) → create_task
+  - Summary of what happened → create_note
 - Return empty array or no_op for actions if nothing matches.
 - Document Type: <invoice|meeting_minutes|contract|report|receipt|proposal|message|other>
 - Summary: <2-3 sentence summary>
+
+OUTPUT EXAMPLES:
+Input: "I had a call with David about the Solvstrat partnership"
+Output: {{"document_type": "message", "summary": "Call with David regarding Solvstrat partnership.", "matched_task_id": null, "actions":[{{"operation":"create_note","params":{{"content":"Call with David regarding Solvstrat partnership."}},"human_label":"Call notes: David / Solvstrat","confidence":1.0}}]}}
+
+Input: "We have a meeting today at 8:30 PM with the Project Balance team"  
+Output: {{"document_type": "message", "summary": "Scheduled meeting with Project Balance team including David Quantson, Stacey Berlow, Lanette Burrows, Edward Robinson.", "matched_task_id": null, "actions":[{{"operation":"create_event","params":{{"title":"Meeting with Project Balance team","time":"2026-08-25T20:30:00+05:30"}},"human_label":"Meeting at 8:30 PM","confidence":1.0}},{{"operation":"create_note","params":{{"content":"Scheduled meeting with Project Balance team including David Quantson, Stacey Berlow, Lanette Burrows, Edward Robinson."}},"human_label":"Meeting scheduled: PB team","confidence":1.0}}]}}
 """
 
 async def extract_suggestions(text: str, title: str = "", entity: str = "", active_anchor: dict = None, intent: str = None) -> Tuple[List[Action], Optional[dict]]:
@@ -269,7 +279,7 @@ async def extract_suggestions(text: str, title: str = "", entity: str = "", acti
     )
 
     try:
-        planner_model = SYNTHESIS_MODEL if intent == "COMPLETION" else CLASSIFICATION_MODEL
+        planner_model = SYNTHESIS_MODEL
         res = await generate_content_with_fallback(
             prompt=prompt,
             workload=WorkloadProfile.INTERACTIVE,
@@ -320,6 +330,15 @@ async def extract_suggestions(text: str, title: str = "", entity: str = "", acti
                 "suggested_actions": raw_actions
             }
             
+        if suggestion_dict is None:
+            # Hardened fallback to guarantee the backend never returns None for suggestion_dict
+            suggestion_dict = {
+                "document_type": parsed.get("document_type") or "message",
+                "summary": parsed.get("summary") or (text[:197] + "..." if len(text) > 200 else text),
+                "matched_task_id": parsed.get("matched_task_id"),
+                "suggested_actions": raw_actions,
+            }
+            
         if actions:
             audit_log_sync("suggestion_extractor", "INFO", f"Generated {len(actions)} actions")
             
@@ -329,4 +348,9 @@ async def extract_suggestions(text: str, title: str = "", entity: str = "", acti
         raise
     except Exception as e:
         audit_log_sync("suggestion_extractor", "WARNING", f"Extraction failed: {e}")
-        return [], None
+        return [], {
+            "document_type": "message",
+            "summary": text[:197] + "..." if len(text) > 200 else text,
+            "matched_task_id": None,
+            "suggested_actions": []
+        }

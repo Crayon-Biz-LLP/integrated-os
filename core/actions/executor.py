@@ -274,6 +274,7 @@ async def execute_planned_actions(
     intent: str = None,
     suppress_telegram: bool = False,
     active_anchor: dict = None,
+    entity_context=None,
 ):
     """Executes a list of planned actions directly — NO legacy dispatch, NO process_single_dump.
 
@@ -617,7 +618,7 @@ async def execute_planned_actions(
                 dedup_org_id = action.params.get("organization_id") or action.organization_id or ""
                 dedup_raw = f"{title.lower().strip()}:{dedup_org_id}"
                 dedup_key = hashlib.md5(dedup_raw.encode()).hexdigest()[:16] if title else None
-                _entity_ctx = None
+                _entity_ctx = entity_context
 
                 result = await create_task_direct(
                         title=title,
@@ -665,7 +666,7 @@ async def execute_planned_actions(
                 from core.pulse.tools import create_note_direct
                 # Guard 2c: Fall back to resolved_entity if planner didn't provide organization_name
                 note_org_name = action.params.get("organization_name") or resolved_entity
-                _note_entity_ctx = None
+                _note_entity_ctx = entity_context
 
                 result = await create_note_direct(
                         content=content,
@@ -700,7 +701,7 @@ async def execute_planned_actions(
 
             try:
                 from core.pulse.tools import create_task_direct
-                _event_entity_ctx = None
+                _event_entity_ctx = entity_context
 
                 result = await create_task_direct(
                         title=title,
@@ -804,4 +805,5 @@ async def execute_planned_actions(
                 intent=ACK_INTENTS.get(primary.operation),
                 ack_title=primary.title,
             )
-        
+            
+    return results

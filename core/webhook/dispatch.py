@@ -418,6 +418,7 @@ async def handle_role_update(text: str, chat_id: int, classification: dict, sour
             # Person not in graph yet — create the node with the role baked into
             # enrichment (also creates the mirror people row + Danny KNOWS edge).
             from core.pulse.graph import create_graph_node_with_db_record
+            from core.lib.entity_context import EntityContext
             new_role_full = f"{role_title} of {org_name}" if org_name else role_title
             created = await create_graph_node_with_db_record(
                 label=person_name.title(),
@@ -425,6 +426,7 @@ async def handle_role_update(text: str, chat_id: int, classification: dict, sour
                 source_text='role_update',
                 context=new_role_full,
                 source_tag='role_update',
+                entity_context=EntityContext(organization_name=org_name) if org_name else None,
             )
             if created.get('success') and created.get('action') == 'approved':
                 await send_telegram(chat_id, f"\U0001f464 Created people entry for {person_name.title()} with role: {role_title}" + (f" at {org_name}." if org_name else "."))

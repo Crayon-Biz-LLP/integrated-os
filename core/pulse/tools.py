@@ -234,7 +234,7 @@ async def create_note_direct(
                 resolved_org_id = resolved_org
 
         audit_log_sync("tools", "INFO",
-            f"create_note_direct entity resolution: org={organization_name or '(none)'} "
+            f"create_note_direct entity resolution: org={resolved_org_id or organization_name or '(none)'} "
             f"pending_org={pending_org_id or '(none)'}")
 
         # ── Build insert data with entity context ──
