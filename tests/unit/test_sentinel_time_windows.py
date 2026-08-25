@@ -112,5 +112,9 @@ def test_upcoming_events_respects_custom_ahead():
 
 
 def test_upcoming_events_no_creds_returns_empty():
-    with patch("core.pulse.sentinel.get_cached_service", return_value=None):
+    # Both providers must be neutralized: sentinel falls back to Outlook when
+    # Google has no creds, and a real OUTLOOK_ACCESS_TOKEN in the environment
+    # would leak live events into this hermetic test.
+    with patch("core.pulse.sentinel.get_cached_service", return_value=None), \
+         patch("core.services.outlook_service.get_outlook_calendar_events_range", return_value=[]):
         assert get_upcoming_events() == []

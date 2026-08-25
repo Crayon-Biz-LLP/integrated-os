@@ -15,7 +15,7 @@ from core.actions.models import (
 )
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
-from core.llm.constants import CLASSIFICATION_MODEL, SYNTHESIS_MODEL
+from core.llm.constants import SYNTHESIS_MODEL
 from core.services.db import tenant_aware_client
 from core.lib.audit_logger import audit_log_sync
 from core.lib.time_utils import get_user_timezone, resolve_relative_dates, tz_label, tz_offset_str
@@ -141,11 +141,11 @@ Rules for actions:
 - Summary: <2-3 sentence summary>
 
 OUTPUT EXAMPLES:
-Input: "I had a call with David about the Solvstrat partnership"
-Output: {{"document_type": "message", "summary": "Call with David regarding Solvstrat partnership.", "matched_task_id": null, "actions":[{{"operation":"create_note","params":{{"content":"Call with David regarding Solvstrat partnership."}},"human_label":"Call notes: David / Solvstrat","confidence":1.0}}]}}
+Input: "I had a call with David about the Acme partnership"
+Output: {{"document_type": "message", "summary": "Call with David regarding Acme partnership.", "matched_task_id": null, "actions":[{{"operation":"create_note","params":{{"content":"Call with David regarding Acme partnership."}},"human_label":"Call notes: David / Acme","confidence":1.0}}]}}
 
-Input: "We have a meeting today at 8:30 PM with the Project Balance team"  
-Output: {{"document_type": "message", "summary": "Scheduled meeting with Project Balance team including David Quantson, Stacey Berlow, Lanette Burrows, Edward Robinson.", "matched_task_id": null, "actions":[{{"operation":"create_event","params":{{"title":"Meeting with Project Balance team","time":"2026-08-25T20:30:00+05:30"}},"human_label":"Meeting at 8:30 PM","confidence":1.0}},{{"operation":"create_note","params":{{"content":"Scheduled meeting with Project Balance team including David Quantson, Stacey Berlow, Lanette Burrows, Edward Robinson."}},"human_label":"Meeting scheduled: PB team","confidence":1.0}}]}}
+Input: "We have a meeting today at 8:30 PM with the client team"
+Output: {{"document_type": "message", "summary": "Scheduled meeting with the client team including Alice Morgan, Ben Carter, Chloe Diaz, Ethan Ross.", "matched_task_id": null, "actions":[{{"operation":"create_event","params":{{"title":"Meeting with client team","time":"2026-08-25T20:30:00{tz_off}"}},"human_label":"Meeting at 8:30 PM","confidence":1.0}},{{"operation":"create_note","params":{{"content":"Scheduled meeting with the client team including Alice Morgan, Ben Carter, Chloe Diaz, Ethan Ross."}},"human_label":"Meeting scheduled: client team","confidence":1.0}}]}}
 """
 
 async def extract_suggestions(text: str, title: str = "", entity: str = "", active_anchor: dict = None, intent: str = None) -> Tuple[List[Action], Optional[dict]]:

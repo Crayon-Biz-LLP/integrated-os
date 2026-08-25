@@ -51,3 +51,4 @@ rhodey_app/android/build/reports/
 .coverage
 .coverage.*
 htmlcov/
+.git_commit_msg_tmp

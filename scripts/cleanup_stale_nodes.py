@@ -2,7 +2,8 @@
 
 Uses raw SQL via psql since Supabase API times out on bulk ops.
 """
-import subprocess, os, time
+import os
+import subprocess
 
 OWNER = "c302706e-fe61-422a-b384-68e3bc8f6f8e"
 
