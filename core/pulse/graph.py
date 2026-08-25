@@ -39,6 +39,43 @@ TYPE_TO_DANNY_EDGE = {
 }
 
 
+def _person_org_from_source_text(source_text: str, live_orgs: list[str]) -> tuple[Optional[str], Optional[str]]:
+    """Resolve a person's org from message text alone (Bug 2 fix, tiers 2+3).
+
+    Tier 2: affiliation pattern — "<Person> ... from/at/of <Org>" wins over any
+            other mention of a different org elsewhere in the text.
+    Tier 3: hardened word-boundary containment, longest label first, with
+            canonical-alias fallback.
+
+    Returns (org_label | None, match_source | None).
+    """
+    if not source_text or not source_text.strip():
+        return None, None
+    source_lower = source_text.lower()
+    # Tier 2: affiliation pattern, longest label first
+    for oname in sorted(live_orgs, key=len, reverse=True):
+        if re.search(rf'\b(?:from|at|of)\s+{re.escape(oname.lower())}\b', source_lower):
+            return oname, "affiliation_pattern"
+    # Tier 3: word-boundary containment, longest label first
+    for oname in sorted(live_orgs, key=len, reverse=True):
+        o_lower = oname.lower()
+        if re.search(rf'\b{re.escape(o_lower)}\b', source_lower):
+            return oname, "substring"
+        canonical = resolve_alias(oname)
+        if canonical != oname and re.search(rf'\b{re.escape(canonical.lower())}\b', source_lower):
+            return oname, "substring_alias"
+    return None, None
+
+
+def _label_word_regex(label: str) -> "re.Pattern":
+    """Whole-word matcher for an entity label.
+
+    Bug 9 hardening: SQL ilike('%label%') also matches substrings — "David"
+    hitting "Davidson". Every backfill scan must post-filter through this.
+    """
+    return re.compile(rf'\b{re.escape(label.lower())}\b')
+
+
 def match_existing_nodes(entities: list[dict], owner_id: str) -> list[dict]:
     """Find existing graph nodes (and pending nodes) that match suggested entities.
     Filters out the owner's own person nodes.
@@ -243,26 +280,7 @@ async def create_graph_node_with_db_record(
                     oname = (o.get('label') or '').strip()
                     if oname and oname.lower() not in NOISE_LABELS:
                         live_orgs.append(oname)
-                source_lower = source_text.lower()
-                # Tier 2: affiliation pattern, longest label first
-                for oname in sorted(live_orgs, key=len, reverse=True):
-                    if re.search(rf'\b(?:from|at|of)\s+{re.escape(oname.lower())}\b', source_lower):
-                        matched_org_name = oname
-                        match_source = "affiliation_pattern"
-                        break
-                # Tier 3: word-boundary containment, longest label first
-                if not matched_org_name:
-                    for oname in sorted(live_orgs, key=len, reverse=True):
-                        o_lower = oname.lower()
-                        if re.search(rf'\b{re.escape(o_lower)}\b', source_lower):
-                            matched_org_name = oname
-                            match_source = "substring"
-                            break
-                        canonical = resolve_alias(oname)
-                        if canonical != oname and re.search(rf'\b{re.escape(canonical.lower())}\b', source_lower):
-                            matched_org_name = oname
-                            match_source = "substring_alias"
-                            break
+                matched_org_name, match_source = _person_org_from_source_text(source_text, live_orgs)
 
             if matched_org_name:
                 res = insert_pending_edge(
@@ -451,7 +469,7 @@ async def _backfill_existing_content_for_entity(
 
             if mem_res and mem_res.data:
                 backfilled_count = 0
-                label_word_pat = re.compile(rf'\b{re.escape(label_lower)}\b')
+                label_word_pat = _label_word_regex(label_lower)
                 for mem in mem_res.data:
                     # Word-boundary check — ilike('%label%') also matches substrings ("David" in "Davidson")
                     if not label_word_pat.search((mem.get('content') or '').lower()):
@@ -510,7 +528,7 @@ async def _backfill_existing_content_for_entity(
 
             if task_res and task_res.data:
                 backfilled_count = 0
-                label_word_pat = re.compile(rf'\b{re.escape(label_lower)}\b')
+                label_word_pat = _label_word_regex(label_lower)
                 for task in task_res.data:
                     # Word-boundary check — same substring guard as memory backfill
                     if not label_word_pat.search((task.get('title') or '').lower()):

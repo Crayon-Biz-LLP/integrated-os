@@ -94,6 +94,27 @@ class TestEntityContext:
         assert ctx.person_ids == []
         assert ctx.org_to_org_edges == []
 
+    def test_from_dict_restores_bug6_fields(self):
+        """Bug 6 regression pin: from_dict used to silently drop three fields,
+        so the confirm flow operated on a partial picture of extraction."""
+        ctx = EntityContext(
+            detected_entities=[{"type": "organization", "label": "Project Balance", "confidence": 0.9}],
+            org_to_org_edges=[{"source": "Solvstrat", "target": "Project Balance", "relationship": "CLIENT_OF"}],
+            org_to_org_edge_labels=["Project Balance"],
+            extraction_timing="card",
+        )
+        ctx2 = EntityContext.from_dict(ctx.to_dict())
+        assert ctx2.detected_entities == ctx.detected_entities
+        assert ctx2.org_to_org_edges == ctx.org_to_org_edges
+        assert ctx2.org_to_org_edge_labels == ["Project Balance"]
+        assert ctx2.extraction_timing == "card"
+
+    def test_from_dict_bug6_fields_default_when_missing(self):
+        ctx = EntityContext.from_dict({})
+        assert ctx.detected_entities == []
+        assert ctx.org_to_org_edge_labels == []
+        assert ctx.extraction_timing == ""
+
     def test_from_dict_with_none(self):
         ctx = EntityContext.from_dict(None)
         assert ctx.organization_id is None
