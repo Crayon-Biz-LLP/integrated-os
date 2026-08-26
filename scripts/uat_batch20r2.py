@@ -110,7 +110,7 @@ def send():
         except Exception:
             ok = False
         print(f"[{i:02d}/20] {'ok' if ok else 'SEND FAIL'}: {text[:60]}")
-        time.sleep(6)
+        time.sleep(15)
     print("waiting 100s for pipelines...")
     time.sleep(100)
 

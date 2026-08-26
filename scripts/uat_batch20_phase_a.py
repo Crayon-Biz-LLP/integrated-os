@@ -70,7 +70,7 @@ for i, (text, expect_card, exp_org) in enumerate(MSGS, 1):
         print(f"{tag} SEND FAILED: {e} | {res.stdout[:120]}")
     print(f"{tag} sent ({'ok' if ok else 'FAIL'}): {text[:60]}")
     results.append({"i": i, "text": text, "expect_card": expect_card, "exp_org": exp_org, "sent": ok})
-    time.sleep(6)   # pace: classify limiter is 15/60s
+    time.sleep(15)   # pace: classify limiter is 15/60s
 
 # wait for pipeline to catch up, then collect what got created
 print("waiting 90s for pipelines...")
