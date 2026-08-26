@@ -56,12 +56,18 @@ async def call_gemini(model: str, prompt: str, contents: Any = None, timeout_s: 
     
     if limiter is not None:
         client_idx = await limiter.acquire_async()
+        if client_idx < 0:
+            raise NonRetryableError(f"All keys RPD-exhausted for limiter '{getattr(limiter, 'prefix', '?')}'")
         clients = clients[client_idx:] + clients[:client_idx]
     elif "flash-lite" in model:
         client_idx = await flash_lite_limiter.acquire_async()
+        if client_idx < 0:
+            raise NonRetryableError("All keys RPD-exhausted for flash-lite")
         clients = clients[client_idx:] + clients[:client_idx]
     elif "flash" in model:
         client_idx = await flash_3_5_limiter.acquire_async()
+        if client_idx < 0:
+            raise NonRetryableError("All keys RPD-exhausted for flash")
         clients = clients[client_idx:] + clients[:client_idx]
         
     last_error = None
