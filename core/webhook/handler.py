@@ -1518,7 +1518,12 @@ async def _process_webhook(update: dict):
                     suggestion_dict["suggested_entities"] = entities
 
                 new_entities = [e for e in entities if not e.get("existing_matches")]
-                should_show_card = (intent in ('NOTE', 'TASK') and len(new_entities) >= 1)
+                # Card threshold: only show for genuinely complex messages.
+                # Simple tasks ("Call Lisa Chen about X") should execute directly —
+                # the person/org gets linked asynchronously via graph enrichment.
+                # Emotional states don't count as "new entities" for card purposes.
+                confirmable_entities = [e for e in new_entities if e.get('type') not in ('emotional_state',)]
+                should_show_card = (intent in ('NOTE', 'TASK') and len(confirmable_entities) >= 2)
                 
                 # 4. ALWAYS log inbound message for the App (web)
                 msg_id = 0
@@ -1550,15 +1555,23 @@ async def _process_webhook(update: dict):
                         
                         audit_log_sync("webhook", "ERROR", f"Failed to insert inbound raw_dump: {e}")
                 
-                # 5. Execute actions or defer them to the suggestion card
-                # ── Card path: show when NEW entities exist (regardless of actions) ──
-                # The card shows detected entities for user confirmation — it
-                # doesn't require the planner to have produced actions. This
-                # decoupling fixes the case where D2 detects a new org but the
-                # planner was down (round-3 UAT: Stratos/Cortex/Brightline
-                # cards suppressed because actions=[]).
-                if should_show_card:
-                    # Actions are deferred — they'll execute on confirm
+                # 5. Execute actions or show suggestion card
+                # ────────────────────────────────────────────────────────
+                # Four-terminal control flow (Aug 26 hardened):
+                #   A. Card + actions  → show card (entities) + execute actions immediately
+                #   B. Card + no acts → show card (entities only, for confirmation)
+                #   C. No card + acts → direct execution (org reconciliation applies)
+                #   D. No card + no acts → fallback note + honest reply
+                #
+                # Cards appear only for genuinely complex messages (≥2 new entities).
+                # Simple tasks ("Call Lisa Chen about X") go through path C.
+                # ────────────────────────────────────────────────────────
+
+                if should_show_card and actions:
+                    # Path A: show card AND execute actions immediately.
+                    # The card surfaces new entities for user confirmation;
+                    # actions (create_task, create_events) execute right away
+                    # so the user never loses work by ignoring the card.
                     if suggestion_dict:
                         suggestion_dict["suggested_actions"] = [
                             {
@@ -1592,11 +1605,72 @@ async def _process_webhook(update: dict):
                         except Exception as e:
                             audit_log_sync("webhook", "ERROR", f"Failed to insert suggestion raw_dump: {e}")
 
+                    # Execute actions immediately (don't defer to confirm)
+                    from core.actions.executor import reconcile_action_orgs, execute_planned_actions
+                    reconcile_action_orgs(actions, ctx)
+                    await execute_planned_actions(
+                        actions, chat_id, text=text, entity=entity, source=source, sender=sender,
+                        session_id=session_id, intent=intent, suppress_telegram=False, active_anchor=active_anchor,
+                        entity_context=ctx
+                    )
+                    for act in actions:
+                        if getattr(act, "operation", "") == "create_task" and "_created_task_id" in getattr(act, "params", {}):
+                            matched_task_id = act.params["_created_task_id"]
+                    if suggestion_dict:
+                        suggestion_dict["matched_task_id"] = matched_task_id
                     report(req_trace_id)
                     return {"success": True}
 
-                # ── No-action terminal (hardened Aug 26) ──
-                # No new entities AND no actions — save fallback + honest reply.
+                if should_show_card and not actions:
+                    # Path B: card with entities only (no actions to execute).
+                    # User confirms entity creation; nothing else happens.
+                    if suggestion_dict:
+                        suggestion_dict["suggested_actions"] = []
+
+                    if _anaphora_task:
+                        _anaphora_task.cancel()
+
+                    with channel_tenant_scope():
+                        try:
+                            supabase.table('raw_dumps').insert({
+                                'content': suggestion_dict.get("summary", text[:100]) if suggestion_dict else text[:100],
+                                'source': 'web',
+                                'owner_id': owner_id,
+                                'direction': 'outgoing',
+                                'message_type': 'suggestion',
+                                'status': 'completed',
+                                'sender': 'system',
+                                'metadata': {
+                                    'suggestion_breakdown': suggestion_dict,
+                                    'entity_context': ctx.to_dict()
+                                }
+                            }).execute()
+                        except Exception as e:
+                            audit_log_sync("webhook", "ERROR", f"Failed to insert suggestion raw_dump: {e}")
+                    report(req_trace_id)
+                    return {"success": True}
+
+                if actions and not should_show_card:
+                    # Path C: direct execution — actions exist, no card needed.
+                    # Simple tasks ("Call Lisa Chen about X") go here.
+                    # Org reconciliation: extraction decides, consumers obey.
+                    from core.actions.executor import reconcile_action_orgs, execute_planned_actions
+                    reconcile_action_orgs(actions, ctx)
+                    await execute_planned_actions(
+                        actions, chat_id, text=text, entity=entity, source=source, sender=sender,
+                        session_id=session_id, intent=intent, suppress_telegram=False, active_anchor=active_anchor,
+                        entity_context=ctx
+                    )
+                    for act in actions:
+                        if getattr(act, "operation", "") == "create_task" and "_created_task_id" in getattr(act, "params", {}):
+                            matched_task_id = act.params["_created_task_id"]
+                    if suggestion_dict:
+                        suggestion_dict["matched_task_id"] = matched_task_id
+                    report(req_trace_id)
+                    return {"success": True}
+
+                # Path D: no-action terminal — no card AND no actions.
+                # Save fallback note + honest reply. User's message never vanishes.
                 from core.actions.executor import _save_fallback_note
                 saved = await _save_fallback_note(text, chat_id, entity, source)
                 audit_log_sync("webhook", "WARNING",
@@ -1625,24 +1699,6 @@ async def _process_webhook(update: dict):
                         else "I couldn't process that message — please try again.")
                 report(req_trace_id)
                 return {"success": True}
-
-                if actions and not should_show_card:
-                    # Direct execution: actions exist AND no card needed
-                    # (no new entities to confirm). Org reconciliation applies.
-                    from core.actions.executor import reconcile_action_orgs
-                    reconcile_action_orgs(actions, ctx)
-                    from core.actions.executor import execute_planned_actions
-                    await execute_planned_actions(
-                        actions, chat_id, text=text, entity=entity, source=source, sender=sender,
-                        session_id=session_id, intent=intent, suppress_telegram=False, active_anchor=active_anchor,
-                        entity_context=ctx
-                    )
-                    for act in actions:
-                        if getattr(act, "operation", "") == "create_task" and "_created_task_id" in getattr(act, "params", {}):
-                            matched_task_id = act.params["_created_task_id"]
-
-                if suggestion_dict:
-                    suggestion_dict["matched_task_id"] = matched_task_id
 
             await route_by_intent(intent, text, chat_id, session_id, classification=classification, source=source, sender=sender, active_anchor=active_anchor, anaphora_task=_anaphora_task)
         elif intent == 'CLARIFICATION_NEEDED':
