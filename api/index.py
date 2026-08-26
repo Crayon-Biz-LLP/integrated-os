@@ -6014,19 +6014,33 @@ async def _run_suggestion_confirm_background(body: dict):
             # pending/newly-created org to live, and never lets a second confirmed
             # org overwrite the first (Bug 7: no last-org-wins).
             if entity_context_obj:
+                # Promotion preference (Aug 26): a confirmed org whose label matches
+                # the context's pending_org_label is the extraction's intended org —
+                # promote THAT, even if other org items were created earlier in the
+                # loop. First-org-wins applies only when no pending label matches.
+                _pending_label = (entity_context_obj.pending_org_label or "").strip().lower()
+                _promoted = False
                 for item in created_items:
                     if item["type"] == "organization":
-                        stored_pending_label = (entity_context_obj.pending_org_label or "").strip().lower()
-                        if not entity_context_obj.organization_id or (
-                            stored_pending_label and stored_pending_label == str(item["title"] or "").strip().lower()
-                        ):
-                            # Promote: pending org from extraction becomes live
+                        title_l = str(item["title"] or "").strip().lower()
+                        if _pending_label and _pending_label == title_l:
                             entity_context_obj.organization_id = item["entity_id"]
                             entity_context_obj.organization_name = item["title"]
                             entity_context_obj.pending_org_id = None
                             entity_context_obj.pending_org_label = None
-                        break  # Bug 7: first confirmed org wins
-                    elif item["type"] == "person" and item["entity_id"] not in entity_context_obj.person_ids:
+                            _promoted = True
+                            break  # Bug 7: exactly one promotion
+                if not _promoted:
+                    for item in created_items:
+                        if item["type"] == "organization":
+                            if not entity_context_obj.organization_id:
+                                entity_context_obj.organization_id = item["entity_id"]
+                                entity_context_obj.organization_name = item["title"]
+                                entity_context_obj.pending_org_id = None
+                                entity_context_obj.pending_org_label = None
+                            break  # Bug 7: first confirmed org wins
+                for item in created_items:
+                    if item["type"] == "person" and item["entity_id"] not in entity_context_obj.person_ids:
                         if item["entity_id"]:
                             entity_context_obj.person_ids.append(item["entity_id"])
                             entity_context_obj.person_names.append(item["title"])

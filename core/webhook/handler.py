@@ -1537,6 +1537,15 @@ async def _process_webhook(update: dict):
                         msg_id = msg_dump_res.data[0]['id'] if msg_dump_res.data else 0
                         if suggestion_dict:
                             suggestion_dict['message_id'] = msg_id
+                        # Persist the extracted context ON THE INBOUND DUMP:
+                        # /api/suggestions/confirm re-loads it from THIS row
+                        # (metadata.entity_context keyed by source_id). Storing it
+                        # only on the card dump left confirm with entity_context=None,
+                        # silently disabling §1b promotion + guaranteed org linkage
+                        # (Aug 26: note actions fell back to ad-hoc title matching).
+                        supabase.table('raw_dumps').update({
+                            'metadata': {'entity_context': ctx.to_dict()}
+                        }).eq('id', msg_id).execute()
                     except Exception as e:
                         
                         audit_log_sync("webhook", "ERROR", f"Failed to insert inbound raw_dump: {e}")
