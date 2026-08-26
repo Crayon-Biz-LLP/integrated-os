@@ -6047,7 +6047,12 @@ async def _run_suggestion_confirm_background(body: dict):
                 confirmed_labels = {str(item.get("title") or "").strip().lower() for item in created_items if item.get("title")}
                 confirmed_labels |= {str(e.get("label") or "").strip().lower() for e in selected_entities}
                 if confirmed_labels:
-                    live_res = supabase.table('graph_nodes').select('label').eq('is_current', True).eq('owner_id', owner_id).execute()
+                    # Entity-type scope only: unbounded all-type fetches silently
+                    # truncate at PostgREST's 1000-row page cap (same disease as
+                    # match_existing_nodes, Aug 25) — a pending edge whose endpoint
+                    # label fell outside page 1 would never auto-approve.
+                    live_res = supabase.table('graph_nodes').select('label').eq('is_current', True).eq('owner_id', owner_id) \
+                        .in_('type', ['person', 'organization', 'place', 'event', 'emotional_state']).execute()
                     live_labels = {(n.get('label') or '').strip().lower() for n in (live_res.data or [])}
                     pe_res = supabase.table('pending_graph_edges').select('id, source_label, target_label') \
                         .eq('owner_id', owner_id).eq('status', 'pending').limit(200).execute()
