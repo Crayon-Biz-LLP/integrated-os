@@ -39,6 +39,7 @@ Rules for actions:
 - update_metadata: changes priority or deadline.
 - delete_event: removes an external Event.
 - create_task: creates a new task. Requires params.title. For ID resolution, include params.organization_id from the lists above.
+  ORG RULE: set params.organization_id ONLY when the message explicitly names an organization from the lists above, or one is unambiguously implied (e.g. "the Nordlicht rollout" → Nordlicht). NEVER guess or default to any organization when none is named or implied — omit the field entirely instead. Keep titles faithful to the message text; do not add organization names to titles that the message did not use.
 - create_note: saves information to memory. Requires params.content.
 - create_event: schedules a calendar event. Requires params.title, params.time.
 - query_info: fetches information from the brain.
