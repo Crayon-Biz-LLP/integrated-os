@@ -149,6 +149,33 @@ Input: "We have a meeting today at 8:30 PM with the client team"
 Output: {{"document_type": "message", "summary": "Scheduled meeting with the client team including Alice Morgan, Ben Carter, Chloe Diaz, Ethan Ross.", "matched_task_id": null, "actions":[{{"operation":"create_event","params":{{"title":"Meeting with client team","time":"2026-08-25T20:30:00{tz_off}"}},"human_label":"Meeting at 8:30 PM","confidence":1.0}},{{"operation":"create_note","params":{{"content":"Scheduled meeting with the client team including Alice Morgan, Ben Carter, Chloe Diaz, Ethan Ross."}},"human_label":"Meeting scheduled: client team","confidence":1.0}}]}}
 """
 
+def _fuzzy_match_open_task(label: str, open_tasks: list, threshold: float = 0.72) -> list:
+    """Deterministic rescue for unresolved non-create actions (Aug 26).
+
+    Returns open tasks whose title strongly matches `label` — by sequence ratio
+    OR significant-token overlap. Empty/ambiguous results push the caller to
+    NeedsClarification instead of silently dropping the action.
+    """
+    import difflib
+    import re as _re
+    label_l = (label or "").strip().lower()
+    if not label_l:
+        return []
+    l_words = {w for w in _re.findall(r"[a-z0-9]+", label_l) if len(w) > 2}
+    scored = []
+    for t in open_tasks or []:
+        t_title = (t.get("title") or "").strip().lower()
+        if not t_title:
+            continue
+        ratio = difflib.SequenceMatcher(None, label_l, t_title).ratio()
+        t_words = {w for w in _re.findall(r"[a-z0-9]+", t_title) if len(w) > 2}
+        overlap = (len(l_words & t_words) / len(l_words | t_words)) if (l_words or t_words) else 0.0
+        if ratio >= threshold or overlap >= 0.5:
+            scored.append((max(ratio, overlap), t))
+    scored.sort(key=lambda pair: -pair[0])
+    return [t for _, t in scored]
+
+
 async def extract_suggestions(text: str, title: str = "", entity: str = "", active_anchor: dict = None, intent: str = None) -> Tuple[List[Action], Optional[dict]]:
     """Parse content into structured actions and entities, absorbing planner logic.
     Returns:
@@ -298,7 +325,23 @@ async def extract_suggestions(text: str, title: str = "", entity: str = "", acti
             op = a.get("operation", "no_op")
             tid = a.get("target_id")
             if str(tid) == "None" and not op.startswith("create_") and op not in ["query_info", "no_op"]:
-                continue
+                # Hardened Aug 26: never evaporate an unresolved non-create action.
+                # Previously: silent `continue` — "mark X as done" with an
+                # unresolved target just vanished (round-2 batch UAT finding).
+                # Ladder: 1) deterministic fuzzy rescue against open tasks,
+                #         2) NeedsClarification so the parking machinery asks.
+                label_for_match = (a.get("human_label") or a.get("params", {}) or {}).get("title") or text
+                candidates = _fuzzy_match_open_task(label_for_match, open_tasks)
+                if len(candidates) == 1:
+                    tid = candidates[0]["id"]
+                    a["target_id"] = tid
+                    audit_log_sync("suggestion_extractor", "INFO",
+                        f"Resolved {op} target deterministically: task {tid}")
+                else:
+                    raise NeedsClarification(
+                        message=(f"{op} target unresolved ({len(candidates)} candidate tasks) "
+                                 f"for '{label_for_match}'"),
+                        text=text, operation=op, target_id=None, missing_fields=["target_id"])
             
             a = inject_deterministic_delta(a, text)
             a = inject_deterministic_title(a, title, text)

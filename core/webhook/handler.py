@@ -1551,6 +1551,44 @@ async def _process_webhook(update: dict):
                         audit_log_sync("webhook", "ERROR", f"Failed to insert inbound raw_dump: {e}")
                 
                 # 5. Execute actions or defer them to the suggestion card
+                # ── No-action terminal (hardened Aug 26) ──
+                # Every inbound message MUST terminate in one of: artifact
+                # created / card deferred / clarification asked / explicit
+                # failure reply. Empty planner output previously fell through
+                # this whole block in total silence (provider outages ate
+                # messages — round-1/2 batch UAT findings). Guard 3 lives
+                # inside execute_planned_actions, which never runs for an
+                # empty list, so the net has to exist HERE too.
+                if not actions:
+                    from core.actions.executor import _save_fallback_note
+                    saved = await _save_fallback_note(text, chat_id, entity, source)
+                    audit_log_sync("webhook", "WARNING",
+                        f"No-action terminal: planner returned 0 actions "
+                        f"(extraction degraded?); fallback note saved={bool(saved)}")
+                    if source == "web":
+                        reply_text = ("📝 I couldn't structure that into an action, "
+                                      "so I saved it as a note." if saved else
+                                      "⚠️ I couldn't process that message — please try again.")
+                        with channel_tenant_scope():
+                            try:
+                                supabase.table('raw_dumps').insert({
+                                    'content': reply_text,
+                                    'source': 'web',
+                                    'owner_id': owner_id,
+                                    'direction': 'outgoing',
+                                    'message_type': 'response',
+                                    'status': 'completed',
+                                    'sender': 'system',
+                                }).execute()
+                            except Exception as e:
+                                audit_log_sync("webhook", "ERROR", f"Failed to insert no-action reply: {e}")
+                    else:
+                        await send_telegram(chat_id,
+                            "📝 Logged as a note — I couldn't structure it further." if saved
+                            else "I couldn't process that message — please try again.")
+                    report(req_trace_id)
+                    return {"success": True}
+
                 if actions:
                     # Org reconciliation — "extraction decides; consumers obey".
                     # See executor.reconcile_action_orgs for the contract (Finding A/B, Aug 26).

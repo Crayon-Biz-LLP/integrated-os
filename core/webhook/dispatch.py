@@ -568,6 +568,16 @@ async def _route_by_intent(intent: str, text: str, chat_id: int, session_id: str
                     operation=nc.operation, target_id=nc.target_id,
                     missing_fields=nc.missing_fields,
                 )
+            else:
+                # Hardened Aug 26: without a session there is nowhere to park
+                # the question — previously this path evaporated silently
+                # (round-2 UAT: COMPLETION message produced zero artifacts and
+                # zero user feedback). Data-loss prevention applies.
+                audit_log_sync("webhook", "WARNING",
+                    f"NeedsClarification without session ({nc.operation}); "
+                    "saving fallback note")
+                from core.actions.executor import _save_fallback_note
+                await _save_fallback_note(text, chat_id, entity, source)
             await handle_clarification(text, nc.to_question(), chat_id, session_id=session_id)
             return
         await execute_planned_actions(actions, chat_id, text=text, entity=entity, source=source, sender=sender, session_id=session_id, intent=intent, active_anchor=active_anchor)

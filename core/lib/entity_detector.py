@@ -44,7 +44,24 @@ _PERSON_CONTEXT_WORDS = {
     'talked', 'spoke', 'met', 'called', 'asked', 'told', 'said',
     'introduced', 'worked', 'discussed', 'interviewed', 'contacted',
     'assigned',
+    # Aug 26: base forms + variants — "Meet Kavya Raman" previously missed
+    # because only irregular 'met' was listed (round-1 batch UAT finding).
+    'meet', 'call', 'email', 'message', 'ping', 'sync',
 }
+
+
+def _signal_base_form(word: str) -> str:
+    """Crude morphological normalization for signal-word matching.
+
+    'meeting' → 'meet', 'calls' → 'call'. Irregulars like 'met' are listed
+    explicitly in the context-word sets. Only strips when the result stays
+    a plausible word (min length 3).
+    """
+    if len(word) > 4 and word.endswith('ing'):
+        return word[:-3]
+    if len(word) > 3 and word.endswith('s'):
+        return word[:-1]
+    return word
 
 # How many words before a capitalized phrase to scan for a signal word.
 # Small enough to avoid cross-clause false positives ("the meeting on Friday"
@@ -74,6 +91,14 @@ _RESERVED_ENTITY_WORDS = {
 #   "new client Marutham" → "client" before "Marutham"
 #   "our vendor Acme"    → "vendor" before "Acme"
 #   "the company Quanta" → "company" before "Quanta"
+# Strong corporate suffixes — the gate for re-enabled new-org proposals
+# (Pattern D2, Aug 26). A phrase must END in one of these to be proposed.
+_ORG_SUFFIX_LEXICON = {
+    'labs', 'media', 'dynamics', 'group', 'bank', 'hotels', 'analytics',
+    'studios', 'systems', 'partners', 'ventures', 'technologies',
+    'solutions', 'works', 'industries', 'capital', 'digital', 'software',
+    'consulting', 'holdings', 'networks', 'logistics', 'bio', 'pharma',
+}
 _ORG_CONTEXT_WORDS = {
     'client', 'company', 'startup', 'start-up', 'agency', 'firm',
     'vendor', 'partner', 'organization', 'organisation', 'business',
@@ -358,38 +383,76 @@ def detect_entities(text: str) -> List[DetectedEntity]:
     # Phase 2: Pattern Match — detect unregistered entities
     # ════════════════════════════════════════════════════════════════════════
 
-    # ── Pattern B: Person detection via capitalized names in context ──
     caps_phrases = _find_capitalized_phrases(text)
+
+    # ── Pattern D2: NEW-organization detection via suffix lexicon (Aug 26) ──
+    # Runs BEFORE Pattern B so org-suffix phrases are claimed as organizations
+    # first ("Nova Dynamics" was incorrectly typed person by B in round 2).
+    _d2_claimed: set[str] = set()
     for phrase, start, end in caps_phrases:
         if phrase.lower() in seen_labels:
             continue
-        # Check if preceded by a person-signal verb within a small window.
-        # Window (not last-word-only) preserves "met with Joel" / "talked to Arani"
-        # while prepositions alone ("scheduled for Friday") never trigger.
-        before = text[max(0, start - 25):start].strip().lower()
-        ctx_words = before.split()
-        if ctx_words and any(
-            w in _PERSON_CONTEXT_WORDS for w in ctx_words[-_SIGNAL_WINDOW:]
-        ):
-            # Degraded mode (Phase 1 DB failed): an ungrounded person proposal
-            # is not reliable enough for a normal-confidence candidate — it
-            # will still be routed to pending (never direct), but flagged low.
+        words = phrase.split()
+        if len(words) >= 2 and words[-1].lower() in _ORG_SUFFIX_LEXICON:
             conf = 0.8 if db_grounded else 0.4
             _add(DetectedEntity(
                 label=phrase,
-                type='person',
+                type='organization',
                 source='pattern_match',
                 is_new=True,
                 confidence=conf,
             ))
+            _d2_claimed.add(phrase.lower())
             audit_log_sync("entity_detector", "INFO",
-                f"Pattern B: Proposed person '{phrase}' via context")
+                f"Pattern D2: Proposed organization '{phrase}' via suffix gate")
 
-    # Degraded mode marker: Phase 1 DB fetch failed — this run is ungrounded.
+    # ── Pattern B: Person detection via capitalized names in context ──
+    for phrase, start, end in caps_phrases:
+        if phrase.lower() in seen_labels or phrase.lower() in _d2_claimed:
+            continue
+        # Hardened Aug 26: sentence-initial verbs ("Meet", "Call") get absorbed
+        # into the phrase by _find_capitalized_phrases. Strip leading signal
+        # words so the real name becomes the candidate label and the signal is
+        # known to have fired (round-1 UAT: "Meet Kavya Raman" = empty
+        # phrase = nothing, because "Meet" consumed the window).
+        words = phrase.split()
+        signal_in_phrase = False
+        while len(words) > 1:
+            w0 = words[0].lower()
+            if w0 in _PERSON_CONTEXT_WORDS or _signal_base_form(w0) in _PERSON_CONTEXT_WORDS:
+                signal_in_phrase = True
+                words = words[1:]
+            else:
+                break
+        label = ' '.join(words)
+        if label.lower() in seen_labels or label.lower() in _d2_claimed:
+            continue
+        # Standard window check for non-stripped phrases
+        if not signal_in_phrase:
+            before = text[max(0, start - 25):start].strip().lower()
+            ctx_words = before.split()
+            if not ctx_words or not any(
+                w in _PERSON_CONTEXT_WORDS
+                or _signal_base_form(w) in _PERSON_CONTEXT_WORDS
+                for w in ctx_words[-_SIGNAL_WINDOW:]
+            ):
+                continue
+        conf = 0.8 if db_grounded else 0.4
+        _add(DetectedEntity(
+            label=label,
+            type='person',
+            source='pattern_match',
+            is_new=True,
+            confidence=conf,
+        ))
+        audit_log_sync("entity_detector", "INFO",
+            f"Pattern B: Proposed person '{label}' via context")
+
+    # Degraded mode marker
     if not db_grounded:
         audit_log_sync("entity_detector", "WARNING",
             "DEGRADED MODE: Phase 1 DB fetch failed — ungrounded detection "
-            "(Pattern D disabled, Pattern B capped at low confidence)")
+            "(Pattern B capped at low confidence)")
 
     # ── Pattern C: Emotional state detection (handles multi-word like 'burned out') ──
     for emotion in _match_emotional_states(text):
