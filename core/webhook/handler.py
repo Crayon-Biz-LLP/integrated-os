@@ -1543,13 +1543,11 @@ async def _process_webhook(update: dict):
                 
                 # 5. Execute actions or defer them to the suggestion card
                 if actions:
-                    if not matched_task_id and ctx.pending_org_id:
-                        for a in actions:
-                            if getattr(a, "operation", "") == "create_task" and not getattr(a, "organization_id", None):
-                                a.organization_id = ctx.pending_org_id
-                                if hasattr(a, "params"):
-                                    a.params["organization_id"] = ctx.pending_org_id
-                                
+                    # Org reconciliation — "extraction decides; consumers obey".
+                    # See executor.reconcile_action_orgs for the contract (Finding A/B, Aug 26).
+                    from core.actions.executor import reconcile_action_orgs
+                    reconcile_action_orgs(actions, ctx)
+
                     if should_show_card:
                         # Actions are deferred — they'll execute on confirm
                         if suggestion_dict:
@@ -1567,7 +1565,8 @@ async def _process_webhook(update: dict):
                         from core.actions.executor import execute_planned_actions
                         await execute_planned_actions(
                             actions, chat_id, text=text, entity=entity, source=source, sender=sender,
-                            session_id=session_id, intent=intent, suppress_telegram=False, active_anchor=active_anchor
+                            session_id=session_id, intent=intent, suppress_telegram=False, active_anchor=active_anchor,
+                            entity_context=ctx  # Finding A fix: create_task_direct resolves orgs from this
                         )
                         
                         # Update matched_task_id if we created one

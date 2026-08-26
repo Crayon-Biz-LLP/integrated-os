@@ -67,11 +67,15 @@ def seeded_statements() -> list[str]:
 
 def all_statements() -> list[str]:
     o = f"owner_id = '{TEST_OWNER_ID}'"
+    # Full reset — deliberately does NOT reuse seeded_statements(): its
+    # seed-tagged graph_nodes delete would run BEFORE the full tasks wipe,
+    # violating tasks_organization_id_fkey for UAT-created rows that point
+    # at seeded nodes (caught Aug 26). One flat, FK-ordered pass instead:
     return [
-        *seeded_statements(),
-        # Full reset: children first (FK order), then all nodes.
-        # FK children of graph_nodes (per information_schema): projects,
-        # graph_edges, messages, tasks, merge_proposals.
+        f"DELETE FROM pending_graph_edges WHERE {o};",
+        f"DELETE FROM pending_nodes WHERE {o};",
+        # Children first (per information_schema, FK children of graph_nodes:
+        # projects, graph_edges, messages, tasks, memories, merge_proposals).
         f"DELETE FROM tasks WHERE {o};",
         f"DELETE FROM memories WHERE {o};",
         f"DELETE FROM merge_proposals WHERE {o};",
@@ -79,6 +83,7 @@ def all_statements() -> list[str]:
         f"DELETE FROM messages WHERE {o};",
         f"DELETE FROM projects WHERE {o};",
         f"DELETE FROM graph_nodes WHERE {o};",
+        f"UPDATE user_settings SET user_orgs = '[]'::jsonb WHERE user_id = '{TEST_OWNER_ID}';",
     ]
 
 

@@ -263,6 +263,45 @@ def _resolve_entity_from_anchor(entity: str, active_anchor: dict = None) -> str 
     return entity
 
 
+def reconcile_action_orgs(actions, ctx) -> None:
+    """Org reconciliation — "extraction decides; consumers obey".
+
+    ctx (EntityContext from extract_context_from_source, computed BEFORE the
+    card/direct split in the webhook handler) is the single authority on which
+    organization a message belongs to. Contract per creation action:
+
+      - action has no org + ctx has one (live or pending) → fill from ctx
+        (Finding A, Aug 26: direct-path tasks landed organization_id=NULL even
+        when extraction had already resolved an existing org node)
+      - ctx has no org → strip any planner-fabricated org references
+        (Finding B, Aug 26: the planner invented 'Meeting with Nordlicht' from
+        the org-ID list for a message that named no organization at all)
+      - an explicit action org that DIFFERS from ctx's is left untouched
+        (per-action intent wins; the confirm flow reconciles authoritatively)
+
+    Pure function — no DB, no I/O. Mutates actions in place.
+    """
+    ctx_org_id = getattr(ctx, 'organization_id', None) or getattr(ctx, 'pending_org_id', None)
+    for action in actions or []:
+        if getattr(action, "operation", "") not in ("create_task", "create_note", "create_event"):
+            continue
+        params = getattr(action, "params", None)
+        if params is None:
+            params = {}
+            action.params = params
+        has_explicit_org = bool(params.get("organization_id") or getattr(action, "organization_id", None))
+        if not has_explicit_org:
+            if ctx_org_id:
+                params["organization_id"] = ctx_org_id
+                action.organization_id = ctx_org_id
+        elif not ctx_org_id:
+            # Fabricated org: extraction found none, so no org reference survives.
+            for key in ("organization_id", "organization_name"):
+                params.pop(key, None)
+            if getattr(action, "organization_id", None):
+                action.organization_id = None
+
+
 async def execute_planned_actions(
     actions: List[Action], 
     chat_id: int, 
