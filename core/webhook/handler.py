@@ -1551,83 +1551,29 @@ async def _process_webhook(update: dict):
                         audit_log_sync("webhook", "ERROR", f"Failed to insert inbound raw_dump: {e}")
                 
                 # 5. Execute actions or defer them to the suggestion card
-                # ── No-action terminal (hardened Aug 26) ──
-                # Every inbound message MUST terminate in one of: artifact
-                # created / card deferred / clarification asked / explicit
-                # failure reply. Empty planner output previously fell through
-                # this whole block in total silence (provider outages ate
-                # messages — round-1/2 batch UAT findings). Guard 3 lives
-                # inside execute_planned_actions, which never runs for an
-                # empty list, so the net has to exist HERE too.
-                if not actions:
-                    from core.actions.executor import _save_fallback_note
-                    saved = await _save_fallback_note(text, chat_id, entity, source)
-                    audit_log_sync("webhook", "WARNING",
-                        f"No-action terminal: planner returned 0 actions "
-                        f"(extraction degraded?); fallback note saved={bool(saved)}")
-                    if source == "web":
-                        reply_text = ("📝 I couldn't structure that into an action, "
-                                      "so I saved it as a note." if saved else
-                                      "⚠️ I couldn't process that message — please try again.")
-                        with channel_tenant_scope():
-                            try:
-                                supabase.table('raw_dumps').insert({
-                                    'content': reply_text,
-                                    'source': 'web',
-                                    'owner_id': owner_id,
-                                    'direction': 'outgoing',
-                                    'message_type': 'response',
-                                    'status': 'completed',
-                                    'sender': 'system',
-                                }).execute()
-                            except Exception as e:
-                                audit_log_sync("webhook", "ERROR", f"Failed to insert no-action reply: {e}")
-                    else:
-                        await send_telegram(chat_id,
-                            "📝 Logged as a note — I couldn't structure it further." if saved
-                            else "I couldn't process that message — please try again.")
-                    report(req_trace_id)
-                    return {"success": True}
-
-                if actions:
-                    # Org reconciliation — "extraction decides; consumers obey".
-                    # See executor.reconcile_action_orgs for the contract (Finding A/B, Aug 26).
-                    from core.actions.executor import reconcile_action_orgs
-                    reconcile_action_orgs(actions, ctx)
-
-                    if should_show_card:
-                        # Actions are deferred — they'll execute on confirm
-                        if suggestion_dict:
-                            suggestion_dict["suggested_actions"] = [
-                                {
-                                    "operation": a.operation, 
-                                    "target_id": a.target_id,
-                                    "confidence": getattr(a, "confidence", 1.0),
-                                    "human_label": (a.human_label if a.human_label else None) or a.params.get("title") or a.params.get("content") or a.params.get("notes") or "Untitled", 
-                                    "params": a.params
-                                }
-                                for a in actions
-                            ]
-                    else:
-                        from core.actions.executor import execute_planned_actions
-                        await execute_planned_actions(
-                            actions, chat_id, text=text, entity=entity, source=source, sender=sender,
-                            session_id=session_id, intent=intent, suppress_telegram=False, active_anchor=active_anchor,
-                            entity_context=ctx  # Finding A fix: create_task_direct resolves orgs from this
-                        )
-                        
-                        # Update matched_task_id if we created one
-                        for act in actions:
-                            if getattr(act, "operation", "") == "create_task" and "_created_task_id" in getattr(act, "params", {}):
-                                matched_task_id = act.params["_created_task_id"]
-                
-                if suggestion_dict:
-                    suggestion_dict["matched_task_id"] = matched_task_id
-
+                # ── Card path: show when NEW entities exist (regardless of actions) ──
+                # The card shows detected entities for user confirmation — it
+                # doesn't require the planner to have produced actions. This
+                # decoupling fixes the case where D2 detects a new org but the
+                # planner was down (round-3 UAT: Stratos/Cortex/Brightline
+                # cards suppressed because actions=[]).
                 if should_show_card:
+                    # Actions are deferred — they'll execute on confirm
+                    if suggestion_dict:
+                        suggestion_dict["suggested_actions"] = [
+                            {
+                                "operation": a.operation,
+                                "target_id": a.target_id,
+                                "confidence": getattr(a, "confidence", 1.0),
+                                "human_label": (a.human_label if a.human_label else None) or a.params.get("title") or a.params.get("content") or a.params.get("notes") or "Untitled",
+                                "params": a.params
+                            }
+                            for a in actions
+                        ]
+
                     if _anaphora_task:
                         _anaphora_task.cancel()
-                        
+
                     with channel_tenant_scope():
                         try:
                             supabase.table('raw_dumps').insert({
@@ -1644,18 +1590,59 @@ async def _process_webhook(update: dict):
                                 }
                             }).execute()
                         except Exception as e:
-                            
                             audit_log_sync("webhook", "ERROR", f"Failed to insert suggestion raw_dump: {e}")
-                    
-                    
+
                     report(req_trace_id)
                     return {"success": True}
+
+                # ── No-action terminal (hardened Aug 26) ──
+                # No new entities AND no actions — save fallback + honest reply.
+                from core.actions.executor import _save_fallback_note
+                saved = await _save_fallback_note(text, chat_id, entity, source)
+                audit_log_sync("webhook", "WARNING",
+                    f"No-action terminal: planner returned 0 actions "
+                    f"(extraction degraded?); fallback note saved={bool(saved)}")
+                if source == "web":
+                    reply_text = ("📝 I couldn't structure that into an action, "
+                                  "so I saved it as a note." if saved else
+                                  "⚠️ I couldn't process that message — please try again.")
+                    with channel_tenant_scope():
+                        try:
+                            supabase.table('raw_dumps').insert({
+                                'content': reply_text,
+                                'source': 'web',
+                                'owner_id': owner_id,
+                                'direction': 'outgoing',
+                                'message_type': 'response',
+                                'status': 'completed',
+                                'sender': 'system',
+                            }).execute()
+                        except Exception as e:
+                            audit_log_sync("webhook", "ERROR", f"Failed to insert no-action reply: {e}")
                 else:
-                    if _anaphora_task:
-                        _anaphora_task.cancel()
-                    
-                    report(req_trace_id)
-                    return {"success": True}
+                    await send_telegram(chat_id,
+                        "📝 Logged as a note — I couldn't structure it further." if saved
+                        else "I couldn't process that message — please try again.")
+                report(req_trace_id)
+                return {"success": True}
+
+                if actions and not should_show_card:
+                    # Direct execution: actions exist AND no card needed
+                    # (no new entities to confirm). Org reconciliation applies.
+                    from core.actions.executor import reconcile_action_orgs
+                    reconcile_action_orgs(actions, ctx)
+                    from core.actions.executor import execute_planned_actions
+                    await execute_planned_actions(
+                        actions, chat_id, text=text, entity=entity, source=source, sender=sender,
+                        session_id=session_id, intent=intent, suppress_telegram=False, active_anchor=active_anchor,
+                        entity_context=ctx
+                    )
+                    for act in actions:
+                        if getattr(act, "operation", "") == "create_task" and "_created_task_id" in getattr(act, "params", {}):
+                            matched_task_id = act.params["_created_task_id"]
+
+                if suggestion_dict:
+                    suggestion_dict["matched_task_id"] = matched_task_id
 
             await route_by_intent(intent, text, chat_id, session_id, classification=classification, source=source, sender=sender, active_anchor=active_anchor, anaphora_task=_anaphora_task)
         elif intent == 'CLARIFICATION_NEEDED':

@@ -289,7 +289,9 @@ def reconcile_action_orgs(actions, ctx) -> None:
         if params is None:
             params = {}
             action.params = params
-        has_explicit_org = bool(params.get("organization_id") or getattr(action, "organization_id", None))
+        # Aug 26 #19: also detect organization_name-only (planner hallucinated
+        # a name without an ID — e.g. 'Prismwork' on an emotional message).
+        has_explicit_org = bool(params.get("organization_id") or params.get("organization_name") or getattr(action, "organization_id", None))
         if not has_explicit_org:
             if ctx_org_id:
                 params["organization_id"] = ctx_org_id
