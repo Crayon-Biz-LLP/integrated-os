@@ -19,7 +19,7 @@ import modal
 # (api/ and core/ aren't in infra/, so we need to add them explicitly).
 # Note: during modal serve, these are copied at build time, not live-reloaded.
 # Build cache version — increment to force a fresh image build
-_BUILD_VERSION = "v6"
+_BUILD_VERSION = "v7"
 
 image = (
     modal.Image.debian_slim(python_version="3.11")

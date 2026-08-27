@@ -32,6 +32,29 @@ except Exception:
     async_fetchrow = None
 
 
+# ── Paginated edge fetch (Aug 27 hardening) ──────────────────────────────
+def _paginated_edge_fetch(column: str, node_ids: list) -> list[dict]:
+    """Fetch graph_edges by node ID column, paginating to avoid 1000-row truncation."""
+    from core.services.db import tenant_aware_client
+    _PAGE = 1000
+    all_rows = []
+    offset = 0
+    client = tenant_aware_client()
+    while True:
+        page = (client.table('graph_edges')
+                .select('source_node_id, target_node_id')
+                .in_(column, node_ids)
+                .eq('is_current', True)
+                .range(offset, offset + _PAGE - 1)
+                .execute())
+        rows = page.data or []
+        all_rows.extend(rows)
+        if len(rows) < _PAGE:
+            break
+        offset += _PAGE
+    return all_rows
+
+
 async def resolve_anaphora(query: str, active_anchor: dict = None, classify_context: str = "", session_id: str = None):
     """Resolve anaphora — extract entity, query_type, and rewritten query.
     
@@ -999,9 +1022,9 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, ac
                         chosen = exact[0]
                     else:
                         nids = [n['id'] for n in matches]
-                        source_edges = supabase.table('graph_edges').select('source_node_id, target_node_id').in_('source_node_id', nids).eq('is_current', True).execute()
-                        target_edges = supabase.table('graph_edges').select('source_node_id, target_node_id').in_('target_node_id', nids).eq('is_current', True).execute()
-                        all_edge_data = (source_edges.data or []) + (target_edges.data or [])
+                        source_edges = _paginated_edge_fetch('source_node_id', nids)
+                        target_edges = _paginated_edge_fetch('target_node_id', nids)
+                        all_edge_data = source_edges + target_edges
                         ec = {}
                         if all_edge_data:
                             for e in all_edge_data:

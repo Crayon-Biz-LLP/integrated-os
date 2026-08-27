@@ -644,3 +644,41 @@ def resolve_user_by_api_key(api_key: str) -> dict | None:
         return None
 
 
+# ── Paginated query helper (Aug 27 hardening) ────────────────────────────
+# PostgREST defaults to 1000 rows per response. Tables like graph_edges,
+# memories, and messages grow continuously — unpaginated queries silently
+# truncate, causing the OS to "forget" older data. This helper pages
+# through results automatically.
+
+def paginated_query(table_name: str, columns: str, page_size: int = 1000,
+                     **filters) -> list[dict]:
+    """Fetch all rows from a table, paginating automatically.
+
+    Usage::
+        edges = paginated_query(
+            "graph_edges",
+            "id, source_node_id, target_node_id, relationship",
+            is_current=True,
+        )
+
+    Returns a single flat list of all matching rows across all pages.
+    """
+    client = tenant_aware_client()
+    all_rows = []
+    offset = 0
+    while True:
+        query = client.table(table_name).select(columns)
+        for col, val in filters.items():
+            if isinstance(val, list):
+                query = query.in_(col, val)
+            elif val is None:
+                query = query.is_(col, None)
+            else:
+                query = query.eq(col, val)
+        page = query.range(offset, offset + page_size - 1).execute()
+        rows = page.data or []
+        all_rows.extend(rows)
+        if len(rows) < page_size:
+            break
+        offset += page_size
+    return all_rows

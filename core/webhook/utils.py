@@ -380,14 +380,24 @@ async def hybrid_search_graph(query: str, node_id: str = None) -> str:
             primary_node = node_res.data[0]
             primary_id = primary_node['id']
 
-        edges_res = supabase.table('graph_edges').select('source_node_id, target_node_id, relationship').or_(f'source_node_id.eq.{primary_id},target_node_id.eq.{primary_id}').eq('is_current', True).execute()
+        # Paginated edge fetch (Aug 27 hardening)
+        _PAGE = 1000
+        all_edges = []
+        off = 0
+        while True:
+            pg = supabase.table('graph_edges').select('source_node_id, target_node_id, relationship').or_(f'source_node_id.eq.{primary_id},target_node_id.eq.{primary_id}').eq('is_current', True).range(off, off + _PAGE - 1).execute()
+            d = pg.data or []
+            all_edges.extend(d)
+            if len(d) < _PAGE:
+                break
+            off += _PAGE
 
-        if not edges_res.data:
+        if not all_edges:
             return ""
 
         connected_ids = set()
 
-        for edge in edges_res.data:
+        for edge in all_edges:
             if edge['source_node_id'] == primary_id:
                 connected_ids.add(edge['target_node_id'])
             elif edge['target_node_id'] == primary_id:
@@ -398,7 +408,7 @@ async def hybrid_search_graph(query: str, node_id: str = None) -> str:
             label_map = {str(n['id']): n['label'] for n in labels_res.data}
 
             labeled_map = []
-            for edge in edges_res.data:
+            for edge in all_edges:
                 src_label = resolve_alias(label_map.get(str(edge['source_node_id']), "Unknown"))
                 tgt_label = resolve_alias(label_map.get(str(edge['target_node_id']), "Unknown"))
 

@@ -47,6 +47,12 @@ class _FakeChain:
         self.filters.append(("eq", (col, val)))
         return self
 
+    def range(self, start, end):
+        # Pagination support — slice data to simulate PostgREST range behavior.
+        self.filters.append(("range", (start, end)))
+        self._data = self._data[start:end + 1]
+        return self
+
     def execute(self):
         return SimpleNamespace(data=self._data)
 
@@ -265,3 +271,58 @@ def test_backfill_regex_escapes_regex_metachars():
     pat = _label_word_regex("R&D")
     assert pat.search("sync with the R&D team today".lower())
     assert not pat.search("rnd labs")
+
+
+# ── Pagination: guarantee no silent truncation ────────────────────────────
+
+
+def test_pagination_fetches_all_live_nodes(monkeypatch):
+    """When live_nodes exceed one page, pagination must fetch all of them.
+    Aug 27 hardening: prevents the silent 1000-row truncation that hid
+    Solvstrat from match_existing_nodes for weeks."""
+    # Create 2500 fake nodes — more than 2 pages of 1000
+    many_nodes = [
+        {"id": str(i), "label": f"Org {i}", "type": "organization"}
+        for i in range(2500)
+    ]
+    fake = _FakeSupabase({
+        "users": [{"name": "Test"}],
+        "graph_nodes": many_nodes,
+        "pending_nodes": [],
+    })
+    _patch_sb(monkeypatch, fake)
+
+    entities = [{"type": "organization", "label": "Org 2499"}]
+    from core.pulse.graph import match_existing_nodes
+    result = match_existing_nodes(entities, _OWNER)
+
+    # The last node (Org 2499) must be found despite being beyond page 1
+    matches = result[0].get("existing_matches", [])
+    assert len(matches) >= 1, (
+        f"Org 2499 not found — pagination likely truncating at page boundary"
+    )
+    assert matches[0]["label"] == "Org 2499"
+
+
+def test_pagination_fetches_all_pending_nodes(monkeypatch):
+    """Pending nodes must also be paginated."""
+    many_pending = [
+        {"id": str(i), "label": f"Pending {i}", "node_type": "person"}
+        for i in range(1500)
+    ]
+    fake = _FakeSupabase({
+        "users": [{"name": "Test"}],
+        "graph_nodes": [],
+        "pending_nodes": many_pending,
+    })
+    _patch_sb(monkeypatch, fake)
+
+    entities = [{"type": "person", "label": "Pending 1499"}]
+    from core.pulse.graph import match_existing_nodes
+    result = match_existing_nodes(entities, _OWNER)
+
+    matches = result[0].get("existing_matches", [])
+    assert len(matches) >= 1, (
+        f"Pending 1499 not found — pending node pagination likely truncating"
+    )
+    assert matches[0]["label"] == "Pending 1499"

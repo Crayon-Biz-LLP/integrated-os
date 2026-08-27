@@ -96,21 +96,43 @@ def match_existing_nodes(entities: list[dict], owner_id: str) -> list[dict]:
     # so older org/person nodes vanish from matching entirely (Aug 25 root
     # cause: Solvstrat unmatched despite existing). The matcher loop below can
     # only ever use these types anyway.
+    #
+    # Pagination: even with the entity-type filter, a tenant with >1000
+    # person+org+place+event+emotional_state nodes would be silently
+    # truncated. We page through results in chunks of 1000 to guarantee
+    # completeness. (Aug 27 hardening.)
     _ENTITY_NODE_TYPES = ["person", "organization", "place", "event", "emotional_state"]
-    res_live = (supabase.table("graph_nodes")
+    _PAGE_SIZE = 1000
+    live_nodes = []
+    offset = 0
+    while True:
+        page = (supabase.table("graph_nodes")
                 .select("id, label, type")
                 .in_("type", _ENTITY_NODE_TYPES)
                 .eq("is_current", True)
+                .range(offset, offset + _PAGE_SIZE - 1)
                 .execute())
-    live_nodes = res_live.data or []
+        rows = page.data or []
+        live_nodes.extend(rows)
+        if len(rows) < _PAGE_SIZE:
+            break
+        offset += _PAGE_SIZE
 
-    # Fetch pending nodes — same entity-type restriction for the same reason.
-    res_pending = (supabase.table("pending_nodes")
-                   .select("id, label, node_type")
-                   .in_("node_type", _ENTITY_NODE_TYPES)
-                   .in_("status", ["pending", "flagged"])
-                   .execute())
-    pending_nodes = res_pending.data or []
+    # Fetch pending nodes — same entity-type restriction and pagination.
+    pending_nodes = []
+    offset = 0
+    while True:
+        page = (supabase.table("pending_nodes")
+                .select("id, label, node_type")
+                .in_("node_type", _ENTITY_NODE_TYPES)
+                .in_("status", ["pending", "flagged"])
+                .range(offset, offset + _PAGE_SIZE - 1)
+                .execute())
+        rows = page.data or []
+        pending_nodes.extend(rows)
+        if len(rows) < _PAGE_SIZE:
+            break
+        offset += _PAGE_SIZE
 
     enriched = []
     for ent in entities:
@@ -177,12 +199,21 @@ def match_existing_nodes(entities: list[dict], owner_id: str) -> list[dict]:
     # Observability: the fetch/match boundary was invisible for weeks — a
     # silent 1000-row truncation took multi-round archaeology to diagnose.
     # One line makes empty-fetch vs no-match instantly distinguishable.
+    matched_count = sum(1 for e in enriched if e.get('existing_matches'))
     audit_log_sync(
         "pulse", "INFO",
         f"match_existing_nodes: entities={len(entities)} "
         f"live_nodes={len(live_nodes)} pending_nodes={len(pending_nodes)} "
-        f"matched={sum(1 for e in enriched if e.get('existing_matches'))}"
+        f"matched={matched_count}"
     )
+    # Early warning: if entity node count approaches the page size, flag it
+    # before silent truncation recurs. (Aug 27 hardening.)
+    if len(live_nodes) >= _PAGE_SIZE * 0.8:
+        audit_log_sync(
+            "pulse", "WARNING",
+            f"match_existing_nodes: live_nodes={len(live_nodes)} "
+            f"approaching page cap ({_PAGE_SIZE}) — consider archiving old entities"
+        )
 
     return enriched
 
@@ -787,6 +818,10 @@ async def _ensure_danny_edge(label: str, node_type: str):
                 "epistemic_status": "asserted",
                 "metadata": {"source": "graph_approval"}
             }).execute()
+            # Invalidate edge cache for both nodes (Aug 27 hardening)
+            from core.lib.edge_cache import invalidate_node_edges
+            from core.services.db import get_tenant
+            invalidate_node_edges(get_tenant(), [danny_id, target_id])
     except Exception as e:
         audit_log_sync("pulse", "WARNING", f"Failed to create root edge: {e}")
 
@@ -1224,6 +1259,10 @@ async def process_pending_edge_decision(pending_id: int, decision: str, new_sour
                 'source_ref': pe.get('source_text') or f"pending_edge:{pending_id}",
                 'metadata': meta
             }, on_conflict="source_node_id,relationship,target_node_id", ignore_duplicates=True).execute()
+            # Invalidate edge cache for both endpoints (Aug 27 hardening)
+            from core.lib.edge_cache import invalidate_node_edges
+            from core.services.db import get_tenant
+            invalidate_node_edges(get_tenant(), [s_id, t_id])
             
             supabase.table('pending_graph_edges').update({
                 'status': 'approved',

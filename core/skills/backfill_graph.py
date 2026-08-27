@@ -642,12 +642,28 @@ def cleanup_resource_edges():
     """
     print("\n🧹 Cleaning up pending edges derived from resource/cluster content...")
     try:
-        # Find memories containing [RESOURCE] or URLs
-        res1 = supabase.table('memories').select('id').eq('memory_type', 'canonical_page').ilike('content', '%[RESOURCE]%').execute()
-        res2 = supabase.table('memories').select('id').ilike('content', '%http%').execute()
-        
-        mem_ids_1 = [str(m['id']) for m in (res1.data or [])]
-        mem_ids_2 = [str(m['id']) for m in (res2.data or [])]
+        # Find memories containing [RESOURCE] or URLs (paginated — Aug 27)
+        _PAGE = 1000
+        def _paginated_memories(**filters):
+            rows = []
+            off = 0
+            while True:
+                q = supabase.table('memories').select('id')
+                for col, val in filters.items():
+                    if isinstance(val, tuple):
+                        q = q.ilike(col, val[0])
+                    else:
+                        q = q.eq(col, val)
+                pg = q.range(off, off + _PAGE - 1).execute()
+                d = pg.data or []
+                rows.extend(d)
+                if len(d) < _PAGE:
+                    break
+                off += _PAGE
+            return rows
+
+        mem_ids_1 = [str(m['id']) for m in _paginated_memories(memory_type='canonical_page', content=('%[RESOURCE]%',))]
+        mem_ids_2 = [str(m['id']) for m in _paginated_memories(content=('%http%',))]
         memory_ids = list(set(mem_ids_1 + mem_ids_2))
         
         if not memory_ids:

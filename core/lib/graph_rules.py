@@ -732,17 +732,24 @@ def execute_graph_node_merge(source_id: str, target_id: str, provenance: str = "
     if src_node.get("canonical_id"):
         return {"success": True, "message": "Node already merged"}
 
-    # 1. Load edges where source or target is involved
-    src_out_res = supabase.table("graph_edges").select("*").eq("source_node_id", source_id).eq('is_current', True).execute()
-    src_in_res = supabase.table("graph_edges").select("*").eq("target_node_id", source_id).eq('is_current', True).execute()
-    
-    tgt_out_res = supabase.table("graph_edges").select("*").eq("source_node_id", target_id).eq('is_current', True).execute()
-    tgt_in_res = supabase.table("graph_edges").select("*").eq("target_node_id", target_id).eq('is_current', True).execute()
-    
-    src_out = src_out_res.data or []
-    src_in = src_in_res.data or []
-    tgt_out = tgt_out_res.data or []
-    tgt_in = tgt_in_res.data or []
+    # 1. Load edges where source or target is involved (paginated — Aug 27)
+    def _paginated_edges(col, nid):
+        _PAGE = 1000
+        rows = []
+        off = 0
+        while True:
+            pg = supabase.table("graph_edges").select("*").eq(col, nid).eq('is_current', True).range(off, off + _PAGE - 1).execute()
+            d = pg.data or []
+            rows.extend(d)
+            if len(d) < _PAGE:
+                break
+            off += _PAGE
+        return rows
+
+    src_out = _paginated_edges("source_node_id", source_id)
+    src_in = _paginated_edges("target_node_id", source_id)
+    tgt_out = _paginated_edges("source_node_id", target_id)
+    tgt_in = _paginated_edges("target_node_id", target_id)
     
     edges_to_delete = []
     edges_to_update_out = []

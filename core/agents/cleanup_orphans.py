@@ -10,22 +10,26 @@ import sys
 from datetime import datetime, timedelta, timezone
 
 from core.lib.audit_logger import audit_log_sync
-from core.services.db import run_tenant_fanout, tenant_aware_client
+from core.services.db import run_tenant_fanout, tenant_aware_client, paginated_query
 
 supabase = tenant_aware_client()
 
 
 def cleanup_orphan_graph_edges(dry_run: bool = False):
     audit_log_sync("cleanup_orphans", "INFO", "Starting orphan graph edge cleanup...")
-    all_edges = supabase.table("graph_edges").select("id, source_node_id, target_node_id").eq('is_current', True).execute()
+    all_edges = paginated_query("graph_edges", "id, source_node_id, target_node_id", is_current=True)
     orphans = 0
-    for edge in all_edges.data or []:
+    for edge in all_edges:
         src = supabase.table("graph_nodes").select("id").eq("id", edge["source_node_id"]).execute()
         tgt = supabase.table("graph_nodes").select("id").eq("id", edge["target_node_id"]).execute()
         if not src.data or not tgt.data:
             orphans += 1
             if not dry_run:
                 supabase.table("graph_edges").delete().eq("id", edge["id"]).execute()
+                # Invalidate edge cache for both endpoints (Aug 27 hardening)
+                from core.lib.edge_cache import invalidate_node_edges
+                from core.services.db import get_tenant
+                invalidate_node_edges(get_tenant(), [edge.get('source_node_id'), edge.get('target_node_id')])
                 audit_log_sync("cleanup_orphans", "INFO", f"Deleted orphan edge {edge['id']}")
     if orphans:
         msg = f"Deleted {orphans} orphan graph edges."
@@ -37,9 +41,9 @@ def cleanup_orphan_graph_edges(dry_run: bool = False):
 
 def cleanup_orphan_tasks(dry_run: bool = False):
     audit_log_sync("cleanup_orphans", "INFO", "Starting orphan task cleanup...")
-    all_tasks = supabase.table("tasks").select("id, organization_id, title").eq('is_current', True).execute()
+    all_tasks = paginated_query("tasks", "id, organization_id, title", is_current=True)
     orphans = 0
-    for task in all_tasks.data or []:
+    for task in all_tasks:
         oid = task.get("organization_id")
         if not oid:
             continue

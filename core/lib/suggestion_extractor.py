@@ -28,7 +28,7 @@ SUGGESTION_SCHEMA = {
     "properties": {
         "document_type": {"type": "string"},
         "summary": {"type": "string"},
-        "matched_task_id": {"type": ["integer", "null"]},
+        "matched_task_id": {"type": "INTEGER", "nullable": True},
         "actions": {
             "type": "array",
             "items": {
