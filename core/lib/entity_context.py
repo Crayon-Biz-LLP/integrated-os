@@ -403,6 +403,15 @@ def _integrate_llm_result(llm_result: dict, ctx: EntityContext, owner_id: str = 
             continue
 
         label_lower = label.lower()
+
+        # Skip if this label was already detected as an organization.
+        # The LLM sometimes classifies the same entity as both org and person
+        # (e.g. "Havnelight team" → org via suffix, person via "team" context).
+        # Deterministic org detection takes priority.
+        if any(e.get("label", "").lower() == label_lower and e.get("type") == "organization"
+               for e in ctx.detected_entities):
+            continue
+
         if not any(e.get("label", "").lower() == label_lower for e in ctx.detected_entities):
             ctx.detected_entities.append({"type": "person", "label": label, "confidence": confidence})
 

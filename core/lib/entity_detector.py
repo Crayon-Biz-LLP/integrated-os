@@ -68,6 +68,14 @@ def _signal_base_form(word: str) -> str:
 # has no verb in its window), large enough to bridge "met with Joel".
 _SIGNAL_WINDOW = 3
 
+# Prepositions that follow a person's name ("Marcus from PB", "David at Google").
+# These are NOT context words (they appear AFTER the name, not before).
+# Used by Pattern B to detect person references when no verb precedes the name.
+# 'at' and 'in' are forward-only (too generic backward: "Google at position 9").
+_PERSON_AFFILIATION_WORDS = {'from', 'at', 'in', 'of', 'with'}
+# Subset for backward checks — more restrictive to avoid false positives.
+_PERSON_BACKWARD_AFFILIATION_WORDS = {'from', 'with', 'of'}
+
 # Words that can NEVER become entities — weekdays, months, and time references.
 # Pattern B (person) and Pattern D (organization) used to propose these as
 # entities whenever they followed a context word ("meeting scheduled for Friday"
@@ -98,6 +106,7 @@ _ORG_SUFFIX_LEXICON = {
     'studios', 'systems', 'partners', 'ventures', 'technologies',
     'solutions', 'works', 'industries', 'capital', 'digital', 'software',
     'consulting', 'holdings', 'networks', 'logistics', 'bio', 'pharma',
+    'light',  # Havenlight, Sunlight, Firelight, etc.
 }
 _ORG_CONTEXT_WORDS = {
     'client', 'company', 'startup', 'start-up', 'agency', 'firm',
@@ -188,7 +197,10 @@ def _find_capitalized_phrases(text: str) -> list[tuple[str, int, int]]:
             _SKIP_WORDS.add(_root_name)
     except Exception:
         pass  # fail-open: no tenant context → legacy behavior
-    pattern = r'\b([A-Z][a-z]*(?:\s+[A-Z][a-z]*)*)\b'
+    # \u2018and\u2019 connector: \"Cobalt and Finch\" (company) vs \"David, Marcus, and Elena\" (list).
+    # Allow \u2018and\u2019 between two capitalized words, but split into separate
+    # phrases when preceded by a comma (list context: \"A, B and C\").
+    pattern = r'\b([A-Z][a-z]*(?:\s+(?:and\s+)?[A-Z][a-z]*)*)\b'
     matches = []
     for m in re.finditer(pattern, text):
         phrase = m.group(1)
@@ -198,6 +210,25 @@ def _find_capitalized_phrases(text: str) -> list[tuple[str, int, int]]:
         # Never propose reserved words (weekdays, months, time refs) as entities
         if any(w in _RESERVED_ENTITY_WORDS for w in phrase_lower.split()):
             continue
+        # Split \"A, B and C\" into separate phrases (list context).
+        # Keep \"Cobalt and Finch\" as one phrase (no preceding comma).
+        words = phrase.split()
+        if 'and' in [w.lower() for w in words] and len(words) >= 3:
+            and_idx = next(i for i, w in enumerate(words) if w.lower() == 'and')
+            if and_idx > 0 and and_idx < len(words) - 1:
+                # Check for comma before \u2018and\u2019 in the original text
+                pre_and = text[m.start():m.start() + len(' '.join(words[:and_idx+1]))].rstrip()
+                has_comma_before_and = ',' in pre_and.split('and')[0] if 'and' in pre_and else False
+                if has_comma_before_and:
+                    # List context: split into separate phrases
+                    left = ' '.join(words[:and_idx])
+                    right = ' '.join(words[and_idx+1:])
+                    if left and left.lower() not in _SKIP_WORDS:
+                        matches.append((left, m.start(), m.start() + len(left)))
+                    if right and right.lower() not in _SKIP_WORDS:
+                        r_start = m.start() + len(left) + len(' and ')
+                        matches.append((right, r_start, r_start + len(right)))
+                    continue
         matches.append((phrase, m.start(), m.end()))
     return matches
 
@@ -393,7 +424,15 @@ def detect_entities(text: str) -> List[DetectedEntity]:
         if phrase.lower() in seen_labels:
             continue
         words = phrase.split()
-        if len(words) >= 2 and words[-1].lower() in _ORG_SUFFIX_LEXICON:
+        last_word = words[-1].lower()
+        # Match: last word IS in lexicon (multi-word: "Nova Dynamics")
+        # OR last word ENDS WITH a suffix (single-word compound: "Havnelight")
+        # Single-word exact matches ("Dynamics") are rejected — too generic.
+        has_suffix = (
+            (last_word in _ORG_SUFFIX_LEXICON and len(words) >= 2)
+            or any(last_word.endswith(s) and last_word != s for s in _ORG_SUFFIX_LEXICON)
+        )
+        if has_suffix:
             conf = 0.8 if db_grounded else 0.4
             _add(DetectedEntity(
                 label=phrase,
@@ -428,15 +467,71 @@ def detect_entities(text: str) -> List[DetectedEntity]:
         if label.lower() in seen_labels or label.lower() in _d2_claimed:
             continue
         # Standard window check for non-stripped phrases
+        # Check BEFORE for context words AND AFTER for affiliation patterns
+        # ("Marcus Webster from PB", "David at Google").
         if not signal_in_phrase:
             before = text[max(0, start - 25):start].strip().lower()
-            ctx_words = before.split()
-            if not ctx_words or not any(
+            after_raw = text[end:min(len(text), end + 25)].strip()
+            after = after_raw.lower()
+            before_words = before.split()
+            after_words = after.split()
+            has_context = any(
                 w in _PERSON_CONTEXT_WORDS
                 or _signal_base_form(w) in _PERSON_CONTEXT_WORDS
-                for w in ctx_words[-_SIGNAL_WINDOW:]
-            ):
+                for w in before_words[-_SIGNAL_WINDOW:]
+            )
+            # Also check AFTER the phrase for context words
+            # ("Marcus Webster called", "David at Google").
+            # Only check the immediately adjacent word — distant words
+            # cause false positives ("Notes from the meeting" → 'meeting'
+            # 3 words away incorrectly signals context).
+            if not has_context and after_words:
+                first_after = after_words[0]
+                has_context = (
+                    first_after in _PERSON_CONTEXT_WORDS
+                    or _signal_base_form(first_after) in _PERSON_CONTEXT_WORDS
+                )
+            # Backward affiliation: "Discuss with Elena" — 'with' is immediately
+            # before the phrase and signals person reference.
+            # Uses restrictive set ('from', 'with', 'of') — 'at' and 'in' are
+            # forward-only to avoid false positives ("Google at position 9").
+            if not has_context and before_words:
+                last_before = before_words[-1]
+                if last_before in _PERSON_BACKWARD_AFFILIATION_WORDS:
+                    has_context = True
+            # Affiliation pattern: "Name from Org" / "Name at Org"
+            # Only fires when the word after the preposition is capitalized
+            # ("Marcus from Cobalt" ✅ vs "Notes from the meeting" ❌).
+            # Use after_raw to check original casing (after is lowercased).
+            has_affiliation = False
+            # Affiliation detection for single-word phrases is risky — any
+            # capitalized word + "from" + capitalized word triggers it.
+            # Only allow when the word is a known context verb (person signal).
+            _is_single_unknown = (
+                len(words) == 1 and not before_words and
+                words[0].lower() not in _PERSON_CONTEXT_WORDS and
+                _signal_base_form(words[0].lower()) not in _PERSON_CONTEXT_WORDS
+            )
+            if not _is_single_unknown and after_words and after_words[0] in _PERSON_AFFILIATION_WORDS:
+                after_raw_words = after_raw.split()
+                if len(after_raw_words) > 1 and after_raw_words[1][0:1].isupper():
+                    has_affiliation = True
+            if not has_context and not has_affiliation:
                 continue
+            # Guard: sentence-initial verbs ("Discuss with Elena", "Spoke with").
+            # Single-word phrases are risky — any capitalized word + "from" +
+            # capitalized word triggers affiliation. Skip UNLESS:
+            #   - the word is a known context verb, OR
+            #   - forward affiliation passed ("David at Google" → 'at' + 'Google'), OR
+            #   - backward affiliation passed ("with Elena" → 'with' before name).
+            if len(words) == 1 and not before_words:
+                w0 = words[0].lower()
+                is_known = (
+                    w0 in _PERSON_CONTEXT_WORDS
+                    or _signal_base_form(w0) in _PERSON_CONTEXT_WORDS
+                )
+                if not has_context and not is_known and not has_affiliation:
+                    continue
         conf = 0.8 if db_grounded else 0.4
         _add(DetectedEntity(
             label=label,
