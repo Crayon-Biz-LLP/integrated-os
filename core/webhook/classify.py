@@ -138,6 +138,30 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
             "contains_hidden_action": False,
         }
 
+    # --- SCHEDULE MEETING PRE-FILTER: "Schedule/arrange/book a meeting" → TASK ---
+    # Messages requesting to schedule, arrange, book, set up, create, or add
+    # a meeting are always TASK, never NOTE. The LLM misclassifies these as
+    # NOTE because 'Schedule' at sentence start looks like a note about
+    # scheduling rather than a request to schedule.
+    _schedule_meeting_pattern = re.compile(
+        r'\b(schedule|arrange|book|set\s+up|create|add|plan|organize|fix|slot)\s+'
+        r'(a\s+|an\s+|the\s+)?'
+        r'(meeting|call|demo|sync|catch[- ]?up|appointment|session|interview|review|chat)\b',
+        re.IGNORECASE
+    )
+    if _schedule_meeting_pattern.search(text.strip()):
+        audit_log_sync("classify", "INFO", f"Schedule-meeting pre-filter: → TASK ({text[:60]}...)")
+        return {
+            "intent": "TASK",
+            "confidence": 1.0,
+            "entity": "INBOX",
+            "title": text[:80],
+            "receipt": "Meeting scheduled.",
+            "possible_intents": [],
+            "reasoning": "Deterministic pre-filter: schedule/arrange/book meeting pattern → TASK",
+            "contains_hidden_action": False,
+        }
+
     # --- GAP C: Schedule/calendar query pattern → QUERY deterministically ---
     # Questions about meetings, schedules, calendars are always QUERY.
     # This saves an LLM call and prevents misclassification as TASK/NOTE.

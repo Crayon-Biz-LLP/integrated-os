@@ -576,13 +576,22 @@ async def _route_by_intent(intent: str, text: str, chat_id: int, session_id: str
             deliberation = classification.get('deliberation')
             await ask_intent_disambiguation(text, possible_intents, chat_id, session_id, deliberation)
             return
+
+        # Entity context extraction (unified with handler.py web path)
+        from core.lib.entity_context import extract_context_from_source
+        from core.pulse.graph import match_existing_nodes
+        from core.services.db import get_tenant
+        ctx = await extract_context_from_source(text, timing="sync")
+        owner_id = get_tenant()
+        entities = ctx.detected_entities
+        if entities and owner_id:
+            entities = match_existing_nodes(entities, owner_id)
+
         from core.lib.suggestion_extractor import extract_suggestions
-        from core.actions.executor import execute_planned_actions
+        from core.actions.executor import execute_planned_actions, reconcile_action_orgs
         try:
-            actions, _ = await extract_suggestions(text, title, entity, active_anchor, intent=intent)
+            actions, suggestion_dict = await extract_suggestions(text, title, entity, active_anchor, intent=intent)
         except NeedsClarification as nc:
-            # Phase 4: park the pending action so the reply resumes it, then
-            # ask instead of acknowledging (invariant #1).
             if session_id:
                 from core.webhook.workflows import park_action_clarification
                 await park_action_clarification(
@@ -592,10 +601,6 @@ async def _route_by_intent(intent: str, text: str, chat_id: int, session_id: str
                     missing_fields=nc.missing_fields,
                 )
             else:
-                # Hardened Aug 26: without a session there is nowhere to park
-                # the question — previously this path evaporated silently
-                # (round-2 UAT: COMPLETION message produced zero artifacts and
-                # zero user feedback). Data-loss prevention applies.
                 audit_log_sync("webhook", "WARNING",
                     f"NeedsClarification without session ({nc.operation}); "
                     "saving fallback note")
@@ -603,7 +608,10 @@ async def _route_by_intent(intent: str, text: str, chat_id: int, session_id: str
                 await _save_fallback_note(text, chat_id, entity, source)
             await handle_clarification(text, nc.to_question(), chat_id, session_id=session_id)
             return
-        await execute_planned_actions(actions, chat_id, text=text, entity=entity, source=source, sender=sender, session_id=session_id, intent=intent, active_anchor=active_anchor)
+
+        # Org reconciliation: extraction decides, consumers obey
+        reconcile_action_orgs(actions, ctx)
+        await execute_planned_actions(actions, chat_id, text=text, entity=entity, source=source, sender=sender, session_id=session_id, intent=intent, active_anchor=active_anchor, entity_context=ctx)
         
     elif intent == 'DAILY_BRIEF':
         reply = await handle_daily_brief(text, chat_id, session_id=session_id)

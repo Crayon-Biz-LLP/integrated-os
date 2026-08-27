@@ -82,3 +82,29 @@ async def test_gap_c_statements_do_not_take_prefilter(message, monkeypatch):
         result.get("intent") == "QUERY"
         and str(result.get("reasoning", "")).startswith("Deterministic pre-filter")
     ), f"{message!r} must not be force-routed to QUERY by the pre-filter"
+
+
+# --------------------------------------- schedule-meeting pre-filter → TASK deterministically
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Schedule meeting with Havnelight team on Thursday at 11 AM",
+        "Schedule a call with David about the project",
+        "Arrange a meeting with the client next week",
+        "Book a demo with Quantum Analytics",
+        "Set up a sync with Elena Vasquez",
+        "Create a meeting with Marcus Webster tomorrow",
+        "Add a meeting with the team on Friday",
+        "Plan a catch-up with the Havnelight team",
+        "Organize a review session with Cobalt and Finch",
+        "Fix a chat with David at Google",
+    ],
+)
+async def test_schedule_meeting_prefilter_forces_task(message):
+    result = await classify_intent(message, [])
+    assert result["intent"] == "TASK", f"{message!r} should be TASK via schedule-meeting pre-filter"
+    assert result["reasoning"].startswith("Deterministic pre-filter"), (
+        f"{message!r} should hit the deterministic shortcut, not fall to the LLM"
+    )
