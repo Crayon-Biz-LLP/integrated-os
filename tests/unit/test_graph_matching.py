@@ -299,7 +299,7 @@ def test_pagination_fetches_all_live_nodes(monkeypatch):
     # The last node (Org 2499) must be found despite being beyond page 1
     matches = result[0].get("existing_matches", [])
     assert len(matches) >= 1, (
-        f"Org 2499 not found — pagination likely truncating at page boundary"
+        "Org 2499 not found — pagination likely truncating at page boundary"
     )
     assert matches[0]["label"] == "Org 2499"
 
@@ -323,6 +323,6 @@ def test_pagination_fetches_all_pending_nodes(monkeypatch):
 
     matches = result[0].get("existing_matches", [])
     assert len(matches) >= 1, (
-        f"Pending 1499 not found — pending node pagination likely truncating"
+        "Pending 1499 not found — pending node pagination likely truncating"
     )
     assert matches[0]["label"] == "Pending 1499"
