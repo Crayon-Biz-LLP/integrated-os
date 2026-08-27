@@ -110,7 +110,6 @@ PINNED_ROUTES = {
     "/api/teams-action": ["post"],
     "/api/teams-action/batch": ["post"],
     "/api/vault-action": ["post"],
-    "/api/webhook": ["post"],
     "/api/whatsapp-action": ["post"],
     "/api/whatsapp-action/batch": ["post"],
     "/api/whatsapp-ingest": ["post"],
@@ -150,8 +149,8 @@ def test_route_surface_matches_pin():
 def test_pin_operation_count_is_stable():
     """Sanity guard so the pin can't silently shrink while paths stay equal."""
     total = sum(len(m) for m in PINNED_ROUTES.values())
-    assert total == 94
-    assert len(PINNED_ROUTES) == 83
+    assert total == 93  # Removed /api/webhook (Telegram retired, Aug 27)
+    assert len(PINNED_ROUTES) == 82  # Removed /api/webhook (Telegram retired, Aug 27)
 
 
 # ── 2. OpenAPI spec validity ──────────────────────────────────────────────

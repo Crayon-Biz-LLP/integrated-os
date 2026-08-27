@@ -18,15 +18,13 @@ from core.lib.audit_logger import audit_log_sync, trace_id_var
 from core.lib.telemetry import emit_observation
 from core.lib.decision_features import build_decision_features
 from core.decisions import record_decision
-from core.actions import begin_action_context, clear_action_context
-
 from core.webhook import (
     process_channel_pending_decision,
-    process_webhook,
     send_draft_reply,
     _emit_draft_observation,
     process_email_pending_decision,
 )
+from core.webhook.handler import process_message_direct
 from core.services.briefing_refresh import (
     briefing_cache_key,
     fire_briefing_refresh,
@@ -93,41 +91,6 @@ app.add_middleware(
 @app.get("/")
 def health_check():
     return {"status": "Integrated OS API is running on Python 🐍"}
-
-# --- TELEGRAM INTAKE (Inline processing with 55s timeout) ---
-@app.post("/api/webhook")
-async def webhook_route(request: Request):
-    # Telegram webhook authentication (audit 2.1): when TELEGRAM_WEBHOOK_SECRET
-    # is configured, Telegram sends it in the X-Telegram-Bot-Api-Secret-Token
-    # header (set via setWebhook(secret_token=...)). Reject requests without a
-    # matching token — otherwise anyone who knows the Modal URL can inject fake
-    # updates. When the secret is NOT configured, log a loud warning but accept
-    # (backward-compat until the webhook is re-registered with a secret_token).
-    secret = os.getenv("TELEGRAM_WEBHOOK_SECRET")
-    if secret:
-        token = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
-        if not hmac.compare_digest(token, secret):
-            print("Webhook rejected: bad X-Telegram-Bot-Api-Secret-Token")
-            raise HTTPException(status_code=401, detail="Unauthorized")
-    else:
-        print("⚠️ Webhook auth DISABLED — set TELEGRAM_WEBHOOK_SECRET and "
-              "re-register the webhook with secret_token to close this hole.")
-
-    update = await request.json()
-    trace_id_var.set(f"tg_{update.get('update_id', uuid.uuid4().hex[:8])}")
-    begin_action_context()
-    try:
-        await asyncio.wait_for(process_webhook(update), timeout=295)
-        return {"success": True}
-    except asyncio.TimeoutError:
-        print("Webhook processing timed out (>295s). Modal may kill at 300s.")
-        return {"success": True, "message": "Processing started"}
-    except Exception as e:
-        print(f"Webhook error: {e}")
-        raise HTTPException(status_code=500, detail="Internal processing error")
-    finally:
-        clear_action_context()
-
 def verify_hmac(payload: bytes, signature: str, secret: str) -> bool:
     expected = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, signature)
@@ -983,18 +946,13 @@ async def send_draft_route(request: Request):
     success, error = await send_draft_reply(draft_id)
     return {"success": success, "error": error}
 
-# --- SEND MESSAGE VIA WEB UI (Mirrors Telegram exactly) ---
-async def _run_web_message_pipeline(fake_update: dict, session_id: str | None) -> tuple[str | None, str | None]:
+# --- SEND MESSAGE VIA WEB UI ---
+async def _run_web_message_pipeline(text: str, session_id: str | None) -> tuple[str | None, str | None]:
     """Execute the full web-message pipeline (classify → route → reply → push).
 
     Single source of truth for BOTH the inline fallback path and the Modal
     background worker (process_message_background). Begins its own action
     context because the worker runs in a separate container.
-
-    The reply is delivered to the app two ways (kept from the original path):
-      - send_telegram (inside process_webhook) fires an FCM push with the
-        reply text — the app's push handler polls conversation history.
-      - The briefing rebuild + silent push refreshes the home screen.
 
     Returns (response_text, resulting_session_id) — used by the inline
     fallback path only (the Modal worker ignores the return value).
@@ -1002,18 +960,14 @@ async def _run_web_message_pipeline(fake_update: dict, session_id: str | None) -
     from core.actions import begin_action_context, clear_action_context
     begin_action_context()
     try:
-        print("🧪 Processing web message as Telegram update")
-        await process_webhook(fake_update)
+        print("🧪 Processing web message directly")
+        await process_message_direct(text, session_id=session_id)
 
         from core.actions import get_captured_response, get_captured_session_id
         response_text = get_captured_response()
         resulting_session_id = get_captured_session_id() or session_id
 
         # ── Briefing rebuild + silent push (off the ack path) ──
-        # Shared trigger (core.services.briefing_refresh): invalidates the
-        # cache first, rebuilds, repopulates the cache, pushes a silent
-        # briefing_refresh — audited and retried once on failure (the old
-        # block swallowed errors with a bare print and had no retry).
         await trigger_briefing_refresh(source="send_message")
 
         return response_text, resulting_session_id
@@ -1026,54 +980,21 @@ async def send_message_route(request: Request):
     # Capture the resolved tenant BEFORE the fast-ack spawn: the contextvar
     # set here does NOT survive into the background Modal worker (separate
     # process), so we must pass the uid explicitly and re-scope inside
-    # process_message_background. Without this, the worker falls back to
-    # resolve_channel_tenant() = first active user (Danny) and tenant #2's
-    # messages silently run under tenant #1 (real cross-tenant bug).
+    # process_message_background.
     uid = require_api_auth(request)
     try:
         body = await request.json()
         message_text = body.get("message")
         if not message_text:
             raise HTTPException(status_code=400, detail="message required")
-        
-        # Telegram is now an OPTIONAL secondary channel. The app's reply
-        # delivery (raw_dumps + FCM push) is Telegram-independent — see
-        # core/services/reply_delivery.py — so a missing TELEGRAM_CHAT_ID
-        # no longer blocks the app from sending. When present, the pipeline
-        # still routes replies to Telegram too (send_telegram handles the
-        # graceful skip internally when only the chat id is absent).
-        telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID") or "0"
-        chat_id = int(telegram_chat_id)
-        
-        # Create a fake update object (mirrors what Telegram sends when
-        # configured; a neutral chat_id keeps thread continuity working
-        # in app-only mode). Prefix update_id with "web_" to identify
-        # web UI messages. Pass optional session_id for thread continuity.
+
         session_id = body.get("session_id")
-        metadata = {}
-        if session_id:
-            metadata["session_id"] = session_id
-        
-        fake_update = {
-            "update_id": f"web_{int(time.time() * 1000)}",
-            "message": {
-                "chat": {"id": chat_id},
-                "text": message_text,
-                "date": int(time.time())
-            },
-            "metadata": metadata
-        }
-        
         supabase = tenant_aware_client()
 
         # ── Fast-path: vault badge messages skip the full LLM pipeline ──
-        # The vault badge tap sends a system message that doesn't need intent
-        # classification or Action Planner processing — it's purely for
-        # conversation thread continuity. Storing it in raw_dumps is enough.
         is_vault_message = message_text.startswith('📦 Vault items:')
 
         if is_vault_message:
-            # Store the inbound vault message
             supabase.table('raw_dumps').insert({
                 'content': message_text,
                 'source': 'flutter',
@@ -1086,7 +1007,6 @@ async def send_message_route(request: Request):
             response_text = '📦 Vault items noted. They are tracked and will resurface as deadlines approach. Want to pull any forward? Just ask.'
             resulting_session_id = session_id
 
-            # Store the bot response so poll and history can pick it up
             supabase.table('raw_dumps').insert({
                 'content': response_text,
                 'source': 'flutter',
@@ -1104,14 +1024,10 @@ async def send_message_route(request: Request):
             }
 
         # ── Fast-ack (P3): return instantly, process in a Modal worker ──
-        # The full pipeline (intent classify → entity extraction → routing →
-        # LLM reply) runs in a dedicated Modal container via
-        # process_message_background. The reply reaches the app through the
-        # FCM push fired inside send_telegram + the backup poll.
         try:
             import modal
             modal.Function.from_name("rhodey-os", "process_message_background").spawn({
-                "fake_update": fake_update,
+                "text": message_text,
                 "session_id": session_id,
                 "uid": uid,
             })
@@ -1126,18 +1042,14 @@ async def send_message_route(request: Request):
             print(f"Send-message: background spawn failed ({e}) — falling back to inline")
 
         # Fallback (local dev / non-Modal): run the full pipeline inline.
-        # Note: no uid needed here — this runs IN-PROCESS, so the tenant
-        # contextvar set by require_api_auth() above is still active and the
-        # pipeline scopes itself correctly. Only the cross-process Modal
-        # spawn above needs the explicit uid.
-        response_text, resulting_session_id = await _run_web_message_pipeline(fake_update, session_id)
+        response_text, resulting_session_id = await _run_web_message_pipeline(message_text, session_id)
         return {
             "success": True,
             "message": "Message processed",
             "response": response_text or "Got it. Processing...",
             "session_id": resulting_session_id,
         }
-    
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1153,21 +1065,18 @@ async def send_message_route(request: Request):
 _DEMO_STAMP_MARKER = "[onboarding-demo]"
 
 
-async def _run_demo_message_pipeline(fake_update: dict, session_id: str | None) -> tuple[str | None, str | None]:
+async def _run_demo_message_pipeline(text: str, session_id: str | None) -> tuple[str | None, str | None]:
     """Execute the REAL web-message pipeline INLINE for an onboarding demo.
 
     Same core as _run_web_message_pipeline (classify → route → reply) but
-    skips the briefing rebuild + silent push — the demo UI shows the reply
-    directly, so the extra ~10s rebuild is wasted latency on every tap. The
-    reply is still persisted by the pipeline (raw_dumps + conversations), so
-    the thread stays real and appears in History.
+    skips the briefing rebuild + silent push.
 
     Returns (response_text, resulting_session_id).
     """
     from core.actions import begin_action_context, clear_action_context
     begin_action_context()
     try:
-        await process_webhook(fake_update)
+        await process_message_direct(text, session_id=session_id)
         from core.actions import get_captured_response, get_captured_session_id
         response_text = get_captured_response()
         resulting_session_id = get_captured_session_id() or session_id
@@ -1291,27 +1200,11 @@ async def demo_message_route(request: Request):
         if not message_text:
             raise HTTPException(status_code=400, detail="message required")
 
-        telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID") or "0"
-        chat_id = int(telegram_chat_id)
         session_id = body.get("session_id")
-        metadata = {}
-        if session_id:
-            metadata["session_id"] = session_id
-
-        fake_update = {
-            "update_id": f"web_demo_{int(time.time() * 1000)}",
-            "message": {
-                "chat": {"id": chat_id},
-                "text": message_text,
-                "date": int(time.time()),
-            },
-            "metadata": metadata,
-        }
-
         supabase = tenant_aware_client()
         window_start = (datetime.now(timezone.utc) - timedelta(seconds=2)).isoformat()
 
-        response_text, resulting_session_id = await _run_demo_message_pipeline(fake_update, session_id)
+        response_text, resulting_session_id = await _run_demo_message_pipeline(message_text, session_id)
 
         stamped = _stamp_demo_artifacts(supabase, message_text, window_start)
 

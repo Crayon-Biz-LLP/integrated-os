@@ -11,7 +11,8 @@ from core.lib.decision_audit import set_decision_chain_id, log_decision, Decisio
 from core.lib.query_timer import start_timer, mark, report
 from core.lib.conversation import get_or_create_session, get_history, log_exchange, format_classify_context, _fresh_anchor
 from core.actions import capture_session_id, capture_response
-from core.webhook.telegram import send_telegram, download_telegram_file, answer_callback_query
+from core.webhook.telegram import send_telegram
+from core.webhook.telegram import answer_callback_query, download_telegram_file  # Telegram retired — these raise NotImplementedError if called
 from core.lib.rhodey_voice import ok, fail, ack_merged, ack_rejected, ack_undone, ack_verified
 from core.webhook.classify import classify_intent, check_task_overlap_for_update, UPDATE_TRIGGER_WORDS, INTENT_THRESHOLDS
 from core.webhook.utils import supabase, trigger_github_pulse, get_recent_context
@@ -514,10 +515,41 @@ async def process_callback_query(callback_query: dict):
         
     return {"success": True}
 
+async def process_message_direct(text: str, session_id: str = None, source: str = "web") -> dict:
+    """Process a plain-text message directly — no Telegram update wrapping.
+
+    This is the primary entry point for web/Flutter messages. It builds a
+    minimal update dict internally and delegates to process_webhook(),
+    avoiding the need for callers to construct fake Telegram updates.
+
+    Args:
+        text: The message text to process.
+        session_id: Optional session ID for thread continuity.
+        source: Message source identifier (default: "web").
+
+    Returns:
+        Dict with success status and response text.
+    """
+    import time as _time
+    # Use TELEGRAM_CHAT_ID as the chat_id (env var, defaults to 0).
+    # The handler's _chat_authorized() gates on non-zero chat_id —
+    # using 0 silently drops the message.
+    _chat_id = int(os.getenv("TELEGRAM_CHAT_ID", "0") or "0")
+    update = {
+        "update_id": f"web_{int(_time.time() * 1000)}",
+        "message": {
+            "chat": {"id": _chat_id},
+            "text": text,
+            "date": int(_time.time()),
+        },
+        "metadata": {"session_id": session_id} if session_id else {},
+    }
+    return await process_webhook(update)
+
+
 async def process_webhook(update: dict):
-    """Process an incoming Telegram (or app-simulated) update.
-    (M3: wrapped in the channel tenant scope — Telegram traffic carries no
-    API key, so the tenant resolves via resolve_channel_tenant().)
+    """Process an incoming update.
+    (M3: wrapped in the channel tenant scope.)
     """
     from core.webhook.utils import webhook_tenant_scope
     with webhook_tenant_scope():
