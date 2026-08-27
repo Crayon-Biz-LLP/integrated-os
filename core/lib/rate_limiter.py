@@ -112,7 +112,7 @@ class MultiKeyLimiter:
         
     def _ensure_initialized(self):
         if self.limiter is None:
-            keys = [os.getenv("GEMINI_API_KEY"), os.getenv("GEMINI_API_KEY_2"), os.getenv("GEMINI_API_KEY_3")]
+            keys = [os.getenv("GEMINI_API_KEY"), os.getenv("GEMINI_API_KEY_2"), os.getenv("GEMINI_API_KEY_3"), os.getenv("GEMINI_API_KEY_4")]
             valid_keys = [k for k in keys if k]
             self._num_keys = len(valid_keys) if valid_keys else 1
             
@@ -124,7 +124,8 @@ class MultiKeyLimiter:
             )
 
     def _rpd_available(self, key_idx: int) -> bool:
-        """Check if a key has remaining daily capacity. Increments counter if available."""
+        """Check if a key has remaining daily capacity. Does NOT increment —
+        call record_usage() after a successful API call to count it."""
         if self.max_rpd_per_key <= 0:
             return True  # No RPD guard configured
         
@@ -135,17 +136,26 @@ class MultiKeyLimiter:
         rpd_key = f"rhodey:rpd:{self.prefix}:key{key_idx}"
         try:
             current = int(client.get(rpd_key) or 0)
-            if current >= self.max_rpd_per_key:
-                return False
-            # Atomically increment and set TTL if new
-            new_val = client.incr(rpd_key)
-            if new_val == 1:
-                # First request today — set TTL to seconds until midnight UTC
-                client.expire(rpd_key, _seconds_until_midnight_utc())
-            return new_val <= self.max_rpd_per_key
+            return current < self.max_rpd_per_key
         except Exception as e:
             audit_log_sync("rate_limiter", "WARNING", f"RPD check failed for {rpd_key}: {e}")
             return True  # Fail open
+
+    def record_usage(self, key_idx: int) -> None:
+        """Record a successful API call against a key's daily quota.
+        Must be called AFTER a successful response — never before."""
+        if self.max_rpd_per_key <= 0:
+            return
+        client = get_redis()
+        if client is None:
+            return
+        rpd_key = f"rhodey:rpd:{self.prefix}:key{key_idx}"
+        try:
+            new_val = client.incr(rpd_key)
+            if new_val == 1:
+                client.expire(rpd_key, _seconds_until_midnight_utc())
+        except Exception as e:
+            audit_log_sync("rate_limiter", "WARNING", f"RPD record_usage failed for {rpd_key}: {e}")
             
     async def acquire_async(self) -> int:
         """Awaits until capacity is available, then returns the index of the key to use.

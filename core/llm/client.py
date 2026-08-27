@@ -27,4 +27,9 @@ def get_gemini_clients() -> List[genai.Client]:
     if api_key_3:
         _gemini_clients.append(genai.Client(api_key=api_key_3))
         
+    # Quaternary Key
+    api_key_4 = os.getenv("GEMINI_API_KEY_4")
+    if api_key_4:
+        _gemini_clients.append(genai.Client(api_key=api_key_4))
+        
     return _gemini_clients

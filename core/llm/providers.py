@@ -53,22 +53,26 @@ async def call_gemini(model: str, prompt: str, contents: Any = None, timeout_s: 
     and cannot starve each other.
     """
     clients = get_gemini_clients()
+    active_limiter = limiter
+    selected_idx = -1
     
     if limiter is not None:
-        client_idx = await limiter.acquire_async()
-        if client_idx < 0:
+        selected_idx = await limiter.acquire_async()
+        if selected_idx < 0:
             raise NonRetryableError(f"All keys RPD-exhausted for limiter '{getattr(limiter, 'prefix', '?')}'")
-        clients = clients[client_idx:] + clients[:client_idx]
+        clients = clients[selected_idx:] + clients[:selected_idx]
     elif "flash-lite" in model:
-        client_idx = await flash_lite_limiter.acquire_async()
-        if client_idx < 0:
+        active_limiter = flash_lite_limiter
+        selected_idx = await flash_lite_limiter.acquire_async()
+        if selected_idx < 0:
             raise NonRetryableError("All keys RPD-exhausted for flash-lite")
-        clients = clients[client_idx:] + clients[:client_idx]
+        clients = clients[selected_idx:] + clients[:selected_idx]
     elif "flash" in model:
-        client_idx = await flash_3_5_limiter.acquire_async()
-        if client_idx < 0:
+        active_limiter = flash_3_5_limiter
+        selected_idx = await flash_3_5_limiter.acquire_async()
+        if selected_idx < 0:
             raise NonRetryableError("All keys RPD-exhausted for flash")
-        clients = clients[client_idx:] + clients[:client_idx]
+        clients = clients[selected_idx:] + clients[:selected_idx]
         
     last_error = None
     
@@ -103,7 +107,12 @@ async def call_gemini(model: str, prompt: str, contents: Any = None, timeout_s: 
                         response_text = response.text
                 except ValueError:
                     pass
-                    
+                
+                # Record successful usage against the rate limiter's chosen key.
+                # Only count on success — failed calls don't consume API quota.
+                if active_limiter is not None and selected_idx >= 0:
+                    active_limiter.record_usage(selected_idx)
+                
                 function_calls = getattr(response, 'function_calls', None)
                 return response_text, function_calls, response
                 
