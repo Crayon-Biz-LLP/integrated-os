@@ -131,14 +131,25 @@ class _SuggestionCardState extends State<SuggestionCard> {
         title: entity['label'] ?? '',
         confidence: (entity['confidence'] as num?)?.toDouble(),
         existingMatches: (entity['existing_matches'] as List?)?.cast<Map<String, dynamic>>(),
+        rawAction: entity.cast<String, dynamic>(),
       ));
     }
     return items;
   }
 
   void _toggleItem(int index) {
+    final item = _items[index];
+
+    // Ambiguous entity: show disambiguation dialog instead of toggling
+    if (item.category == 'entity' &&
+        item.rawAction != null &&
+        item.rawAction!['ambiguous'] == true) {
+      _disambiguate(index);
+      return;
+    }
+
     setState(() {
-      _items[index].selected = !_items[index].selected;
+      item.selected = !item.selected;
     });
   }
 
@@ -207,6 +218,10 @@ class _SuggestionCardState extends State<SuggestionCard> {
   String _entityLabel(_SuggestionItem item) {
     final matches = item.existingMatches;
     if (matches != null && matches.isNotEmpty) {
+      // Ambiguous: multiple nodes with the same name
+      if (item.rawAction != null && item.rawAction!['ambiguous'] == true) {
+        return '⚠️ ${matches.length} matches — tap to pick';
+      }
       final scope = matches.first['scope'];
       if (scope == 'live') return 'Existing: ${matches.first['label']} (${item.type})';
       if (scope == 'pending') return 'Pending: ${matches.first['label']} (${item.type})';
@@ -218,12 +233,74 @@ class _SuggestionCardState extends State<SuggestionCard> {
   Color _entityColor(_SuggestionItem item) {
     final matches = item.existingMatches;
     if (matches != null && matches.isNotEmpty) {
+      // Ambiguous: warning color
+      if (item.rawAction != null && item.rawAction!['ambiguous'] == true) {
+        return Colors.orange;
+      }
       final scope = matches.first['scope'];
       if (scope == 'live') return AppTheme.green;
       if (scope == 'pending') return AppTheme.amber;
     }
     if (item.mergeWith != null) return AppTheme.green;
     return AppTheme.blue;
+  }
+
+  /// Show disambiguation dialog when multiple nodes match the same name.
+  Future<void> _disambiguate(int index) async {
+    final item = _items[index];
+    final matches = item.existingMatches;
+    if (matches == null || matches.length <= 1) return;
+    if (item.rawAction == null || item.rawAction!['ambiguous'] != true) return;
+
+    final picked = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Which ${item.type}?'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text('Multiple "${item.title}" found. Pick one:',
+              style: AppTheme.caption),
+            const SizedBox(height: 12),
+            ...matches.map((m) => ListTile(
+              dense: true,
+              leading: Icon(
+                m['scope'] == 'live' ? Icons.check_circle : Icons.pending,
+                color: m['scope'] == 'live' ? AppTheme.green : AppTheme.amber,
+                size: 20,
+              ),
+              title: Text(m['label'] ?? item.title,
+                style: AppTheme.bodySmall),
+              subtitle: Text('${m['type']} · ${m['scope']}',
+                style: AppTheme.caption.copyWith(fontSize: 10)),
+              onTap: () => Navigator.pop(ctx, m),
+            )),
+            ListTile(
+              dense: true,
+              leading: const Icon(Icons.add_circle_outline, size: 20),
+              title: Text('Create new', style: AppTheme.bodySmall),
+              onTap: () => Navigator.pop(ctx, null),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (picked != null) {
+      setState(() {
+        item.mergeWith = picked;
+        item.rawAction!['ambiguous'] = false;
+        item.rawAction!['target_id'] = picked['id'];
+      });
+    } else {
+      // User chose "Create new" — clear existing matches
+      setState(() {
+        item.existingMatches = [];
+        item.mergeWith = null;
+        item.rawAction!['ambiguous'] = false;
+        item.rawAction!['target_id'] = null;
+      });
+    }
   }
 
   IconData _typeIcon(String category, String type) {

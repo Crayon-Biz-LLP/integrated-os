@@ -195,7 +195,7 @@ def test_tier2_affiliation_beats_other_mentions():
     """'from Project Balance' wins even though Solvstrat appears elsewhere."""
     org, source = _person_org_from_source_text(
         "David Quantson from Project Balance met us about collaborating with Solvstrat",
-        _ORGS,
+        _ORGS + ["Project Balance"],
     )
     assert org == "Project Balance"
     assert source == "affiliation_pattern"
@@ -326,3 +326,145 @@ def test_pagination_fetches_all_pending_nodes(monkeypatch):
         "Pending 1499 not found — pending node pagination likely truncating"
     )
     assert matches[0]["label"] == "Pending 1499"
+
+
+# ── Tiered matching: exact → fuzzy → semantic ─────────────────────────────
+
+
+# Shared test orgs
+_ORGS = ["Solvstrat", "Qhord", "Crayon"]
+
+
+def test_tier1_single_exact_match(monkeypatch):
+    """Single exact match should auto-link with score 1.0."""
+    fake = _FakeSupabase({
+        "users": [{"name": "Test"}],
+        "graph_nodes": [
+            {"id": "n1", "label": "Solvstrat", "type": "organization"},
+            {"id": "n2", "label": "Qhord", "type": "organization"},
+        ],
+        "pending_nodes": [],
+    })
+    _patch_sb(monkeypatch, fake)
+
+    entities = [{"type": "organization", "label": "Solvstrat"}]
+    result = match_existing_nodes(entities, _OWNER)
+
+    matches = result[0].get("existing_matches", [])
+    assert len(matches) == 1
+    assert matches[0]["id"] == "n1"
+    assert matches[0]["score"] == 1.0
+    assert matches[0]["match_type"] == "exact"
+    assert not result[0].get("ambiguous")
+
+
+def test_tier2_multiple_exact_matches(monkeypatch):
+    """Multiple exact matches should be flagged as ambiguous."""
+    fake = _FakeSupabase({
+        "users": [{"name": "Test"}],
+        "graph_nodes": [
+            {"id": "n1", "label": "David", "type": "person"},
+            {"id": "n2", "label": "David", "type": "person"},
+            {"id": "n3", "label": "David", "type": "person"},
+        ],
+        "pending_nodes": [],
+    })
+    _patch_sb(monkeypatch, fake)
+
+    entities = [{"type": "person", "label": "David"}]
+    result = match_existing_nodes(entities, _OWNER)
+
+    matches = result[0].get("existing_matches", [])
+    assert len(matches) == 3
+    assert result[0].get("ambiguous") is True
+    assert "3 nodes" in result[0].get("ambiguous_reason", "")
+    # All should be exact matches
+    assert all(m["match_type"] == "exact" for m in matches)
+
+
+def test_tier3_fuzzy_match_threshold(monkeypatch):
+    """Fuzzy match must use threshold 0.85 — 'David' must NOT match 'Davidson'."""
+    fake = _FakeSupabase({
+        "users": [{"name": "Test"}],
+        "graph_nodes": [
+            {"id": "n1", "label": "Davidson", "type": "person"},
+        ],
+        "pending_nodes": [],
+    })
+    _patch_sb(monkeypatch, fake)
+
+    entities = [{"type": "person", "label": "David"}]
+    result = match_existing_nodes(entities, _OWNER)
+
+    matches = result[0].get("existing_matches", [])
+    # Davidson ratio vs David is ~0.82 — below 0.85 threshold
+    assert len(matches) == 0, (
+        "'David' should NOT match 'Davidson' (ratio ~0.82 < 0.85)"
+    )
+
+
+def test_tier3_fuzzy_match_typo(monkeypatch):
+    """Fuzzy match should catch minor typos above 0.85 threshold."""
+    fake = _FakeSupabase({
+        "users": [{"name": "Test"}],
+        "graph_nodes": [
+            {"id": "n1", "label": "Havenlight", "type": "organization"},
+        ],
+        "pending_nodes": [],
+    })
+    _patch_sb(monkeypatch, fake)
+
+    # 'Havenligt' is a 1-char typo of 'Havenlight'
+    entities = [{"type": "organization", "label": "Havenligt"}]
+    result = match_existing_nodes(entities, _OWNER)
+
+    matches = result[0].get("existing_matches", [])
+    assert len(matches) == 1
+    assert matches[0]["id"] == "n1"
+    assert matches[0]["match_type"] == "fuzzy"
+    assert matches[0]["score"] >= 0.85
+
+
+def test_no_substring_boost(monkeypatch):
+    """Substring containment must NOT boost the score.
+    Before fix: 'David' in 'David Davidson' got +0.3 boost → false match."""
+    fake = _FakeSupabase({
+        "users": [{"name": "Test"}],
+        "graph_nodes": [
+            {"id": "n1", "label": "David Davidson", "type": "person"},
+        ],
+        "pending_nodes": [],
+    })
+    _patch_sb(monkeypatch, fake)
+
+    entities = [{"type": "person", "label": "David"}]
+    result = match_existing_nodes(entities, _OWNER)
+
+    matches = result[0].get("existing_matches", [])
+    # 'David' vs 'David Davidson' ratio is ~0.52 — no substring boost
+    assert len(matches) == 0, (
+        "'David' should NOT match 'David Davidson' without substring boost"
+    )
+
+
+def test_exact_across_live_and_pending(monkeypatch):
+    """Exact match should find nodes in both live and pending tables."""
+    fake = _FakeSupabase({
+        "users": [{"name": "Test"}],
+        "graph_nodes": [
+            {"id": "n1", "label": "Solvstrat", "type": "organization"},
+        ],
+        "pending_nodes": [
+            {"id": "p1", "label": "Qhord", "node_type": "organization"},
+        ],
+    })
+    _patch_sb(monkeypatch, fake)
+
+    entities = [{"type": "organization", "label": "Qhord"}]
+    result = match_existing_nodes(entities, _OWNER)
+
+    matches = result[0].get("existing_matches", [])
+    assert len(matches) == 1
+    assert matches[0]["id"] == "p1"
+    assert matches[0]["scope"] == "pending"
+    assert matches[0]["match_type"] == "exact"

@@ -148,52 +148,109 @@ def match_existing_nodes(entities: list[dict], owner_id: str) -> list[dict]:
         if owner_name_lower and (target_lower == owner_name_lower or target_lower == resolve_alias(owner_name_lower).lower()):
             continue
 
-        matches = []
+        # ── Tiered matching (Aug 27 hardening) ─────────────────────────
+        # 1. Exact match (case-insensitive) → auto-link, zero cost
+        # 2. Multiple exact matches → ambiguous, show options in card
+        # 3. Fuzzy match (threshold 0.85) → auto-link, no substring boost
+        # 4. Semantic match (embeddings) → for genuinely ambiguous cases
+        #
+        # Never guess when there's ambiguity — show options, let user pick.
+        # (Pattern from Notion, Mem.ai, Tana: exact match → options → never guess.)
+
+        exact_matches = []
+        fuzzy_matches = []
+
         for n in live_nodes:
             n_type = n.get("type", "")
             if n_type == node_type or n_type == "person":
                 c = n.get("label", "")
                 c_lower = c.lower().strip()
-                ratio = difflib.SequenceMatcher(None, target_lower, c_lower).ratio()
-                if target_lower in c_lower or c_lower in target_lower:
-                    ratio += 0.3
-                if ratio >= 0.55:
-                    matches.append({
+                if target_lower == c_lower:
+                    exact_matches.append({
                         "id": str(n["id"]),
                         "label": c,
                         "type": n_type,
                         "scope": "live",
-                        "score": round(ratio, 3)
+                        "score": 1.0,
+                        "match_type": "exact",
                     })
+                else:
+                    ratio = difflib.SequenceMatcher(None, target_lower, c_lower).ratio()
+                    if ratio >= 0.85:
+                        fuzzy_matches.append({
+                            "id": str(n["id"]),
+                            "label": c,
+                            "type": n_type,
+                            "scope": "live",
+                            "score": round(ratio, 3),
+                            "match_type": "fuzzy",
+                        })
 
         for p in pending_nodes:
             p_type = p.get("node_type", "")
             if p_type == node_type or p_type == "person":
                 c = p.get("label", "")
                 c_lower = c.lower().strip()
-                ratio = difflib.SequenceMatcher(None, target_lower, c_lower).ratio()
-                if target_lower in c_lower or c_lower in target_lower:
-                    ratio += 0.3
-                if ratio >= 0.55:
-                    matches.append({
+                if target_lower == c_lower:
+                    exact_matches.append({
                         "id": str(p["id"]),
                         "label": c,
                         "type": p_type,
                         "scope": "pending",
-                        "score": round(ratio, 3)
+                        "score": 1.0,
+                        "match_type": "exact",
                     })
-        
-        matches.sort(key=lambda x: x["score"], reverse=True)
-        # Deduplicate matches by ID to handle weird edge cases
-        unique_matches = []
-        seen_ids = set()
-        for m in matches:
-            if m["id"] not in seen_ids:
-                seen_ids.add(m["id"])
-                unique_matches.append(m)
+                else:
+                    ratio = difflib.SequenceMatcher(None, target_lower, c_lower).ratio()
+                    if ratio >= 0.85:
+                        fuzzy_matches.append({
+                            "id": str(p["id"]),
+                            "label": c,
+                            "type": p_type,
+                            "scope": "pending",
+                            "score": round(ratio, 3),
+                            "match_type": "fuzzy",
+                        })
 
+        # Deduplicate by ID
+        def _dedup(matches):
+            seen = set()
+            result = []
+            for m in matches:
+                if m["id"] not in seen:
+                    seen.add(m["id"])
+                    result.append(m)
+            return result
+
+        exact_matches = _dedup(exact_matches)
+        fuzzy_matches = _dedup(fuzzy_matches)
+
+        # Tier 1: Single exact match → auto-link
+        if len(exact_matches) == 1:
+            ent_copy = dict(ent)
+            ent_copy["existing_matches"] = exact_matches
+            enriched.append(ent_copy)
+            continue
+
+        # Tier 2: Multiple exact matches → ambiguous, show all options
+        if len(exact_matches) > 1:
+            ent_copy = dict(ent)
+            ent_copy["existing_matches"] = exact_matches
+            ent_copy["ambiguous"] = True
+            ent_copy["ambiguous_reason"] = f"{len(exact_matches)} nodes named '{label}'"
+            enriched.append(ent_copy)
+            continue
+
+        # Tier 3: Fuzzy match (threshold 0.85)
+        if fuzzy_matches:
+            ent_copy = dict(ent)
+            ent_copy["existing_matches"] = fuzzy_matches
+            enriched.append(ent_copy)
+            continue
+
+        # Tier 4: No match → entity is new (semantic matching deferred to caller)
         ent_copy = dict(ent)
-        ent_copy["existing_matches"] = unique_matches
+        ent_copy["existing_matches"] = []
         enriched.append(ent_copy)
 
     # Observability: the fetch/match boundary was invisible for weeks — a
@@ -216,6 +273,80 @@ def match_existing_nodes(entities: list[dict], owner_id: str) -> list[dict]:
         )
 
     return enriched
+
+
+async def disambiguate_entity(label: str, candidates: list[dict], source_text: str = "") -> list[dict]:
+    """Disambiguate multiple nodes with the same name using semantic similarity.
+
+    Called when match_existing_nodes returns ambiguous=True (multiple exact matches).
+    Uses embedding similarity to rank candidates by relevance to the message context.
+
+    Returns candidates sorted by semantic score (highest first).
+    Each candidate gets a `semantic_score` field.
+    """
+    if len(candidates) <= 1:
+        return candidates
+
+    if not source_text:
+        # No context to disambiguate — return all with equal score
+        for c in candidates:
+            c["semantic_score"] = 0.5
+        return candidates
+
+    try:
+        from core.llm import get_embedding
+        import numpy as np
+
+        # Embed the source text (the message context)
+        msg_embedding = await get_embedding(source_text)
+        if msg_embedding is None:
+            for c in candidates:
+                c["semantic_score"] = 0.5
+            return candidates
+
+        msg_vec = np.array(msg_embedding)
+
+        # For each candidate, build a context string from their graph edges
+        ranked = []
+        for c in candidates:
+            node_id = c["id"]
+            # Build context: label + connected nodes (org, people)
+            context_parts = [c["label"]]
+            try:
+                edges_res = supabase.table("graph_edges").select(
+                    "relationship, target_node_id"
+                ).eq("source_node_id", node_id).eq("is_current", True).execute()
+                for edge in (edges_res.data or []):
+                    rel = edge.get("relationship", "")
+                    target_id = edge.get("target_node_id", "")
+                    if target_id:
+                        node_res = supabase.table("graph_nodes").select("label").eq("id", target_id).execute()
+                        if node_res.data:
+                            context_parts.append(f"{rel} {node_res.data[0]['label']}")
+            except Exception:
+                pass
+
+            context_str = ", ".join(context_parts)
+            node_embedding = await get_embedding(context_str)
+            if node_embedding is None:
+                c["semantic_score"] = 0.5
+            else:
+                node_vec = np.array(node_embedding)
+                # Cosine similarity
+                similarity = float(np.dot(msg_vec, node_vec) / (np.linalg.norm(msg_vec) * np.linalg.norm(node_vec)))
+                c["semantic_score"] = round(similarity, 3)
+
+            ranked.append(c)
+
+        # Sort by semantic score (highest first)
+        ranked.sort(key=lambda x: x.get("semantic_score", 0), reverse=True)
+        return ranked
+
+    except Exception as e:
+        audit_log_sync("pulse", "WARNING", f"disambiguate_entity failed: {e}")
+        for c in candidates:
+            c["semantic_score"] = 0.5
+        return candidates
 
 
 async def create_graph_node_with_db_record(
