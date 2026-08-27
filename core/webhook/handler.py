@@ -1498,7 +1498,11 @@ async def _process_webhook(update: dict):
                 from core.lib.entity_context import extract_context_from_source
                 
                 # 1. Deterministic extraction (fast)
-                ctx = await extract_context_from_source(text, timing="card")
+                # Use timing="sync" so pending nodes are created immediately.
+                # This ensures reconcile_action_orgs can link orgs to tasks.
+                # (timing="card" was a dry-run that skipped pending node creation,
+                #  leaving all tasks with organization_id=NULL.)
+                ctx = await extract_context_from_source(text, timing="sync")
                 
                 # 2. Extract suggestions (absorbs planner)
                 actions, suggestion_dict = await extract_suggestions(text, title=title, entity=entity, active_anchor=active_anchor, intent=intent)
