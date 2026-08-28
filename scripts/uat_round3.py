@@ -22,6 +22,21 @@ BASE = "https://danielyashwant--rhodey-os-web-endpoint.modal.run"
 KEY_PATH = '/tmp/uat_test_key'
 STATE = '/tmp/round3_state.json'
 
+# Auto-generate Test tenant API key if missing
+if not os.path.exists(KEY_PATH):
+    from dotenv import load_dotenv
+    load_dotenv()
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+    from core.services.auth import issue_api_key
+    key = issue_api_key(OWNER)
+    if key:
+        with open(KEY_PATH, 'w') as f:
+            f.write(key)
+        print(f'[setup] Generated Test tenant API key → {KEY_PATH}')
+    else:
+        print('[setup] FAILED to generate Test tenant API key')
+        sys.exit(1)
+
 
 def psql(sql):
     env = dict(os.environ)

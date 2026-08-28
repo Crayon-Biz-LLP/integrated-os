@@ -15,7 +15,23 @@ from backup_supabase import discover_conn
 DSN, PW = discover_conn()
 OWNER = 'e87f0279-3ec0-4875-af69-49894ee9da6f'
 BASE = "https://danielyashwant--rhodey-os-web-endpoint.modal.run"
-KEY = open('/tmp/uat_test_key').read().strip()
+KEY_PATH = '/tmp/uat_test_key'
+
+# Auto-generate Test tenant API key if missing
+if not os.path.exists(KEY_PATH):
+    from dotenv import load_dotenv
+    load_dotenv()
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+    from core.services.auth import issue_api_key
+    key = issue_api_key(OWNER)
+    if key:
+        with open(KEY_PATH, 'w') as f:
+            f.write(key)
+        print(f'[setup] Generated Test tenant API key → {KEY_PATH}')
+    else:
+        print('[setup] FAILED to generate Test tenant API key')
+        sys.exit(1)
+KEY = open(KEY_PATH).read().strip()
 
 def psql(sql):
     env = dict(os.environ)
