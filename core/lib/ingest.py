@@ -146,7 +146,7 @@ async def ingest(
             if mem_res.data:
                 memory_id = mem_res.data[0]['id']
                 schedule_index_memory(memory_id, mem_content, "relationship_note", source)
-                ctx = await extract_context_from_source(mem_content, timing="async")
+                ctx = await extract_context_from_source(mem_content, timing="async", create_pending=True)
                 if ctx.organization_id:
                     supabase.table('memories').update({'organization_id': ctx.organization_id}).eq('id', memory_id).execute()
                 elif ctx.pending_org_id:
@@ -226,7 +226,7 @@ async def ingest(
         if mem_res.data:
             memory_id = mem_res.data[0]['id']
             schedule_index_memory(memory_id, mem_content, "relationship_note", source)
-            ctx = await extract_context_from_source(mem_content, timing="async")
+            ctx = await extract_context_from_source(mem_content, timing="async", create_pending=True)
             if ctx.organization_id:
                 supabase.table('memories').update({'organization_id': ctx.organization_id}).eq('id', memory_id).execute()
             elif ctx.pending_org_id:

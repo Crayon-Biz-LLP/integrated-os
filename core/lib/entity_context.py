@@ -224,7 +224,7 @@ def _find_existing_person(label: str, owner_id: str = None) -> Optional[dict]:
 
 # ── Entity processing ────────────────────────────────────────────────────────
 
-def _process_deterministic_entities(entities: list, ctx: EntityContext, owner_id: str = None, timing: str = "sync"):
+def _process_deterministic_entities(entities: list, ctx: EntityContext, owner_id: str = None, timing: str = "sync", create_pending: bool = True):
     """Process deterministic entities (from detect_entities) into EntityContext."""
     for e in entities:
         # Populate detected_entities so they aren't lost to the UI
@@ -242,15 +242,15 @@ def _process_deterministic_entities(entities: list, ctx: EntityContext, owner_id
                     ctx.organization_id = e.db_id
                     ctx.organization_name = e.label
             elif e.is_new:
-                # New org — create pending node
-                pending_id = _create_pending_org(e.label, ctx.source_text, owner_id) if timing != "card" else None
+                # New org — create pending node (only if allowed)
+                pending_id = _create_pending_org(e.label, ctx.source_text, owner_id) if (timing != "card" and create_pending) else None
                 if pending_id and not ctx.pending_org_id:
                     ctx.pending_org_id = pending_id
                     ctx.pending_org_label = e.label
-                elif not pending_id and timing == "card" and not ctx.pending_org_id:
-                    # Dry run — simulate pending org
+                elif not pending_id and (timing == "card" or not create_pending) and not ctx.pending_org_id:
+                    # Dry run or no-create mode — simulate pending org for UI display
                     ctx.pending_org_label = e.label
-                elif not pending_id and timing != "card":
+                elif not pending_id and timing != "card" and create_pending:
                     # Org already exists as approved — find its graph_node id
                     existing = _find_existing_org(e.label, owner_id)
                     if existing and not ctx.organization_id:
@@ -263,12 +263,13 @@ def _process_deterministic_entities(entities: list, ctx: EntityContext, owner_id
                     ctx.person_ids.append(e.db_id)
                     ctx.person_names.append(e.label)
             elif e.is_new:
-                pending_id = _create_pending_person(e.label, ctx.source_text, owner_id) if timing != "card" else None
+                pending_id = _create_pending_person(e.label, ctx.source_text, owner_id) if (timing != "card" and create_pending) else None
                 if pending_id:
                     if pending_id not in ctx.pending_person_ids:
                         ctx.pending_person_ids.append(pending_id)
                         ctx.person_names.append(e.label)
-                elif timing == "card":
+                elif timing == "card" or not create_pending:
+                    # Dry run or no-create mode — still track name for UI display
                     if e.label not in ctx.person_names:
                         ctx.person_names.append(e.label)
 
@@ -331,7 +332,7 @@ If no organizations or persons found, return {{"organizations": [], "persons": [
     return {"organizations": []}
 
 
-def _integrate_llm_result(llm_result: dict, ctx: EntityContext, owner_id: str = None, timing: str = "sync"):
+def _integrate_llm_result(llm_result: dict, ctx: EntityContext, owner_id: str = None, timing: str = "sync", create_pending: bool = True):
     """Integrate LLM org + person detection results into EntityContext.
 
     Only adds orgs/persons that the deterministic layer missed.
@@ -377,8 +378,8 @@ def _integrate_llm_result(llm_result: dict, ctx: EntityContext, owner_id: str = 
             elif label not in ctx.org_to_org_edge_labels:
                 ctx.org_to_org_edge_labels.append(label)
         else:
-            # New org — create pending
-            pending_id = _create_pending_org(label, ctx.source_text, owner_id) if timing != "card" else None
+            # New org — create pending (only if allowed)
+            pending_id = _create_pending_org(label, ctx.source_text, owner_id) if (timing != "card" and create_pending) else None
             if pending_id:
                 if is_primary:
                     # LLM primary always wins — override any pending or existing org
@@ -387,8 +388,8 @@ def _integrate_llm_result(llm_result: dict, ctx: EntityContext, owner_id: str = 
                 # Secondary new orgs — track for org-to-org edge
                 elif label not in ctx.org_to_org_edge_labels:
                     ctx.org_to_org_edge_labels.append(label)
-            elif timing == "card" and is_primary:
-                # Card timing: can't create pending node, but set label for UI display
+            elif (timing == "card" or not create_pending) and is_primary:
+                # Card timing or no-create mode: set label for UI display
                 ctx.pending_org_label = label
                 # Clear deterministic first-match if LLM says a different org is primary
                 if ctx.organization_name and ctx.organization_name.lower() != label.lower():
@@ -426,13 +427,13 @@ def _integrate_llm_result(llm_result: dict, ctx: EntityContext, owner_id: str = 
                 ctx.person_ids.append(existing_person['id'])
                 ctx.person_names.append(label)
         else:
-            # Create pending person
-            pending_id = _create_pending_person(label, ctx.source_text, owner_id) if timing != "card" else None
+            # Create pending person (only if allowed)
+            pending_id = _create_pending_person(label, ctx.source_text, owner_id) if (timing != "card" and create_pending) else None
             if pending_id and pending_id not in ctx.pending_person_ids:
                 ctx.pending_person_ids.append(pending_id)
                 ctx.person_names.append(label)
             else:
-                # New person, no pending node (card timing or creation failed)
+                # No pending node (card timing, no-create mode, or creation failed)
                 # Still add name so the suggestion card UI shows them
                 if label not in ctx.person_names:
                     ctx.person_names.append(label)
@@ -478,6 +479,7 @@ async def extract_context_from_source(
     cached_entities: list = None,
     timing: str = "sync",
     owner_id: str = None,
+    create_pending: bool = True,
 ) -> EntityContext:
     """THE single entity extraction function for the entire OS.
 
@@ -495,6 +497,9 @@ async def extract_context_from_source(
         text: Full source text (message, document content, etc.)
         cached_entities: Optional pre-computed detect_entities() results
         timing: "sync" (creation time), "async" (enrichment), "card" (UI)
+        create_pending: If False, detection runs but no pending nodes are
+            created. Used by the enrichment queue to avoid junk nodes —
+            entity creation is gated by the suggestion card confirm flow.
 
     Returns:
         EntityContext with org, person, and edge information.
@@ -516,7 +521,7 @@ async def extract_context_from_source(
         else:
             from core.lib.entity_detector import detect_entities
             entities = detect_entities(text)
-        _process_deterministic_entities(entities, ctx, resolved_owner_id, timing=timing)
+        _process_deterministic_entities(entities, ctx, resolved_owner_id, timing=timing, create_pending=create_pending)
     except Exception as e:
         audit_log_sync("entity_context", "WARNING",
             f"Deterministic entity detection failed: {e}")
@@ -524,7 +529,7 @@ async def extract_context_from_source(
     # ── Phase 2: LLM extraction (always runs, catches implicit orgs + persons) ──
     try:
         llm_result = await _llm_extract_orgs_and_persons(text)
-        _integrate_llm_result(llm_result, ctx, resolved_owner_id, timing=timing)
+        _integrate_llm_result(llm_result, ctx, resolved_owner_id, timing=timing, create_pending=create_pending)
     except Exception as e:
         audit_log_sync("entity_context", "WARNING",
             f"LLM entity extraction failed: {e}")
@@ -548,8 +553,8 @@ async def extract_context_from_source(
                 audit_log_sync("entity_context", "INFO",
                     "Personal org fallback: linked to existing Personal org")
             else:
-                # Lazily create Personal org
-                pending_id = _create_pending_org('Personal', ctx.source_text, resolved_owner_id)
+                # Lazily create Personal org (only if creating pending nodes)
+                pending_id = _create_pending_org('Personal', ctx.source_text, resolved_owner_id) if create_pending else None
                 if pending_id:
                     ctx.pending_org_id = pending_id
                     ctx.pending_org_label = 'Personal'
