@@ -326,7 +326,9 @@ async def process_whatsapp_message(
             }).execute()
             memory_id = mem_result.data[0]['id']
             schedule_index_memory(memory_id, mem_content, "relationship_note", "whatsapp")
-            ctx = await extract_context_from_source(mem_content, timing="async")
+            # WhatsApp produces noisy entity extraction — skip pending node
+            # creation; entities detected for graph linking only.
+            ctx = await extract_context_from_source(mem_content, timing="async", create_pending=False)
             if ctx.organization_id:
                 supabase.table('memories').update({'organization_id': ctx.organization_id}).eq('id', memory_id).execute()
             elif ctx.pending_org_id:

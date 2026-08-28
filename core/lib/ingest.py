@@ -146,7 +146,13 @@ async def ingest(
             if mem_res.data:
                 memory_id = mem_res.data[0]['id']
                 schedule_index_memory(memory_id, mem_content, "relationship_note", source)
-                ctx = await extract_context_from_source(mem_content, timing="async", create_pending=True)
+                # Chat channels (teams, whatsapp, beeper, calls) produce noisy
+                # entity extraction — casual slang, abbreviations, system terms
+                # get typed as orgs/persons. Skip pending node creation for
+                # these channels; entities are still detected for graph linking
+                # but only show up via backfill enrichment (where context is richer).
+                _chat_channels = {"teams", "whatsapp", "beeper", "call_recording"}
+                ctx = await extract_context_from_source(mem_content, timing="async", create_pending=source not in _chat_channels)
                 if ctx.organization_id:
                     supabase.table('memories').update({'organization_id': ctx.organization_id}).eq('id', memory_id).execute()
                 elif ctx.pending_org_id:
@@ -226,7 +232,10 @@ async def ingest(
         if mem_res.data:
             memory_id = mem_res.data[0]['id']
             schedule_index_memory(memory_id, mem_content, "relationship_note", source)
-            ctx = await extract_context_from_source(mem_content, timing="async", create_pending=True)
+            # Chat channels produce noisy entity extraction — skip pending
+            # node creation; entities detected for graph linking only.
+            _chat_channels = {"teams", "whatsapp", "beeper", "call_recording"}
+            ctx = await extract_context_from_source(mem_content, timing="async", create_pending=source not in _chat_channels)
             if ctx.organization_id:
                 supabase.table('memories').update({'organization_id': ctx.organization_id}).eq('id', memory_id).execute()
             elif ctx.pending_org_id:
