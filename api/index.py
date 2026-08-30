@@ -5838,12 +5838,58 @@ async def _run_suggestion_confirm_background(body: dict):
                 merge_with = entity.get("merge_with")
                 if merge_with and merge_with.get("id"):
                     target_id = merge_with.get("id")
+                    merge_scope = merge_with.get("scope", "live")
                     
                     # 1. Find the pending source node
-                    p_res = supabase.table('pending_nodes').select('id, label').eq('owner_id', owner_id).ilike('label', label).in_('status', ['pending', 'flagged']).limit(1).execute()
+                    p_res = supabase.table('pending_nodes').select('id, label, node_type').eq('owner_id', owner_id).ilike('label', label).in_('status', ['pending', 'flagged']).limit(1).execute()
                     pending_node = p_res.data[0] if p_res and p_res.data else None
                     
-                    # 2. Find target label
+                    # 2. Resolve target — handle scope="pending" (bigint) vs "live" (UUID)
+                    #    When scope is "pending", target_id is a pending_nodes.id (bigint),
+                    #    not a graph_nodes.id (UUID). Promote the pending node to a live
+                    #    graph node first, then use the new UUID for all re-pointing.
+                    if merge_scope == "pending":
+                        # Fetch the pending target node
+                        pt_res = supabase.table('pending_nodes').select('id, label, node_type').eq('id', target_id).limit(1).execute()
+                        pending_target = pt_res.data[0] if pt_res and pt_res.data else None
+                        if pending_target:
+                            # Create a live graph node from the pending target
+                            live_res = await create_graph_node_with_db_record(
+                                label=pending_target['label'],
+                                node_type=pending_target.get('node_type', node_type),
+                                source_text=extracted_text[:500],
+                                source_tag="suggestion_confirm_merge",
+                                force=True,
+                                entity_context=entity_context_obj
+                            )
+                            if live_res and live_res.get('success'):
+                                target_id = live_res["node_id"]
+                                # Mark the pending target as merged
+                                supabase.table('pending_nodes').update({'status': 'merged'}).eq('id', pending_target['id']).execute()
+                            else:
+                                # Failed to promote — skip merge, create as new node
+                                res = await create_graph_node_with_db_record(
+                                    label=label, node_type=node_type,
+                                    source_text=extracted_text[:500],
+                                    source_tag="suggestion_confirm", force=True,
+                                    entity_context=entity_context_obj
+                                )
+                                if res and res.get('success'):
+                                    created_items.append({"type": node_type, "title": label, "entity_id": res.get("node_id")})
+                                continue
+                        else:
+                            # Pending target not found — fall through to create as new
+                            res = await create_graph_node_with_db_record(
+                                label=label, node_type=node_type,
+                                source_text=extracted_text[:500],
+                                source_tag="suggestion_confirm", force=True,
+                                entity_context=entity_context_obj
+                            )
+                            if res and res.get('success'):
+                                created_items.append({"type": node_type, "title": label, "entity_id": res.get("node_id")})
+                            continue
+                    
+                    # 3. Find target label (now always a UUID from graph_nodes)
                     t_res = supabase.table('graph_nodes').select('label, type').eq('id', target_id).limit(1).execute()
                     target_label = t_res.data[0]['label'] if t_res and t_res.data else None
                     
@@ -5851,11 +5897,11 @@ async def _run_suggestion_confirm_background(body: dict):
                         source_label = pending_node['label']
                         pending_id = pending_node['id']
                         
-                        # 3. Repoint pending edges
+                        # 4. Repoint pending edges
                         supabase.table('pending_graph_edges').update({'source_label': target_label}).eq('source_label', source_label).eq('owner_id', owner_id).execute()
                         supabase.table('pending_graph_edges').update({'target_label': target_label}).eq('target_label', source_label).eq('owner_id', owner_id).execute()
                         
-                        # 3b. Repoint tables that might have been linked to the pending org
+                        # 4b. Repoint tables that might have been linked to the pending org
                         supabase.table('tasks').update({'organization_id': target_id, 'pending_org_id': None}).eq('pending_org_id', pending_id).execute()
                         supabase.table('memories').update({'organization_id': target_id, 'pending_org_id': None}).eq('pending_org_id', pending_id).execute()
                         supabase.table('raw_dumps').update({'organization_id': target_id, 'pending_org_id': None}).eq('pending_org_id', pending_id).execute()
@@ -5869,10 +5915,10 @@ async def _run_suggestion_confirm_background(body: dict):
                                     ctx['linked_entity'] = target_label
                                     supabase.table('pending_nodes').update({'eval_context': ctx}).eq('id', c['id']).execute()
                         
-                        # 4. Mark pending node as merged
+                        # 5. Mark pending node as merged
                         supabase.table('pending_nodes').update({'status': 'merged'}).eq('id', pending_id).execute()
                         
-                        # 5. Record decision
+                        # 6. Record decision
                         try:
                             from core.decisions import record_decision
                             record_decision(

@@ -1530,11 +1530,11 @@ async def _process_webhook(update: dict):
                 from core.lib.entity_context import extract_context_from_source
                 
                 # 1. Deterministic extraction (fast)
-                # Use timing="sync" so pending nodes are created immediately.
-                # This ensures reconcile_action_orgs can link orgs to tasks.
-                # (timing="card" was a dry-run that skipped pending node creation,
-                #  leaving all tasks with organization_id=NULL.)
-                ctx = await extract_context_from_source(text, timing="sync")
+                # Use timing="card" (dry-run) to respect the Human-in-the-Loop
+                # contract: no pending_nodes are created until the user approves
+                # the suggestion card.  org_id at task-creation time will be NULL
+                # for brand-new orgs — the enrichment queue backfills it later.
+                ctx = await extract_context_from_source(text, timing="card")
                 
                 # 2. Extract suggestions (absorbs planner)
                 actions, suggestion_dict = await extract_suggestions(text, title=title, entity=entity, active_anchor=active_anchor, intent=intent)
