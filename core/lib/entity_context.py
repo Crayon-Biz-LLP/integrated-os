@@ -222,6 +222,86 @@ def _find_existing_person(label: str, owner_id: str = None) -> Optional[dict]:
 
 
 
+
+_ORG_COLLAPSE_SUFFIXES = {
+    'os', 'labs', 'media', 'dynamics', 'group', 'bank', 'hotels', 'analytics',
+    'studios', 'systems', 'partners', 'ventures', 'technologies', 'solutions',
+    'works', 'industries', 'capital', 'digital', 'software', 'consulting',
+    'holdings', 'networks', 'logistics', 'bio', 'pharma', 'inc', 'llc', 'ltd',
+    'limited', 'corp', 'corporation', 'company', 'firm', 'agency', 'enterprise'
+}
+
+def _collapse_org_duplicates(ctx: EntityContext):
+    """Collapse duplicate org candidates like 'Rhodey' and 'Rhodey OS'.
+    
+    If one candidate is a word-boundary prefix of another, and the trailing
+    tokens are all in _ORG_COLLAPSE_SUFFIXES, collapse the shorter into the
+    longer, preserving the higher confidence.
+    """
+    # Only operate on organizations
+    orgs = [e for e in ctx.detected_entities if e.get("type") == "organization"]
+    if len(orgs) < 2:
+        return
+
+    from core.services.db import tenant_aware_client, get_tenant
+    supabase = tenant_aware_client()
+    owner_id = get_tenant()
+
+    to_remove = []
+    
+    for i, o1 in enumerate(orgs):
+        for j, o2 in enumerate(orgs):
+            if i == j or i in to_remove or j in to_remove:
+                continue
+            
+            l1 = (o1.get("label") or "").strip()
+            l2 = (o2.get("label") or "").strip()
+            
+            if not l1 or not l2:
+                continue
+                
+            w1 = l1.lower().split()
+            w2 = l2.lower().split()
+            
+            # Check if l1 is a strict prefix of l2
+            if len(w1) < len(w2) and w2[:len(w1)] == w1:
+                trailing = w2[len(w1):]
+                # Are all trailing words in the suffix list?
+                if all(t in _ORG_COLLAPSE_SUFFIXES for t in trailing):
+                    # Guard: If BOTH are live nodes, never collapse
+                    # (e.g. Ashraya vs Ashraya Chennai North)
+                    try:
+                        res1 = supabase.table('graph_nodes').select('id').eq('type', 'organization').ilike('label', l1).eq('is_current', True).eq('owner_id', owner_id).limit(1).execute()
+                        res2 = supabase.table('graph_nodes').select('id').eq('type', 'organization').ilike('label', l2).eq('is_current', True).eq('owner_id', owner_id).limit(1).execute()
+                        if res1 and res1.data and res2 and res2.data:
+                            continue  # Both live, distinct orgs
+                    except Exception:
+                        pass
+                    
+                    # Collapse o1 (shorter) into o2 (longer)
+                    to_remove.append(i)
+                    o2["confidence"] = max(o1.get("confidence", 0), o2.get("confidence", 0))
+                    
+                    # Update pending_org_label / organization_name if it was the short form
+                    if ctx.pending_org_label and ctx.pending_org_label.lower() == l1.lower():
+                        ctx.pending_org_label = l2
+                    if ctx.organization_name and ctx.organization_name.lower() == l1.lower():
+                        ctx.organization_name = l2
+
+    # Rebuild detected_entities without the removed ones
+    if to_remove:
+        new_entities = []
+        org_idx = 0
+        for e in ctx.detected_entities:
+            if e.get("type") == "organization":
+                if org_idx not in to_remove:
+                    new_entities.append(e)
+                org_idx += 1
+            else:
+                new_entities.append(e)
+        ctx.detected_entities = new_entities
+
+
 # ── Entity processing ────────────────────────────────────────────────────────
 
 def _process_deterministic_entities(entities: list, ctx: EntityContext, owner_id: str = None, timing: str = "sync", create_pending: bool = True):
@@ -341,9 +421,14 @@ def _integrate_llm_result(llm_result: dict, ctx: EntityContext, owner_id: str = 
     orgs = llm_result.get("organizations", [])
     persons = llm_result.get("persons", [])
 
+    from core.lib.graph_rules import resolve_alias
+
     for org in orgs:
         label = (org.get("name") or "").strip()
         is_primary = org.get("is_primary", False)
+        
+        # Resolve alias early so short-forms map to canonicals
+        label = resolve_alias(label)
 
         if not label or len(label) < 2:
             continue
@@ -535,6 +620,7 @@ async def extract_context_from_source(
             f"LLM entity extraction failed: {e}")
 
     # ── Phase 3: Reconciliation + pending node creation ──
+    _collapse_org_duplicates(ctx)
     _propose_org_to_org_edges(ctx)
 
     # ── Phase 4: Personal org fallback (no org detected → use Personal) ──

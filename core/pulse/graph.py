@@ -524,6 +524,21 @@ async def create_graph_node_with_db_record(
             enrich = dict(existing_meta.get('enrichment') or {})
             enrich.setdefault('is_active', True)
 
+            # Change 2: Register leading token as alias for multi-word orgs
+            aliases = list(existing_meta.get('aliases') or [])
+            words = label.split()
+            if len(words) > 1:
+                short_form = words[0]
+                # Guard: only add if short_form isn't already a live org
+                if short_form.lower() not in [a.lower() for a in aliases] and short_form.lower() != label.lower():
+                    try:
+                        from core.services.db import get_tenant
+                        check_res = supabase.table('graph_nodes').select('id').eq('type', 'organization').ilike('label', short_form).eq('is_current', True).eq('owner_id', get_tenant()).limit(1).execute()
+                        if not check_res or not check_res.data:
+                            aliases.append(short_form)
+                    except Exception:
+                        pass
+
             upsert_res = supabase.table("graph_nodes").upsert(
                 {
                     "label": label,
@@ -536,6 +551,7 @@ async def create_graph_node_with_db_record(
                         "source": source_tag,
                         "memory_id": source_text,
                         "enrichment": enrich,
+                        "aliases": aliases,
                     },
                 },
                 on_conflict="owner_id, normalized_label, type"
