@@ -897,9 +897,13 @@ def propose_merge(source_node_id: str, target_node_id: str) -> dict:
 def validate_edge(source_type: str, relationship: str, target_type: str) -> dict:
     rel_upper = relationship.upper()
     allowed = VALID_EDGE_MATRIX.get((source_type, target_type), [])
-    if rel_upper in allowed:
+    
+    # ASSOCIATED_WITH is universally allowed as a generic fallback edge type
+    if rel_upper in allowed or rel_upper == 'ASSOCIATED_WITH':
         return {"action": "pass"}
-    return {"action": "auto_reject", "reason": f"Invalid relationship {rel_upper} for {source_type} -> {target_type}"}
+        
+    # Instead of auto-rejecting invalid relationships, correct them to the generic type
+    return {"action": "auto_correct", "reason": "ASSOCIATED_WITH"}
 
 def has_structural_anchor(label: str, node_type: str) -> bool:
     """Check whether a live graph node of the given type exists for this label.
