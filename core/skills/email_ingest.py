@@ -168,7 +168,7 @@ Output ONLY a concise 1-2 sentence note about the relationship context."""
         }).execute()
         memory_id = result.data[0]['id']
         schedule_index_memory(memory_id, note_content, "relationship_note", "email_ingest")
-        ctx = await extract_context_from_source(note_content, timing="async")
+        ctx = await extract_context_from_source(note_content, timing="card")
         if ctx.organization_id:
             supabase.table('memories').update({'organization_id': ctx.organization_id}).eq('id', memory_id).execute()
         elif ctx.pending_org_id:

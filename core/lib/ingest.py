@@ -151,7 +151,7 @@ async def ingest(
                 # get typed as orgs/persons. Skip pending node creation for
                 # these channels; entities are still detected for graph linking
                 # but only show up via backfill enrichment (where context is richer).
-                _chat_channels = {"teams", "whatsapp", "beeper", "call_recording"}
+                _chat_channels = {"teams", "whatsapp", "beeper", "call_recording", "outlook"}
                 ctx = await extract_context_from_source(mem_content, timing="async", create_pending=source not in _chat_channels)
                 if ctx.organization_id:
                     supabase.table('memories').update({'organization_id': ctx.organization_id}).eq('id', memory_id).execute()
