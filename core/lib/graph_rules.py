@@ -1051,6 +1051,35 @@ def persist_label(route: str, resolution: dict, source_info: dict) -> str:
             return None
     
     if route == "pending":
+        # Validation gate: reject common words, short labels, and generic terms
+        # that the LLM over-extracts from short text ("Garden", "Tech", "What", etc.)
+        _PENDING_NOISE_LABELS = {
+            'garden', 'tech', 'romans', 'what', 'you', 'info', 'service', 'order',
+            'option', 'identity', 'life', 'mrs', 'shopify', 'tamil', 'wayanad',
+            'ramnad', 'jesse', 'paulson', 'starlly', 'news', 'media', 'staff',
+            'chief', 'user', 'author', 'speaker', 'translator', 'validator',
+            'family', 'friends', 'parents', 'uncle', 'aunt', 'father', 'mother',
+            'god', 'devil', 'he', 'she', 'it', 'they', 'them', 'him', 'her',
+            'his', 'its', 'our', 'your', 'my', 'the', 'a', 'an', 'is', 'am',
+            'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had',
+            'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may',
+            'might', 'can', 'shall', 'must', 'need', 'dare', 'ought', 'used',
+            'option a', 'option b', 'option c', 'suren and rajesh',
+            'lanette burrows and edward robinson', 'famitha and nasreen',
+            'cobalt and Finch', 'timmy auditors office',
+        }
+        label_lower = label.strip().lower()
+        if (
+            len(label_lower) < 3
+            or label_lower in _PENDING_NOISE_LABELS
+            or label_lower.split()[0] in _PENDING_NOISE_LABELS
+        ):
+            audit_log_sync(
+                "graph_pipeline", "INFO",
+                f"persist_rejected_noise: {label!r} rejected by validation gate (route=pending)"
+            )
+            return None
+
         # Dual-write: new table + old table for compat
         existing_p = maybe_single_safe(supabase.table("pending_nodes").select("id").ilike("label", label))
         if existing_p and existing_p.data:

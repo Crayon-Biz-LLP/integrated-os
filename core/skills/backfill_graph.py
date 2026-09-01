@@ -457,7 +457,7 @@ def get_or_create_node(label: str, node_type: str, graph_entities: dict, created
         graph_entities[label] = {"id": node_id, "type": node_type}
     return node_id
 
-def upsert_nodes(nodes: list, graph_entities: dict, memory_id: str):
+def upsert_nodes(nodes: list, graph_entities: dict, memory_id: str, create_pending: bool = True):
     if not nodes:
         return
     
@@ -511,7 +511,7 @@ def upsert_nodes(nodes: list, graph_entities: dict, memory_id: str):
             )
             
             source_info = {"source": "backfill_graph", "memory_id": memory_id, "source_text": memory_id, "flag_reason": val.get("reason", "")}
-            node_id = persist_label(route, res, source_info)
+            node_id = persist_label(route, res, source_info) if create_pending or route != "pending" else None
             
             if route == "pending":
                 if label not in pending_entities_cache:
@@ -818,7 +818,7 @@ def run_backfill():
             unique_nodes[root_label] = "person"
             
         # Batch upsert nodes using the existing upsert_nodes function
-        upsert_nodes([{"label": k, "type": v} for k, v in unique_nodes.items()], graph_entities, "batch")
+        upsert_nodes([{"label": k, "type": v} for k, v in unique_nodes.items()], graph_entities, "batch", create_pending=False)
         
         pending_edges_to_insert = []
         for edge in all_edges:
