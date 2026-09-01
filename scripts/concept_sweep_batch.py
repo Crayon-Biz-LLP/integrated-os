@@ -8,7 +8,7 @@ load_dotenv()
 from core.services.db import maybe_single_safe, run_tenant_fanout, tenant_aware_client  # noqa: E402
 from core.llm.constants import CLASSIFICATION_MODEL  # noqa: E402
 from core.llm.compat import call_llm_with_fallback_sync  # noqa: E402
-from core.skills.backfill_graph import synthesize_content  # noqa: E402
+from core.lib.text_utils import synthesize_content  # noqa: E402
 from core.lib.graph_rules import normalize_label  # noqa: E402
 
 supabase = tenant_aware_client()

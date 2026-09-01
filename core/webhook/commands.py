@@ -1,6 +1,4 @@
 import json
-import os
-import httpx
 import re as _re
 from datetime import datetime, timezone, timedelta
 from core.lib.time_utils import get_user_timezone, now_for_user, tz_label, tz_offset_str
@@ -499,29 +497,6 @@ async def handle_command(text: str, chat_id: int):
     elif text in ['/practices', '🏃 Practices']:
         await handle_practices_command(chat_id)
         return {"success": True}
-
-    elif text in ['/backfill']:
-        try:
-            from core.lib.constants import resolve_github_config
-            github_token = os.getenv("GITHUB_TOKEN")
-            owner, repo = resolve_github_config()
-            if github_token and owner and repo:
-                url = f"https://api.github.com/repos/{owner}/{repo}/actions/workflows/backfill_graph.yml/dispatches"
-                headers = {
-                    "Authorization": f"token {github_token}",
-                    "Accept": "application/vnd.github+json"
-                }
-                payload = {"ref": "main"}
-                async with httpx.AsyncClient() as client:
-                    resp = await client.post(url, json=payload, headers=headers, timeout=10)
-                    if resp.status_code == 204:
-                        reply = "Graph backfill is running in the background — extracted edges will surface when they're ready."
-                    else:
-                        reply = f"⚠️ GitHub dispatch failed: {resp.status_code}"
-            else:
-                reply = "⚠️ Missing GITHUB_TOKEN, GITHUB_OWNER, or GITHUB_REPO — can't trigger workflow."
-        except Exception as e:
-            reply = f"⚠️ Error triggering backfill: {e}"
 
     elif text in ['/ep']:
         try:

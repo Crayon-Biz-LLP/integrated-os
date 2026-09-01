@@ -1,40 +1,23 @@
-name: Graph Backfill
-on:
-  # Restored as a standalone job (Aug 18): the backfill was merged into
-  # ingest.yml's 25-min job (Aug 12) where it could not finish — every run
-  # was cancelled at the 25-min timeout. It needs up to 60 min for the
-  # largest tenant, so it runs here nightly (20:00 UTC = 1:30 AM IST) with
-  # a 60-min budget, plus manual dispatch for on-demand deep backfills.
-  schedule:
-    - cron: '0 20 * * *'  # Every day at 1:30 AM IST (20:00 UTC)
-  workflow_dispatch:  # Allow manual trigger via API
+name: Graph Backfill (DISABLED)
+
+# DISABLED: Sep 1 2026 — backfill_graph.py retired.
+# Historical entity linking is now handled by:
+#   1. Suggestion card pipeline (new messages)
+#   2. _backfill_existing_content_for_entity (on node approval)
+#   3. One-time script (scripts/archive/one_time_backfill.py) if needed
+#
+# To re-enable: restore the schedule block and workflow_dispatch below.
+
+on: []
+  # schedule:
+  #   - cron: '0 20 * * *'
+  # workflow_dispatch:
 
 jobs:
   backfill:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-    
+    if: false  # Permanently disabled
+
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-      
-      - name: Setup Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.11'
-      
-      - name: Install Dependencies
-        run: pip install -r requirements.txt
-      
-      - name: Run Graph Backfill
-        env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          GEMINI_API_KEY_2: ${{ secrets.GEMINI_API_KEY_2 }}
-          GEMINI_API_KEY_3: ${{ secrets.GEMINI_API_KEY_3 }}
-          GEMINI_API_KEY_4: ${{ secrets.GEMINI_API_KEY_4 }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python -m core.skills.backfill_graph
+      - name: Disabled
+        run: echo "This workflow is disabled. See comments above."

@@ -11,11 +11,8 @@ Covers the four root-cause fixes:
 
 import pytest
 
-import json
-
 from core.lib.graph_rules import sanitize_edge_label, resolve_edge_label
 from core.lib.entity_detector import detect_entities, DetectedEntity
-from core.skills.backfill_graph import extract_graph_elements
 pytestmark = pytest.mark.graph
 
 
@@ -153,42 +150,6 @@ def test_detect_entities_grounded_person_full_confidence(monkeypatch):
     ents = detect_entities("I met Joel yesterday")
     persons = [e for e in ents if e.type == "person"]
     assert persons and persons[0].confidence == 0.8, f"expected conf 0.8, got {persons}"
-
-
-# ── Fix 1 + 2: backfill edge sanitization (extract_graph_elements) ──────────
-
-def test_backfill_edges_sanitized_and_membership_checked(monkeypatch):
-    calls = []
-    monkeypatch.setattr(
-        "core.skills.backfill_graph.audit_log_sync",
-        lambda subsystem, level, msg, **kw: calls.append(msg),
-    )
-
-    def fake_detect(text):
-        return [
-            DetectedEntity(label="Pup", type="animal", source="pattern_match", is_new=True),
-            DetectedEntity(label="Danny", type="person", source="pattern_match", is_new=True),
-        ]
-    monkeypatch.setattr("core.lib.entity_detector.detect_entities", fake_detect)
-
-    class FakeResp:
-        text = json.dumps([
-            {"source": "Pup (animal)", "target": "Danny", "relationship": "OWNS"},
-            {"source": "Ghost Corp", "target": "Danny", "relationship": "PARTNER_OF"},
-        ])
-    monkeypatch.setattr(
-        "core.skills.backfill_graph.call_llm_with_fallback_sync",
-        lambda **kw: FakeResp(),
-    )
-
-    result = extract_graph_elements("text with entities", "mem_1")
-    edges = result["edges"]
-    # Echo artifact sanitized to canonical 'Pup'; invented endpoint dropped
-    assert len(edges) == 1, f"expected 1 kept edge, got {edges}"
-    assert edges[0]["source"] == "Pup"
-    assert edges[0]["target"] == "Danny"
-    assert any("edge_dropped_unresolved" in m and "Ghost Corp" in m for m in calls), \
-        f"no dropped-edge audit for Ghost Corp: {calls}"
 
 
 # ── Fix 1: insert_extracted_entities drops unknown endpoints (real-time) ────
