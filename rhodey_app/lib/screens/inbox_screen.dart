@@ -1236,6 +1236,9 @@ class _InboxScreenState extends State<InboxScreen>
               maxLines: 4,
               minLines: 2,
               textInputAction: TextInputAction.newline,
+              textCapitalization: TextCapitalization.sentences,
+              autocorrect: true,
+              enableSuggestions: true,
               decoration: InputDecoration(
                 hintText: 'Type your reply…',
                 border: OutlineInputBorder(

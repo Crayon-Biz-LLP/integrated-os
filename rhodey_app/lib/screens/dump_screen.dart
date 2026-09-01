@@ -218,6 +218,9 @@ class _DumpScreenState extends State<DumpScreen> with WidgetsBindingObserver {
                             controller: _textController,
                             textInputAction: TextInputAction.send,
                             onSubmitted: _capture,
+                            textCapitalization: TextCapitalization.sentences,
+                            autocorrect: true,
+                            enableSuggestions: true,
                             decoration: const InputDecoration(
                               hintText: 'Or type a raw thought...',
                               border: InputBorder.none,

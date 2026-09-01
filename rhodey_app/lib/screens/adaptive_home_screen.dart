@@ -4202,6 +4202,9 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
                     contentPadding: const EdgeInsets.symmetric(vertical: 8),
                     isDense: true,
                   ),
+                  textCapitalization: TextCapitalization.sentences,
+                  autocorrect: true,
+                  enableSuggestions: true,
                   textInputAction: TextInputAction.send,
                   onSubmitted: (text) {
                     if (text.trim().isNotEmpty) {
