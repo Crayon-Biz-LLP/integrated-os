@@ -4209,6 +4209,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
                   minLines: 1,
                   keyboardType: TextInputType.multiline,
                   textInputAction: TextInputAction.newline,
+                  cursorColor: AppTheme.champagne,
+                  onTapOutside: (_) {
+                    FocusScope.of(context).unfocus();
+                  },
                   onSubmitted: (text) {
                     if (text.trim().isNotEmpty) {
                       _sendMessage(text.trim());
