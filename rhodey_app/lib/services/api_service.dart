@@ -1378,6 +1378,14 @@ class ApiService {
           resp = await _client
               .delete(uri, headers: _headers())
               .timeout(const Duration(seconds: 15));
+        } else if (method == 'POST') {
+          resp = await _client
+              .post(
+                uri,
+                headers: _headers(),
+                body: body != null ? jsonEncode(body) : null,
+              )
+              .timeout(const Duration(seconds: 15));
         } else {
           return ApiResult.fail('Unsupported method $method');
         }
