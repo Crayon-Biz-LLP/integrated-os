@@ -565,7 +565,7 @@ async def _route_by_intent(intent: str, text: str, chat_id: int, session_id: str
                     )
                 await handle_clarification(text, nc.to_question(), chat_id, session_id=session_id)
             if not clarified:
-                ctx = await extract_context_from_source(text, timing="sync")
+                ctx = await extract_context_from_source(text, timing="card")
                 await execute_actions_harden(actions, chat_id, text=text, entity=entity, source=source, sender=sender, session_id=session_id, intent=intent, active_anchor=active_anchor, entity_context=ctx)
         if reply:
             capture_response(reply)
@@ -580,10 +580,13 @@ async def _route_by_intent(intent: str, text: str, chat_id: int, session_id: str
             return
 
         # Entity context extraction (unified with handler.py web path)
+        # COMPLETION intent: status updates, not entity creation → timing="card" (no pending nodes)
+        # TASK/NOTE intent: explicit creation → timing="sync" (creates pending nodes)
         from core.lib.entity_context import extract_context_from_source
         from core.pulse.graph import match_existing_nodes
         from core.services.db import get_tenant
-        ctx = await extract_context_from_source(text, timing="sync")
+        _extract_timing = "card" if intent == "COMPLETION" else "sync"
+        ctx = await extract_context_from_source(text, timing=_extract_timing)
         owner_id = get_tenant()
         entities = ctx.detected_entities
         if entities and owner_id:
