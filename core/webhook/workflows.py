@@ -171,7 +171,8 @@ async def _resume_action_clarification(chat_id: int, text: str, thread_id: str, 
     # The answer completes the original request — re-plan with both.
     combined = f"{original_text}\n[User clarification:] {text}"
     from core.lib.suggestion_extractor import extract_suggestions
-    from core.actions.executor import execute_planned_actions
+    from core.lib.entity_context import extract_context_from_source
+    from core.actions.executor import execute_actions_harden
     from core.actions.models import NeedsClarification
     
     try:
@@ -195,9 +196,11 @@ async def _resume_action_clarification(chat_id: int, text: str, thread_id: str, 
         await _emit_clarification_observation(workflow, thread_id, "failed")
         return True, None
 
-    await execute_planned_actions(
+    ctx = await extract_context_from_source(combined, timing="sync")
+    await execute_actions_harden(
         actions, chat_id, text=combined, entity=entity,
         source="telegram", sender="user", session_id=thread_id, intent=intent,
+        entity_context=ctx,
     )
 
     # Resolve the workflow (atomic — only if still active)

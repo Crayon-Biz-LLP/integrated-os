@@ -112,7 +112,7 @@ async def _process_email_pending_decision(pending_id: int, decision: str, supaba
         try:
             from core.lib.suggestion_extractor import extract_suggestions
             from core.lib.entity_context import extract_context_from_source
-            from core.actions.executor import execute_planned_actions
+            from core.actions.executor import execute_actions_harden
             from core.webhook.utils import build_action_ledger
             import os
             
@@ -121,12 +121,7 @@ async def _process_email_pending_decision(pending_id: int, decision: str, supaba
             ctx = await extract_context_from_source(original_text, timing="sync")
             actions, _ = await extract_suggestions(text=original_text, title=title, intent="TASK", entity=resolved_entity)
             if actions:
-                for a in actions:
-                    if getattr(a, 'operation', '').startswith('create_') and not getattr(a, 'organization_id', None) and ctx.pending_org_id:
-                        a.organization_id = ctx.pending_org_id
-                        if hasattr(a, 'params'):
-                            a.params["organization_id"] = ctx.pending_org_id
-                results = await execute_planned_actions(actions, chat_id, text=original_text, source="email", entity=resolved_entity)
+                results = await execute_actions_harden(actions, chat_id, text=original_text, source="email", entity=resolved_entity, entity_context=ctx)
                 # Undo ledger (see core/webhook/utils.build_action_ledger) —
                 # persisted on the decision so undo can reverse side effects.
                 ledger = build_action_ledger(results)

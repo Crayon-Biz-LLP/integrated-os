@@ -544,7 +544,8 @@ async def _route_by_intent(intent: str, text: str, chat_id: int, session_id: str
             classify_context=classify_ctx, anaphora_task=anaphora_task)
         if contains_hidden:
             from core.lib.suggestion_extractor import extract_suggestions
-            from core.actions.executor import execute_planned_actions
+            from core.lib.entity_context import extract_context_from_source
+            from core.actions.executor import execute_actions_harden
             clarified = False
             try:
                 actions, _ = await extract_suggestions(text, title, entity, active_anchor, intent=intent)
@@ -564,7 +565,8 @@ async def _route_by_intent(intent: str, text: str, chat_id: int, session_id: str
                     )
                 await handle_clarification(text, nc.to_question(), chat_id, session_id=session_id)
             if not clarified:
-                await execute_planned_actions(actions, chat_id, text=text, entity=entity, source=source, sender=sender, session_id=session_id, intent=intent, active_anchor=active_anchor)
+                ctx = await extract_context_from_source(text, timing="sync")
+                await execute_actions_harden(actions, chat_id, text=text, entity=entity, source=source, sender=sender, session_id=session_id, intent=intent, active_anchor=active_anchor, entity_context=ctx)
         if reply:
             capture_response(reply)
 
@@ -588,7 +590,7 @@ async def _route_by_intent(intent: str, text: str, chat_id: int, session_id: str
             entities = match_existing_nodes(entities, owner_id)
 
         from core.lib.suggestion_extractor import extract_suggestions
-        from core.actions.executor import execute_planned_actions, reconcile_action_orgs
+        from core.actions.executor import execute_actions_harden
         try:
             actions, suggestion_dict = await extract_suggestions(text, title, entity, active_anchor, intent=intent)
         except NeedsClarification as nc:
@@ -610,8 +612,7 @@ async def _route_by_intent(intent: str, text: str, chat_id: int, session_id: str
             return
 
         # Org reconciliation: extraction decides, consumers obey
-        reconcile_action_orgs(actions, ctx)
-        await execute_planned_actions(actions, chat_id, text=text, entity=entity, source=source, sender=sender, session_id=session_id, intent=intent, active_anchor=active_anchor, entity_context=ctx)
+        await execute_actions_harden(actions, chat_id, text=text, entity=entity, source=source, sender=sender, session_id=session_id, intent=intent, active_anchor=active_anchor, entity_context=ctx)
         
     elif intent == 'DAILY_BRIEF':
         reply = await handle_daily_brief(text, chat_id, session_id=session_id)

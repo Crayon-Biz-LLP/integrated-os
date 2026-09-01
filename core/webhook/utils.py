@@ -181,7 +181,7 @@ async def _process_channel_pending_decision(channel: str, pending_id: int, decis
     if is_approved:
         # Process immediately via Action Planner
         from core.lib.suggestion_extractor import extract_suggestions
-        from core.actions.executor import execute_planned_actions
+        from core.actions.executor import execute_actions_harden
         
         chat_id = int(os.getenv("TELEGRAM_CHAT_ID", "0"))
         
@@ -212,12 +212,7 @@ async def _process_channel_pending_decision(channel: str, pending_id: int, decis
                 entity=resolved_entity,
             )
             if actions:
-                for a in actions:
-                    if getattr(a, 'operation', '').startswith('create_') and not getattr(a, 'organization_id', None) and ctx.pending_org_id:
-                        a.organization_id = ctx.pending_org_id
-                        if hasattr(a, 'params'):
-                            a.params["organization_id"] = ctx.pending_org_id
-                results = await execute_planned_actions(actions, chat_id, text=original_text, source=channel, entity=resolved_entity)
+                results = await execute_actions_harden(actions, chat_id, text=original_text, source=channel, entity=resolved_entity, entity_context=ctx)
                 # Undo ledger: every action that actually committed, with the
                 # id needed to reverse it (created ids for creates, target ids
                 # for closures — see executor.compensate_action). Persisted on

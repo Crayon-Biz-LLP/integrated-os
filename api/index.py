@@ -6026,7 +6026,7 @@ async def _run_suggestion_confirm_background(body: dict):
             # 2. Update existing task or create tasks (for documents/messages)
             if source_type == "message":
                 if selected_tasks:
-                    from core.actions.executor import execute_planned_actions
+                    from core.actions.executor import execute_actions_harden
                     from core.actions.models import Action
                     
                     actions_to_execute = []
@@ -6065,7 +6065,7 @@ async def _run_suggestion_confirm_background(body: dict):
                     
                     if actions_to_execute:
                         import uuid
-                        results = await execute_planned_actions(
+                        results = await execute_actions_harden(
                             actions_to_execute,
                             chat_id=0,
                             text=extracted_text,

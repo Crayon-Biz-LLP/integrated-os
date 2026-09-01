@@ -304,6 +304,38 @@ def reconcile_action_orgs(actions, ctx) -> None:
                 action.organization_id = None
 
 
+async def execute_actions_harden(
+    actions: List[Action],
+    chat_id: int,
+    text: str = "",
+    entity: str = None,
+    source: str = "telegram",
+    sender: str = "user",
+    session_id: str = None,
+    intent: str = None,
+    suppress_telegram: bool = False,
+    active_anchor: dict = None,
+    entity_context=None,
+):
+    """Single entry point for all action execution — enforces preconditions.
+
+    Every caller MUST use this function instead of execute_planned_actions directly.
+    Enforces:
+      1. reconcile_action_orgs — injects org from entity_context onto actions
+      2. entity_context passthrough — ensures create_note/create_task guards work
+
+    This prevents the class of bugs where callers forget reconcile_action_orgs,
+    resulting in wrong dedup_keys, missing org linkage, and duplicate tasks.
+    """
+    reconcile_action_orgs(actions, entity_context)
+    return await execute_planned_actions(
+        actions, chat_id, text=text, entity=entity, source=source,
+        sender=sender, session_id=session_id, intent=intent,
+        suppress_telegram=suppress_telegram, active_anchor=active_anchor,
+        entity_context=entity_context,
+    )
+
+
 async def execute_planned_actions(
     actions: List[Action], 
     chat_id: int, 

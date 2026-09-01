@@ -1642,9 +1642,8 @@ async def _process_webhook(update: dict):
                             audit_log_sync("webhook", "ERROR", f"Failed to insert suggestion raw_dump: {e}")
 
                     # Execute actions immediately (don't defer to confirm)
-                    from core.actions.executor import reconcile_action_orgs, execute_planned_actions
-                    reconcile_action_orgs(actions, ctx)
-                    await execute_planned_actions(
+                    from core.actions.executor import execute_actions_harden
+                    await execute_actions_harden(
                         actions, chat_id, text=text, entity=entity, source=source, sender=sender,
                         session_id=session_id, intent=intent, suppress_telegram=False, active_anchor=active_anchor,
                         entity_context=ctx
@@ -1690,9 +1689,8 @@ async def _process_webhook(update: dict):
                     # Path C: direct execution — actions exist, no card needed.
                     # Simple tasks ("Call Lisa Chen about X") go here.
                     # Org reconciliation: extraction decides, consumers obey.
-                    from core.actions.executor import reconcile_action_orgs, execute_planned_actions
-                    reconcile_action_orgs(actions, ctx)
-                    await execute_planned_actions(
+                    from core.actions.executor import execute_actions_harden
+                    await execute_actions_harden(
                         actions, chat_id, text=text, entity=entity, source=source, sender=sender,
                         session_id=session_id, intent=intent, suppress_telegram=False, active_anchor=active_anchor,
                         entity_context=ctx
