@@ -4205,7 +4205,10 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
                   textCapitalization: TextCapitalization.sentences,
                   autocorrect: true,
                   enableSuggestions: true,
-                  textInputAction: TextInputAction.send,
+                  maxLines: 5,
+                  minLines: 1,
+                  keyboardType: TextInputType.multiline,
+                  textInputAction: TextInputAction.newline,
                   onSubmitted: (text) {
                     if (text.trim().isNotEmpty) {
                       _sendMessage(text.trim());
