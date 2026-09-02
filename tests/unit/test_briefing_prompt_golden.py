@@ -69,6 +69,8 @@ FIXED_CTX = dict(
     recent_urls_context="None",
     new_inputs="None",
     new_input_tags="None",
+    focal_learning_context="No pattern data yet.",
+    home_mode_learning_context="No pattern data yet.",
 )
 
 DANNY_ROW = json.dumps({

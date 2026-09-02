@@ -69,7 +69,22 @@ async def generate_draft(sender: str, subject: str, body: str) -> str:
     from core.services.user_settings import resolve_user_name, resolve_context
     _user_name = resolve_user_name()
     _user_context = resolve_context()
-    prompt = f"""You are drafting a professional reply on behalf of {_user_name}. {_user_context} Write a concise, warm, and direct reply to this email. Do not sign off with a full signature block — end with just '{_user_name}'. Do not send — this is a draft for {_user_name}'s review.
+
+    # Email draft learning: fetch patterns to inform style/tone (fail-open)
+    style_hint = ""
+    try:
+        from core.lib.telemetry import get_pattern_summary
+        draft_patterns = await get_pattern_summary(
+            "email_drafts", min_observations=3, max_patterns=5
+        )
+        if draft_patterns:
+            approved = [p for p in draft_patterns if p.get("recommendation") in ("approve", "auto_approve")]
+            if approved:
+                style_hint = "\nSTYLE NOTE: The user has previously approved drafts with similar tone. Match that style."
+    except Exception:
+        pass  # Fail-open
+
+    prompt = f"""You are drafting a professional reply on behalf of {_user_name}. {_user_context} Write a concise, warm, and direct reply to this email. Do not sign off with a full signature block — end with just '{_user_name}'. Do not send — this is a draft for {_user_name}'s review.{style_hint}
 
 Sender: {sender}
 Subject: {subject}

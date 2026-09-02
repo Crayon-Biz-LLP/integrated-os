@@ -90,3 +90,7 @@ class BriefingContext:
 
     # Inputs
     new_inputs: str = "None"
+
+    # Learning loop — focal selection patterns (Sep 2026)
+    focal_learning_context: str = "None"
+    home_mode_learning_context: str = "No pattern data yet."

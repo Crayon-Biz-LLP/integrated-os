@@ -359,6 +359,23 @@ async def classify_intent(text: str, context: list, ist_hour: int = None, core_j
         except Exception:
             pass  # Fail-open
 
+        # FYI pipeline learning: if the user historically marks similar items
+        # as FYI, boost the FYI classification confidence (fail-open)
+        try:
+            from core.lib.telemetry import compute_pattern_confidence
+            fyi_features = {
+                "sender": result.get("sender_name", ""),
+                "intent": result.get("intent", ""),
+            }
+            fyi_result = await compute_pattern_confidence(fyi_features, "fyi_pipeline")
+            if fyi_result.get("recommendation") in ("approve", "auto_approve"):
+                # This type of item is usually FYI — boost FYI confidence
+                if result.get("classification") == "fyi":
+                    result["confidence"] = max(result.get("confidence", 0.5), fyi_result.get("confidence", 0.0))
+                    audit_log_sync("webhook", "INFO", f"FYI pipeline boost: {fyi_result.get('rule', 'N/A')}")
+        except Exception:
+            pass  # Fail-open
+
         # Cache successful classification for 5 minutes
         cache_set(cache_key, result, ttl=300)
         return result

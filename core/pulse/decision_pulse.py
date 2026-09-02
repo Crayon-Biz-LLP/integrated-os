@@ -248,11 +248,11 @@ async def _process_decision_pulse_impl(auth_secret: str = None, trigger: str = "
                     _edge_text = f"{row['source_label']} {row['relationship']} {row['target_label']}"
                     delib_result = await deliberate(
                         candidates=[
-                            {"label": "approve", "primary": pattern_result.get("confidence", 0.5)},
-                            {"label": "review", "primary": 1.0 - pattern_result.get("confidence", 0.5)},
+                            {"label": "approve", "primary": pattern_result.get("confidence", 0.5), "pattern_subsystem": "action_planner"},
+                            {"label": "review", "primary": 1.0 - pattern_result.get("confidence", 0.5), "pattern_subsystem": "action_planner"},
                         ],
                         text=_edge_text,
-                        subsystem="graph_edge",
+                        subsystem="action_planner",
                     )
                     if delib_result.get("recommendation") == "auto_execute" and delib_result.get("best") == "approve":
                         await process_pending_edge_decision(row['id'], 'approve', auto_decided=True)

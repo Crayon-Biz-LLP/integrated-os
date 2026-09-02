@@ -217,6 +217,9 @@ NEW INPUT TAGS: {ctx.new_input_tags}
 
 {guards}
 
+--- FOCAL SELECTION LEARNING ---
+{ctx.focal_learning_context}
+
 --- TOP FOCAL ITEM SELECTION ---
 Your JSON output includes a `top_focal_item` field that tells the app the
 SINGLE most important thing {user_name} should focus on right now.
@@ -335,6 +338,9 @@ lays out information for {user_name}. Choose the mode that best fits the current
   * Focus should be on closing open loops
 
 Pick the SINGLE best mode. Default to "proceed" if unsure.
+
+HOME MODE LEARNING:
+{ctx.home_mode_learning_context}
 
 NOTE: You are a briefing engine only. Your JSON output contains exactlyfour fields: `briefing`, `voice_line`, `home_mode`, and `top_focal_item`.
 You do NOT create, complete, or modify any tasks, projects, people, resources, or clusters.

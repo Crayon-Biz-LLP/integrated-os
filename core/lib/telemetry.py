@@ -38,14 +38,26 @@ CONFIDENCE_AUTO_APPLY = 0.50
 CONFIDENCE_SUGGEST = 0.50
 CONFIDENCE_REVIEW = 0.0
 
-# All subsystems that can emit telemetry
+# All subsystems that can emit telemetry.
+# Every name here MUST have at least one consuming read site
+# (compute_pattern_confidence or get_pattern_summary) — enforced by
+# tests/unit/test_learning_coverage.py.
 SUBSYSTEMS = [
+    # ── Working (write + behavior-changing read) ──
     "classification",
     "entity_extraction",
-    "decision_pulse",
-    "task_routing",
     "email_pipeline",
     "call_pipeline",
+    # ── Newly wired (write + read, fixed in Sep 2026) ──
+    "focal_selection",
+    "home_mode",
+    "fyi_pipeline",
+    "email_drafts",
+    # ── Hint-only read (advisory, not behavior-changing) ──
+    "action_planner",
+    # ── Legacy / read-under-different-name (verify before removing) ──
+    "decision_pulse",
+    "task_routing",
     "practices",
     "context_retrieval",
     "briefing_generation",

@@ -1211,6 +1211,56 @@ async def _process_pulse_impl(auth_secret: str = None, request_id: str = None, t
         st_id = str(sample_task.get("id", "123"))
         st_title = str(sample_task.get("title", "Review the new project brief"))
         
+        # ── Focal selection learning: fetch patterns so the LLM knows
+        # which item types have been historically rejected ──
+        focal_learning_context = "No pattern data yet."
+        try:
+            from core.lib.telemetry import get_pattern_summary
+            focal_patterns = await get_pattern_summary(
+                "focal_selection", min_observations=3, max_patterns=10
+            )
+            if focal_patterns:
+                lines = []
+                for p in focal_patterns:
+                    feat = p.get("features", {})
+                    item_type = feat.get("item_type", "unknown")
+                    rec = p.get("recommendation", "review")
+                    rule = p.get("rule", "")
+                    lines.append(f"- {item_type}: {rec} ({rule})")
+                focal_learning_context = (
+                    "User's historical focal card corrections:\n"
+                    + "\n".join(lines)
+                    + "\nDo NOT pick item types marked 'reject' or 'auto_reject'. "
+                    "Deprioritize types with low confidence."
+                )
+        except Exception:
+            pass  # Fail-open: no patterns → default context
+
+        # ── Home mode learning: fetch patterns so the LLM knows which
+        # modes the user has historically overridden ──
+        home_mode_learning_context = "No pattern data yet."
+        try:
+            from core.lib.telemetry import get_pattern_summary
+            mode_patterns = await get_pattern_summary(
+                "home_mode", min_observations=3, max_patterns=5
+            )
+            if mode_patterns:
+                lines = []
+                for p in mode_patterns:
+                    feat = p.get("features", {})
+                    mode = feat.get("mode", "unknown")
+                    rec = p.get("recommendation", "review")
+                    rule = p.get("rule", "")
+                    lines.append(f"- {mode}: {rec} ({rule})")
+                home_mode_learning_context = (
+                    "User's historical mode overrides:\n"
+                    + "\n".join(lines)
+                    + "\nIf a mode is marked 'reject', do NOT suggest it. "
+                    "The user has consistently switched away from it."
+                )
+        except Exception:
+            pass  # Fail-open: no patterns → default context
+
         ctx = BriefingContext(
             sample_task_id=st_id,
             sample_task_title=st_title,
@@ -1252,6 +1302,8 @@ async def _process_pulse_impl(auth_secret: str = None, request_id: str = None, t
             people_names=people_names,
             universal_task_map=universal_task_map,
             core=json.dumps(core) if core else "None",
+            focal_learning_context=focal_learning_context,
+            home_mode_learning_context=home_mode_learning_context,
         )
         prompt = build_pulse_briefing_prompt(ctx, user_name=user_name)
 
