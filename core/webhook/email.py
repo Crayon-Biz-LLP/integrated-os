@@ -111,7 +111,7 @@ async def _process_email_pending_decision(pending_id: int, decision: str, supaba
         ledger = []
         try:
             from core.lib.suggestion_extractor import extract_suggestions
-            from core.lib.entity_context import extract_context_from_source
+            from core.lib.entity_context import extract_context_from_source, queue_pending_candidates
             from core.actions.executor import execute_actions_harden
             from core.webhook.utils import build_action_ledger
             import os
@@ -119,6 +119,10 @@ async def _process_email_pending_decision(pending_id: int, decision: str, supaba
             chat_id = int(os.getenv("TELEGRAM_CHAT_ID", "0"))
             original_text = row.get('message_text') or row.get('body') or title
             ctx = await extract_context_from_source(original_text, timing="sync")
+            # Extraction is pure (never writes). This email was APPROVED by the
+            # user (or auto-approved), so queue its NEW entities for Quick
+            # Confirmation here — the decision-gated materialization step.
+            queue_pending_candidates(ctx)
             actions, _ = await extract_suggestions(text=original_text, title=title, intent="TASK", entity=resolved_entity)
             if actions:
                 results = await execute_actions_harden(actions, chat_id, text=original_text, source="email", entity=resolved_entity, entity_context=ctx)

@@ -12,47 +12,37 @@ from core.webhook.telegram import send_telegram
 
 # ── Guard 3: Executor data-loss prevention ──
 
-async def _save_fallback_note(text: str, chat_id: int, entity: str = None, source: str = "telegram"):
+async def _save_fallback_note(text: str, chat_id: int, entity: str = None, source: str = "telegram", entity_context=None):
     """Deterministic data-loss prevention: save text as a memory before reporting failure.
 
     Called when the executor has zero valid actions — guarantees the user's
     message is NEVER silently dropped. Always saves to memories so the data
     is retrievable even if the pipeline failed to extract actions.
 
+    Routes through the canonical note writer (create_note_direct) with the
+    message's already-computed card-mode EntityContext — one scan per message,
+    no second entity extraction, and no way for a system note to create pending
+    nodes on its own.
+
     This is Guard 3 of 3 (see also: classify pre-filter in classify.py,
     entity extraction in entity_context.py + suggestion extraction in suggestion_extractor.py).
     """
     try:
-        from core.llm import get_embedding
-        from core.retrieval.pipeline import schedule_index_memory
-        from core.lib.time_utils import compute_expires_at
-        from datetime import datetime, timezone
-        from core.lib.entity_context import extract_context_from_source
-
-        supabase = tenant_aware_client()
-        embedding = (await get_embedding(text)).vector
-        embed_valid = bool(embedding and any(embedding))
-        mem_res = supabase.table("memories").insert({
-            "content": text,
-            "memory_type": "note",
-            "embedding": embedding if embed_valid else None,
-            "embedding_status": "success" if embed_valid else "failed",
-            "source": source or "executor_fallback",
-            "metadata": {"intent": "NOTE", "entity": entity or "INBOX"},
-            "expires_at": compute_expires_at(text, datetime.now(timezone.utc).isoformat())
-        }).execute()
-        memory_id = mem_res.data[0]['id'] if mem_res.data else None
-        if memory_id:
-            schedule_index_memory(memory_id, text, "note", "executor_fallback")
-            # Extract entities with full text
-            ctx = await extract_context_from_source(text, timing="async")
-            if ctx.organization_id:
-                supabase.table('memories').update({'organization_id': ctx.organization_id}).eq('id', memory_id).execute()
-            elif ctx.pending_org_id:
-                supabase.table('memories').update({'pending_org_id': ctx.pending_org_id}).eq('id', memory_id).execute()
-        audit_log_sync("executor", "INFO",
-                       f"Guard 3: Saved fallback note (memory_id={memory_id}) for unprocessable message")
-        return True
+        from core.pulse.tools import create_note_direct
+        result = await create_note_direct(
+            content=text,
+            source=source or "executor_fallback",
+            entity_context=entity_context,
+            extra_metadata={"intent": "NOTE", "entity": entity or "INBOX"},
+        )
+        memory_id = result.get("memory_id")
+        if result.get("action") == "filed" and memory_id:
+            audit_log_sync("executor", "INFO",
+                           f"Guard 3: Saved fallback note (memory_id={memory_id}) for unprocessable message")
+            return True
+        audit_log_sync("executor", "WARNING",
+                       f"Guard 3: Fallback note save failed: {result.get('reason')}")
+        return False
     except Exception as e:
         audit_log_sync("executor", "WARNING", f"Guard 3: Fallback note save failed: {e}")
         return False
@@ -362,7 +352,7 @@ async def execute_planned_actions(
     # ── Guard 3: Zero valid actions → save as note before reporting failure ──
     if not actions:
         resolved_entity = _resolve_entity_from_anchor(entity, active_anchor)
-        saved = await _save_fallback_note(text, chat_id, resolved_entity, source)
+        saved = await _save_fallback_note(text, chat_id, resolved_entity, source, entity_context=entity_context)
         if not suppress_telegram:
             if saved:
                 await send_telegram(chat_id, "📝 Logged as a note — no specific actions identified.")
@@ -390,7 +380,7 @@ async def execute_planned_actions(
     
     # ── Guard 3 (continued): All actions failed validation → save as note ──
     if not valid_actions:
-        saved = await _save_fallback_note(text, chat_id, resolved_entity, source)
+        saved = await _save_fallback_note(text, chat_id, resolved_entity, source, entity_context=entity_context)
         if not suppress_telegram:
             if pre_failures:
                 details = "\n".join(pre_failures)
@@ -406,31 +396,17 @@ async def execute_planned_actions(
     has_closures = any(a.operation in ["close_task", "suppress_instance", "cancel_recurring", "modify_recurring", "reschedule", "update_metadata", "delete_event"] for a in valid_actions)
     if has_closures and text:
         try:
-            from core.llm import get_embedding
-            from core.retrieval.pipeline import schedule_index_memory
-            from core.lib.time_utils import compute_expires_at
-            from datetime import datetime, timezone
-            from core.lib.entity_context import extract_context_from_source
-
-            embedding = (await get_embedding(text)).vector
-            embed_valid = bool(embedding and any(embedding))
-            mem_res = supabase.table("memories").insert({
-                "content": text,
-                "memory_type": "note",
-                "embedding": embedding if embed_valid else None,
-                "embedding_status": "success" if embed_valid else "failed",
-                "source": "webhook_completion",
-                "metadata": {"intent": "COMPLETION", "entity": resolved_entity},
-                "expires_at": compute_expires_at(text, datetime.now(timezone.utc).isoformat())
-            }).execute()
-            memory_id = mem_res.data[0]['id'] if mem_res.data else None
-            if memory_id:
-                schedule_index_memory(memory_id, text, "note", "webhook_completion")
-                ctx = await extract_context_from_source(text, timing="async")
-                if ctx.organization_id:
-                    supabase.table('memories').update({'organization_id': ctx.organization_id}).eq('id', memory_id).execute()
-                elif ctx.pending_org_id:
-                    supabase.table('memories').update({'pending_org_id': ctx.pending_org_id}).eq('id', memory_id).execute()
+            from core.pulse.tools import create_note_direct
+            # Canonical note writer + the message's pre-computed EntityContext:
+            # known orgs link silently; no second scan, no pending creation.
+            result = await create_note_direct(
+                content=text,
+                source="webhook_completion",
+                entity_context=entity_context,
+                extra_metadata={"intent": "COMPLETION", "entity": resolved_entity},
+            )
+            audit_log_sync("executor", "INFO",
+                f"Completion history note saved (memory_id={result.get('memory_id')})")
         except Exception as e:
             audit_log_sync("executor", "WARNING", f"Failed to save completion history: {e}")
 
@@ -441,46 +417,29 @@ async def execute_planned_actions(
     # as a memory whenever the entity detector finds ≥2 context-bearing entities
     # (person, organization, project) — indicating informational density worth preserving.
     #
-    # Also caches the entities result for _detect_new_orgs_and_create_pending to reuse,
-    # avoiding a duplicate ~200-800ms detect_entities() call later in the same request.
-    _cached_entities = None
+    # The note is written through the canonical writer with the message's
+    # pre-computed EntityContext — no second entity scan, so a system note can
+    # never create pending nodes on its own (extraction is read-only; only
+    # decision-gated sites queue candidates).
     if intent == "TASK" and text and not has_closures:
         try:
             from core.lib.entity_detector import detect_entities
-            from core.llm import get_embedding
-            from core.retrieval.pipeline import schedule_index_memory
-            from core.lib.time_utils import compute_expires_at
-            from datetime import datetime, timezone
-            from core.lib.entity_context import extract_context_from_source
+            from core.pulse.tools import create_note_direct
 
             # Gate: count context-bearing entity types only (person, org)
             entities = detect_entities(text)
-            _cached_entities = entities  # Cache for reuse downstream
             entity_count = sum(1 for e in entities
                               if e.type in ('person', 'organization'))
 
             if entity_count >= 2:
-                embedding = (await get_embedding(text)).vector
-                embed_valid = bool(embedding and any(embedding))
-                mem_res = supabase.table("memories").insert({
-                    "content": text,
-                    "memory_type": "note",
-                    "embedding": embedding if embed_valid else None,
-                    "embedding_status": "success" if embed_valid else "failed",
-                    "source": source or "executor",
-                    "metadata": {"intent": "TASK_CONTEXT", "entity": resolved_entity},
-                    "expires_at": compute_expires_at(text, datetime.now(timezone.utc).isoformat()),
-                }).execute()
-                memory_id = mem_res.data[0]['id'] if mem_res.data else None
-                if memory_id:
-                    schedule_index_memory(memory_id, text, "note", "executor")
-                    ctx = await extract_context_from_source(text, cached_entities=_cached_entities, timing="async")
-                    if ctx.organization_id:
-                        supabase.table('memories').update({'organization_id': ctx.organization_id}).eq('id', memory_id).execute()
-                    elif ctx.pending_org_id:
-                        supabase.table('memories').update({'pending_org_id': ctx.pending_org_id}).eq('id', memory_id).execute()
+                result = await create_note_direct(
+                    content=text,
+                    source=source or "executor",
+                    entity_context=entity_context,
+                    extra_metadata={"intent": "TASK_CONTEXT", "entity": resolved_entity},
+                )
                 audit_log_sync("executor", "INFO",
-                    f"Guard B: Saved original TASK message as memory (memory_id={memory_id}, "
+                    f"Guard B: Saved original TASK message as memory (memory_id={result.get('memory_id')}, "
                     f"entities={entity_count}) for {text[:60]}...")
         except Exception as e:
             audit_log_sync("executor", "WARNING", f"Guard B: Failed to save TASK context note: {e}")
@@ -832,23 +791,6 @@ async def execute_planned_actions(
             rollback_msg = f"↩️ Rolled back {len(completed_actions)} previously completed actions." if completed_actions else ""
             error_details = "\n".join(failed_tasks)
             await send_telegram(chat_id, f"⚠️ **Partial Sync Failure**\nSome actions failed. {rollback_msg}\n\nDetails: {error_details}")
-    
-    # ── Gap 1: After NOTE creation, check for new orgs in real-time ──
-    if intent == "NOTE" and any(
-        r.status == "committed" and r.operation in ("create_task", "create_event", "create_note")
-        for r in results
-    ) and text:
-        try:
-            from core.lib.entity_context import extract_context_from_source
-            ctx = await extract_context_from_source(text, cached_entities=_cached_entities, timing="sync")
-            if ctx.pending_org_label and not suppress_telegram:
-                org_lines = ["🏢 *New organization detected:*"]
-                org_lines.append(
-                    f"  • {ctx.pending_org_label} — reply `g{ctx.pending_org_id} yes` to approve"
-                )
-                await send_telegram(chat_id, "\n".join(org_lines))
-        except Exception as e:
-            audit_log_sync("executor", "WARNING", f"NOTE real-time org detection failed (non-critical): {e}")
     
     # Send success messages — the verb table (render_acks) renders one honest
     # line per committed result. Fail-closed: nothing renders unless the DB

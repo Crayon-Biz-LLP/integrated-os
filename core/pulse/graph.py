@@ -349,6 +349,53 @@ async def disambiguate_entity(label: str, candidates: list[dict], source_text: s
         return candidates
 
 
+def resolve_matching_pending_nodes(
+    label: str,
+    node_type: str,
+    graph_node_id: str,
+    owner_id: str = None,
+) -> int:
+    """Resolve same-label pending rows now that a live node exists (Step 2 orphan fix).
+
+    Every path that creates a live graph node funnels through
+    create_graph_node_with_db_record; any pending row with the same label/type
+    was queued by an earlier decision-gated step (or left over from legacy
+    extraction). Resolving it here guarantees a pending row can never stay
+    'pending' once its label is live: it stops re-surfacing in Quick
+    Confirmation, and its pending_org_id links (tasks/memories/enrichment
+    jobs) are re-pointed to the live node via _resolve_pending_org_on_approval.
+
+    Idempotent: rows already approved/merged/rejected are skipped, and callers
+    that later re-mark their own row (process_graph_pending_decision) find a
+    no-op.
+
+    Returns the number of pending rows resolved.
+    """
+    resolved = 0
+    try:
+        from core.services.db import get_tenant
+        owner = owner_id or get_tenant()
+        p_res = supabase.table('pending_nodes') \
+            .select('id, label, node_type') \
+            .eq('owner_id', owner) \
+            .eq('node_type', node_type) \
+            .ilike('label', label) \
+            .in_('status', ['pending', 'flagged', 'awaiting_details']) \
+            .execute()
+        for p in (p_res.data or []):
+            p_id = p['id']
+            supabase.table('pending_nodes').update({'status': 'approved'}).eq('id', p_id).execute()
+            if node_type == 'organization':
+                _resolve_pending_org_on_approval(p_id, graph_node_id)
+            audit_log_sync("pulse", "INFO",
+                f"Resolved same-label pending #{p_id} ('{label}') -> live node {graph_node_id}")
+            resolved += 1
+    except Exception as e:
+        audit_log_sync("pulse", "WARNING",
+            f"Failed to resolve matching pending nodes for '{label}': {e}")
+    return resolved
+
+
 async def create_graph_node_with_db_record(
     label: str,
     node_type: str,
@@ -486,6 +533,10 @@ async def create_graph_node_with_db_record(
             except Exception:
                 pass
 
+            # Step 2 (orphan fix): a live node now exists for this label — resolve
+            # any same-label pending rows so they stop surfacing in Quick Confirmation.
+            resolve_matching_pending_nodes(label, node_type, graph_node_id)
+
             await _ensure_danny_edge(label, node_type)
 
             # Bridge C: Backfill existing notes/tasks that mention this person
@@ -577,6 +628,10 @@ async def create_graph_node_with_db_record(
                 supabase.table('graph_nodes').update({'metadata': node_meta, 'db_record_id': graph_node_id}).eq('id', graph_node_id).execute()
             except Exception:
                 pass
+
+            # Step 2 (orphan fix): resolve any same-label pending org rows — a live
+            # node now exists; re-point pending_org_id on tasks/memories/jobs.
+            resolve_matching_pending_nodes(label, node_type, graph_node_id)
 
             await _ensure_danny_edge(label, node_type)
 

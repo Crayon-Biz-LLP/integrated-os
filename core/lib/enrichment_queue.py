@@ -203,7 +203,10 @@ async def _process_task_graph_enrichment(
     """Process a task_graph enrichment job: graph edges + entity linkage.
 
     Uses pre-extracted EntityContext when available (no re-extraction).
-    Creates task→org BELONGS_TO edge and task→person INVOLVES edges.
+    Creates task→org BELONGS_TO edge (and task→person INVOLVES edges via
+    write_graph_edges_for_task's known-person scan). Never creates pending
+    rows of its own — pending edges for unconfirmed persons are created only
+    at decision-gated approval sites (HITL).
     """
     # --- PREVENTION GUARD ---
     if content and ('[TEST]' in content or content in ['Valid Event', 'Test Event', 'Test Note', 'Test Note for Enrichment']):
@@ -223,21 +226,11 @@ async def _process_task_graph_enrichment(
             organization_id=org_id_for_edges
         )
 
-        # 2. Create person→task INVOLVES edges from EntityContext
-        if entity_context:
-            person_ids = entity_context.get("person_ids", [])
-            pending_person_ids = entity_context.get("pending_person_ids", [])
-            person_names = entity_context.get("person_names", [])
-
-            from core.lib.graph_rules import create_pending_involved_edge
-            for i, person_id in enumerate(person_ids + pending_person_ids):
-                person_name = person_names[i] if i < len(person_names) else ""
-                if person_name:
-                    create_pending_involved_edge(
-                        task_label=content,
-                        person_label=person_name,
-                        source_text=entity_context.get("source_text", ""),
-                    )
+        # 2. (Removed) Person→task INVOLVES edge proposals from EntityContext.
+        # Historically this created pending edges for unconfirmed persons from
+        # the sentinel background job — ungated HITL rows the user never asked
+        # for. Known persons are covered by write_graph_edges_for_task's
+        # known-person scan above; new persons get edges at approval (Bridge C).
 
         # 3. Entity extraction — use extract_context_from_source with full text
         if entity_context:

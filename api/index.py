@@ -5832,6 +5832,11 @@ async def _run_suggestion_confirm_background(body: dict):
                     .eq('owner_id', owner_id) \
                     .limit(1).execute()
                 if existing_check and existing_check.data:
+                    # Step 2 (orphan fix): a live node exists for this label —
+                    # resolve any leftover same-label pending row so it stops
+                    # surfacing in Quick Confirmation.
+                    from core.pulse.graph import resolve_matching_pending_nodes
+                    resolve_matching_pending_nodes(label, node_type, existing_check.data[0]['id'], owner_id)
                     created_items.append({"type": node_type, "title": label, "entity_id": existing_check.data[0]['id']})
                     continue
 

@@ -206,3 +206,158 @@ class TestExtractContextEdgeCases:
             "owner-123",
         )
         assert ctx is not None
+
+
+# ── queue_pending_candidates: decision-gated materialization (Step 1) ─────────
+
+
+class TestQueuePendingCandidates:
+    """Extraction is pure — queue_pending_candidates() is the ONLY pending writer.
+
+    These tests pin the orchestration (which candidates get queued, dedup,
+    existing-org precedence) with the DB helpers monkeypatched.
+    """
+
+    def test_org_queued_when_unmatched_label(self, monkeypatch):
+        from core.lib.entity_context import EntityContext, queue_pending_candidates
+        calls = []
+
+        def fake_create_pending_org(label, source_text, owner_id=None):
+            calls.append(("org", label))
+            return 101
+
+        monkeypatch.setattr(
+            "core.lib.entity_context._create_pending_org", fake_create_pending_org
+        )
+        ctx = EntityContext(pending_org_label="Nova Dynamics", source_text="msg")
+        queue_pending_candidates(ctx, owner_id="owner-1")
+        assert calls == [("org", "Nova Dynamics")]
+        assert ctx.pending_org_id == 101
+
+    def test_org_not_queued_when_existing_org_wins(self, monkeypatch):
+        from core.lib.entity_context import EntityContext, queue_pending_candidates
+        calls = []
+
+        def fake_create_pending_org(label, source_text, owner_id=None):
+            calls.append(label)
+            return 101
+
+        monkeypatch.setattr(
+            "core.lib.entity_context._create_pending_org", fake_create_pending_org
+        )
+        # Existing org already resolved → never queue the new candidate
+        ctx = EntityContext(
+            organization_id="live-uuid", organization_name="Solvstrat",
+            pending_org_label="Nova Dynamics", source_text="msg",
+        )
+        queue_pending_candidates(ctx, owner_id="owner-1")
+        assert calls == []
+        assert ctx.pending_org_id is None
+
+    def test_no_label_no_queue(self, monkeypatch):
+        from core.lib.entity_context import EntityContext, queue_pending_candidates
+        calls = []
+
+        def fake_create_pending_org(label, source_text, owner_id=None):
+            calls.append(label)
+            return 101
+
+        monkeypatch.setattr(
+            "core.lib.entity_context._create_pending_org", fake_create_pending_org
+        )
+        ctx = EntityContext(source_text="msg")
+        queue_pending_candidates(ctx, owner_id="owner-1")
+        assert calls == []
+
+    def test_live_org_resolved_when_pending_creation_skipped(self, monkeypatch):
+        """Step 2: when a live node already exists for the candidate, the queue
+        resolves to it directly instead of leaving the org unlinked (a stale
+        'approved' pending id is never stamped as pending_org_id)."""
+        from core.lib.entity_context import EntityContext, queue_pending_candidates
+        calls = []
+
+        def fake_create_pending_org(label, source_text, owner_id=None):
+            calls.append(label)
+            return None  # live node already exists → no pending row created
+
+        monkeypatch.setattr(
+            "core.lib.entity_context._create_pending_org", fake_create_pending_org
+        )
+        monkeypatch.setattr(
+            "core.lib.entity_context._find_existing_org",
+            lambda label, owner_id=None: {"id": "live-org-uuid", "label": "Nova Dynamics"},
+        )
+        ctx = EntityContext(pending_org_label="Nova Dynamics", source_text="msg")
+        queue_pending_candidates(ctx, owner_id="owner-1")
+        assert calls == ["Nova Dynamics"]
+        assert ctx.pending_org_id is None
+        assert ctx.organization_id == "live-org-uuid"
+        assert ctx.organization_name == "Nova Dynamics"
+
+    def test_matched_persons_skipped_unmatched_queued(self, monkeypatch):
+        from core.lib.entity_context import EntityContext, queue_pending_candidates
+        calls = []
+
+        def fake_create_pending_person(label, source_text, owner_id=None):
+            calls.append(label)
+            return 201
+
+        monkeypatch.setattr(
+            "core.lib.entity_context._create_pending_person", fake_create_pending_person
+        )
+        ctx = EntityContext(
+            person_ids=["live-person-uuid"],
+            person_names=["Marcus"],
+            detected_entities=[
+                {"type": "person", "label": "Marcus", "matched": True},   # live — skip
+                {"type": "person", "label": "Sharukh", "matched": False}, # new — queue
+                {"type": "organization", "label": "Spartan Schools"},      # not a person
+            ],
+            source_text="msg",
+        )
+        queue_pending_candidates(ctx, owner_id="owner-1")
+        assert calls == ["Sharukh"]
+        assert ctx.pending_person_ids == [201]
+
+    def test_person_dedup_by_existing_pending_id(self, monkeypatch):
+        from core.lib.entity_context import EntityContext, queue_pending_candidates
+        calls = []
+
+        def fake_create_pending_person(label, source_text, owner_id=None):
+            calls.append(label)
+            return 201  # same id as already-tracked pending
+
+        monkeypatch.setattr(
+            "core.lib.entity_context._create_pending_person", fake_create_pending_person
+        )
+        ctx = EntityContext(
+            pending_person_ids=[201],
+            detected_entities=[{"type": "person", "label": "Sharukh", "matched": False}],
+            source_text="msg",
+        )
+        queue_pending_candidates(ctx, owner_id="owner-1")
+        # Helper returns the existing id → appended once (no duplicate)
+        assert ctx.pending_person_ids == [201]
+
+    def test_none_ctx_noop(self, monkeypatch):
+        from core.lib.entity_context import queue_pending_candidates
+        queue_pending_candidates(None, owner_id="owner-1")
+        queue_pending_candidates(None)
+
+    def test_empty_label_person_skipped(self, monkeypatch):
+        from core.lib.entity_context import EntityContext, queue_pending_candidates
+        calls = []
+
+        def fake_create_pending_person(label, source_text, owner_id=None):
+            calls.append(label)
+            return 201
+
+        monkeypatch.setattr(
+            "core.lib.entity_context._create_pending_person", fake_create_pending_person
+        )
+        ctx = EntityContext(
+            detected_entities=[{"type": "person", "label": "   ", "matched": False}],
+            source_text="msg",
+        )
+        queue_pending_candidates(ctx, owner_id="owner-1")
+        assert calls == []

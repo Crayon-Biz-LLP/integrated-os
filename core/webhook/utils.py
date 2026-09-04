@@ -203,8 +203,12 @@ async def _process_channel_pending_decision(channel: str, pending_id: int, decis
         
         try:
             original_text = msg.get('body') or title
-            from core.lib.entity_context import extract_context_from_source
+            from core.lib.entity_context import extract_context_from_source, queue_pending_candidates
             ctx = await extract_context_from_source(original_text, timing="sync")
+            # Extraction is pure (never writes). This message was APPROVED by the
+            # user (or auto-approved), so queue its NEW entities for Quick
+            # Confirmation here — the decision-gated materialization step.
+            queue_pending_candidates(ctx)
             actions, _ = await extract_suggestions(
                 text=original_text,
                 title=title,

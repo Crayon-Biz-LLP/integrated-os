@@ -190,6 +190,7 @@ async def create_note_direct(
     active_anchor: dict = None,
     project_name: str = None,  # Kept for backward compat — no longer used
     entity_context=None,  # EntityContext from extract_context_from_source
+    extra_metadata: dict = None,  # Optional labels merged into the note metadata
 ) -> dict:
     """Direct note creation — no process_single_dump dependency.
 
@@ -198,6 +199,10 @@ async def create_note_direct(
     Falls back to entity_linker for backward compatibility.
     Stores thread provenance (session_id, active_anchor) in metadata for
     retroactive linking.
+    extra_metadata: caller-supplied labels merged into the note's metadata
+        (e.g. {'intent': 'COMPLETION', 'entity': <anchor>}) — used by the
+        executor's system notes so their provenance labels survive routing
+        through this canonical note writer.
     Returns {"action": "filed"|"error", "memory_id": id, "reason": str}.
     """
     memory_id = None
@@ -269,6 +274,12 @@ async def create_note_direct(
             metadata["person_ids"] = person_ids
         if person_names:
             metadata["person_names"] = person_names
+
+        # Merge caller-supplied labels (executor system notes: intent/entity
+        # provenance). Standard resolution keys (org/person/thread) are set
+        # above and take precedence on any collision.
+        if extra_metadata:
+            metadata.update(extra_metadata)
 
         # ── Layer 3: Thread provenance for retroactive linking ──
         if session_id:

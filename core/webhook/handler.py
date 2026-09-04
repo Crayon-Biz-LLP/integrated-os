@@ -1706,7 +1706,7 @@ async def _process_webhook(update: dict):
                 # Path D: no-action terminal — no card AND no actions.
                 # Save fallback note + honest reply. User's message never vanishes.
                 from core.actions.executor import _save_fallback_note
-                saved = await _save_fallback_note(text, chat_id, entity, source)
+                saved = await _save_fallback_note(text, chat_id, entity, source, entity_context=ctx)
                 audit_log_sync("webhook", "WARNING",
                     f"No-action terminal: planner returned 0 actions "
                     f"(extraction degraded?); fallback note saved={bool(saved)}")

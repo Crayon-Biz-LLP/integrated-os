@@ -6,7 +6,9 @@ Pins fixes from the PB pipeline audit (session 78):
   - Bug #1:  LLMResponse.text must be accessed via attribute, not .strip()
   - Bug #7:  Entity loop must break after first org assignment
   - Bug #8:  Backfill must use word-boundary matching, not substring
-  - Bug #20: timing="sync" must create pending nodes for org linkage
+  - Bug #20: extraction is PURE — pending nodes are created only by the
+    decision-gated queue_pending_candidates() (see Step 1 hardened fix);
+    sync/card timing never writes from extraction
 
 Marker: ingest
 Layer: L1 unit (no DB, pure logic)
@@ -376,11 +378,16 @@ class TestBackfillWordBoundary:
         assert longest == "Chennai North"
 
 
-# ── Bug #20: timing="sync" creates pending nodes ─────────────────────────
+# ── Bug #20: extraction is pure — pending nodes only via the gated queue ──
 
 class TestTimingSync:
-    """timing="sync" must create pending nodes so reconcile_action_orgs can link orgs.
-    Before fix: timing="card" was a dry run → pending_org_id stayed null."""
+    """Extraction NEVER writes pending nodes (HITL — "only decisions create").
+
+    A sync/card EntityContext carries a detected label but never a pending id;
+    pending rows originate only from queue_pending_candidates(), called by
+    decision-gated sites (message/email approval). This replaced the old rule
+    where timing="sync" created pending nodes inside extraction (the ungated
+    junk-node source)."""
 
     def test_sync_timing_sets_pending_org_label(self):
         """Entity context with timing="sync" should have pending_org_label set."""
