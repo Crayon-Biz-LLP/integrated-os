@@ -25,17 +25,20 @@ Modal function, not a web request.
 | Email ingest (Gmail/Outlook) | **GHA** | `email_ingest.yml` |
 | Journal + graph ingest (incl. graph backfill) | **GHA** | `ingest.yml` (runs `backfill_graph` before each pulse slot) |
 | Call recording ingest | **GHA** | `call_ingest.yml` |
-| Graph backfill (standalone nightly) | **disabled** | `backfill_graph.yml` — schedule removed (redundant with ingest.yml); manual dispatch only |
 | Retrieval index backfill | **GHA** | `retrieval_backfill.yml` |
-| Dedupe pending nodes | **GHA** | `dedupe_pending.yml` |
 | Clean duplicate nodes | **GHA** | `clean_duplicate_nodes.yml` |
 | Concept sweep | **GHA** | `concept_sweep.yml` |
 | Knowledge synthesis | **GHA** | `synthesis.yml` |
 | Persona synthesis | **GHA** | `persona_synthesis.yml` |
 | Memory clusters / orphan cleanup | **GHA** | `memory_clusters.yml` |
-| Research worker | **GHA** | `research_worker.yml` |
 | Renew Drive watch channel | **GHA** | `renew_drive_channel.yml` |
 | System health check | **GHA** | `health.yml` |
+
+**Retired (Sep 2026):** `backfill_graph.yml` (graph backfill retired — one-time script replaces it),
+`dedupe_pending.yml` + `core/skills/dedupe_pending.py` (duplicate cron of the inline approval-path
+merge proposal — proposals lacked origin linkage and never resolved), `research_worker.yml` (research
+agent no longer scheduled), `validate_deployment.yml` (auto-trigger broke after the CI workflow rename;
+removed), `diag-connectivity.yml` (throwaway diagnostic).
 
 ## Rules (enforced by history, not by code)
 

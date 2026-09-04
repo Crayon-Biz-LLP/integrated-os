@@ -7,10 +7,10 @@ on:
     #   Weekday slots 07:30/11:30/14:30/17:30 IST → 07:10/11:10/14:10/17:10 IST
     #   Weekday evening 20:00 IST → 19:40 IST
     #   Weekend 08:00/15:00 IST → 07:40/14:40 IST
-    # NOTE: graph backfill previously ran here as Step 2 — the 25-min job
-    # budget could not fit a 25-60 min backfill, so every run was cancelled
-    # at the timeout. Backfill now runs in its own workflow (backfill_graph.yml,
-    # 60-min budget, nightly + manual dispatch).
+    # NOTE: graph backfill previously ran here as Step 2 — retired Sep 2026
+    # (backfill_graph.py + backfill_graph.yml removed; historical linking is
+    # handled by the suggestion-card pipeline, on-approval backfill, and a
+    # one-time archived script).
     - cron: '40 1,5,8,11 * * 1-5'
     - cron: '10 14 * * 1-5'
     - cron: '10 2,9 * * 0,6'
