@@ -724,8 +724,10 @@ async def _backfill_existing_content_for_entity(
                         continue
 
                     current_meta[entity_id_field] = str(id_value)
-                    if node_type == 'organization':
-                        current_meta['organization_name'] = label
+                    # Hardened Sep 2026: no metadata.organization_name write — the
+                    # name is a redundant second copy of org identity that
+                    # historically diverged from the resolved id (Plumfleet id +
+                    # 'Qhord' name). Consumers join to graph_nodes for the label.
 
                     try:
                         supabase.table('memories') \

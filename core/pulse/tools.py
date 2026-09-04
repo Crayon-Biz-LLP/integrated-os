@@ -263,12 +263,15 @@ async def create_note_direct(
         if pending_org_id:
             insert_data["pending_org_id"] = pending_org_id
 
-        # Build metadata with all available entity context
+        # Build metadata with all available entity context.
+        # INVARIANT (hardened Sep 2026): the org's NAME is never stored in note
+        # metadata — only the id (column + metadata.organization_id). The name is
+        # a second copy of org identity and historically diverged from the
+        # resolved id (e.g. Plumfleet id + 'Qhord' name from the planner's
+        # caller-supplied string). Anyone needing the name joins to graph_nodes.
         metadata = {}
         if resolved_org_id:
             metadata["organization_id"] = resolved_org_id
-        if organization_name:
-            metadata["organization_name"] = organization_name
         # Store person entities (from EntityContext or fallback)
         if person_ids:
             metadata["person_ids"] = person_ids
@@ -276,10 +279,18 @@ async def create_note_direct(
             metadata["person_names"] = person_names
 
         # Merge caller-supplied labels (executor system notes: intent/entity
-        # provenance). Standard resolution keys (org/person/thread) are set
-        # above and take precedence on any collision.
+        # provenance). Resolution keys (org/person/thread) are applied AFTER
+        # the merge so they always win on collision — a caller can never
+        # override the resolved org id via extra_metadata.
         if extra_metadata:
             metadata.update(extra_metadata)
+        # Resolution keys re-asserted post-merge (single source of truth).
+        if resolved_org_id:
+            metadata["organization_id"] = resolved_org_id
+        if person_ids:
+            metadata["person_ids"] = person_ids
+        if person_names:
+            metadata["person_names"] = person_names
 
         # ── Layer 3: Thread provenance for retroactive linking ──
         if session_id:
@@ -291,13 +302,15 @@ async def create_note_direct(
                 metadata["thread_entity_name"] = anchor_name
                 metadata["thread_entity_type"] = anchor_type
                 # If entity resolution didn't find an org but the thread anchor has one,
-                # use the thread anchor as a third-layer fallback
-                if not organization_id:
+                # use the thread anchor as a third-layer fallback. Gate on the
+                # RESOLVED result (not the caller's raw param) so an anchor can
+                # never override an org that entity_context already resolved
+                # (hardened Sep 2026: anchor gate previously keyed on the caller
+                # param, allowing metadata to diverge from the DB column).
+                if not resolved_org_id and not pending_org_id:
                     last_org_id = active_anchor.get("last_org_id") or active_anchor.get("organization_id")
                     if last_org_id:
-                        organization_id = last_org_id
                         metadata["organization_id"] = last_org_id
-                        metadata["organization_name"] = anchor_name
 
         if metadata:
             insert_data["metadata"] = metadata
