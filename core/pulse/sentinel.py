@@ -147,12 +147,24 @@ async def process_sentinel(auth_secret: str, trigger: str = "cron"):
     results = []
     for uid in uids:
         try:
-            with tenant_scope(uid):
-                results.append(await _process_sentinel_impl(auth_secret, trigger))
+            results.append(await process_sentinel_for_tenant(uid, auth_secret, trigger))
         except Exception as e:
             audit_log_sync("sentinel", "ERROR", f"Sentinel failed for tenant {uid}: {e}")
             results.append({"tenant": uid, "error": str(e)})
     return {"success": True, "tenants": len(uids), "results": results}
+
+
+async def process_sentinel_for_tenant(uid: str, auth_secret: str, trigger: str = "cron"):
+    """Run ONE tenant's sentinel under its own tenant scope.
+
+    The per-tenant unit of the sentinel fan-out (mirrors
+    process_pulse_for_tenant in core/pulse/briefing.py). Used by the Modal
+    check_sentinel_tenant worker and the /api/sentinel inline fallback so
+    behavior is identical whether a tenant runs in-request or in its own
+    container.
+    """
+    with tenant_scope(uid):
+        return await _process_sentinel_impl(auth_secret, trigger)
 
 
 async def _process_sentinel_impl(auth_secret: str, trigger: str = "cron"):

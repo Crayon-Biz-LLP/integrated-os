@@ -253,23 +253,76 @@ async def pulse_cron_route(request: Request):
         "total_due": len(due),
     }
 
-# --- THE SENTINEL WATCHER (Vercel Cron) ---
+# --- THE SENTINEL WATCHER (cron-job.org — per-tenant fan-out) ---
 @app.get("/api/sentinel")
 @app.post("/api/sentinel")
 async def sentinel_route(request: Request):
-    """Triggered by Vercel Cron every 5 minutes."""
-    # Vercel Cron uses a bearer token
+    """Triggered by cron-job.org every 5 minutes.
+
+    Fan-out: spawns ONE dedicated Modal worker (check_sentinel_tenant, 900s
+    timeout) per active tenant and returns immediately, instead of running
+    every tenant's sentinel (meeting nudges + piggybacked maintenance sweeps)
+    sequentially inside this web request — which overran the 30s cron-job.org
+    timeout whenever calendar APIs were slow or there was indexing work to do.
+    Each tenant runs in its own container with its own timeout budget.
+
+    If the Modal SDK is unavailable (local dev / tests), it falls back to the
+    inline sequential path.
+    """
     auth_header = request.headers.get("Authorization", "")
     cron_secret = os.getenv("CRON_SECRET", os.getenv("PULSE_SECRET"))
-    
+
     if not cron_secret:
         raise HTTPException(status_code=500, detail="CRON_SECRET missing")
-        
+
     if auth_header != f"Bearer {cron_secret}" and request.headers.get("x-pulse-secret") != cron_secret:
         raise HTTPException(status_code=401, detail="Unauthorized")
-        
-    result = await process_sentinel(auth_secret=cron_secret, trigger="cron")
-    return result
+
+    uids = active_user_ids()
+    if not uids:
+        result = await process_sentinel(auth_secret=cron_secret, trigger="cron")
+        return result
+
+    try:
+        import modal
+    except ImportError:
+        # Local dev / tests without the Modal SDK — inline sequential fallback.
+        result = await process_sentinel(auth_secret=cron_secret, trigger="cron")
+        result["mode"] = "inline_fallback"
+        return result
+
+    spawned = []
+    failed = []
+    for uid in uids:
+        try:
+            await modal.Function.from_name("rhodey-os", "check_sentinel_tenant").spawn.aio(
+                uid=uid, auth_secret=cron_secret, trigger="cron"
+            )
+            spawned.append(uid)
+        except Exception as e:
+            audit_log_sync("sentinel", "WARNING", f"check_sentinel_tenant spawn failed for {uid}: {e}")
+            failed.append(uid)
+
+    inline_results = []
+    if failed:
+        from core.pulse.sentinel import process_sentinel_for_tenant
+
+        for uid in failed:
+            try:
+                inline_results.append(
+                    await process_sentinel_for_tenant(uid, cron_secret, trigger="cron")
+                )
+            except Exception as e:
+                audit_log_sync("sentinel", "WARNING", f"Inline fallback sentinel failed for {uid}: {e}")
+
+    return {
+        "success": True,
+        "mode": "fanout",
+        "spawned": len(spawned),
+        "inline_fallback": len(inline_results),
+        "tenants": [str(u)[:8] for u in spawned],
+        "total": len(uids),
+    }
 
 
 

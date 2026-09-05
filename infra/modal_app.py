@@ -154,6 +154,38 @@ def brief_tenant(uid: str, auth_secret: str | None = None, trigger: str = "cron"
     return result
 
 
+# ── Per-Tenant Sentinel Worker ────────────────────────────────────────
+# The 5-min /api/sentinel (cron-job.org) no longer runs every tenant's
+# sentinel sequentially inside the web request — meeting nudges plus the
+# piggybacked maintenance sweeps (index queue, raw-dump cleanup, retry-failed
+# runs) routinely overran the 30s cron-job.org timeout. Instead the web
+# endpoint spawns ONE of these per active tenant, in parallel, each with its
+# own 900s timeout and its own tenant scope — a slow calendar API or a heavy
+# index-queue sweep from one tenant can never starve or hold up the others.
+# Same pattern as brief_tenant: separate container, explicit tenant_scope(uid)
+# re-applied because the contextvar does NOT propagate across containers.
+@app.function(
+    secrets=secrets,
+    timeout=900,
+)
+def check_sentinel_tenant(uid: str, auth_secret: str | None = None, trigger: str = "cron"):
+    """Run ONE tenant's sentinel (meeting nudge + piggybacked maintenance) in
+    a dedicated container.
+
+    Delegates to core.pulse.sentinel.process_sentinel_for_tenant — the exact
+    per-tenant unit the inline loop uses — so behavior is identical whether a
+    sentinel runs in-request or here.
+    """
+    import asyncio
+    from core.pulse.sentinel import process_sentinel_for_tenant
+
+    result = asyncio.run(
+        process_sentinel_for_tenant(uid, auth_secret=auth_secret, trigger=trigger)
+    )
+    print(f"[sentinel-tenant:{uid[:8]}] {result}", flush=True)
+    return result
+
+
 # ── Beeper Bridge (Phase B1): sync the Matrix stream every 60s ───────
 # PAUSED (Aug 13): the scheduled tick is removed. The VPS Desktop bridge
 # (core/skills/beeper_desktop.py, cron every 5 min on the always-on Oracle
