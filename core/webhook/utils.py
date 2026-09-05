@@ -208,7 +208,12 @@ async def _process_channel_pending_decision(channel: str, pending_id: int, decis
             # Extraction is pure (never writes). This message was APPROVED by the
             # user (or auto-approved), so queue its NEW entities for Quick
             # Confirmation here — the decision-gated materialization step.
-            queue_pending_candidates(ctx)
+            # Provenance: every pending row created by this approval is traced
+            # to the messages row that produced it (untraceable-ghost guard).
+            queue_pending_candidates(ctx, provenance={
+                "origin_table": "messages", "origin_id": msg.get("id"),
+                "channel": channel,
+            })
             actions, _ = await extract_suggestions(
                 text=original_text,
                 title=title,

@@ -122,7 +122,11 @@ async def _process_email_pending_decision(pending_id: int, decision: str, supaba
             # Extraction is pure (never writes). This email was APPROVED by the
             # user (or auto-approved), so queue its NEW entities for Quick
             # Confirmation here — the decision-gated materialization step.
-            queue_pending_candidates(ctx)
+            # Provenance: every pending row created by this approval is traced
+            # to the messages row that produced it (untraceable-ghost guard).
+            queue_pending_candidates(ctx, provenance={
+                "origin_table": "messages", "origin_id": row.get("id"),
+            })
             actions, _ = await extract_suggestions(text=original_text, title=title, intent="TASK", entity=resolved_entity)
             if actions:
                 results = await execute_actions_harden(actions, chat_id, text=original_text, source="email", entity=resolved_entity, entity_context=ctx)
