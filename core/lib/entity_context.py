@@ -19,6 +19,7 @@ from dataclasses import dataclass, field, asdict
 from typing import Optional
 import json
 import logging
+import re
 
 from core.lib.audit_logger import audit_log_sync
 
@@ -59,6 +60,12 @@ class EntityContext:
     extraction_method: str = ""  # "deterministic", "llm", "hybrid"
     extraction_timing: str = ""  # "sync", "async", "card"
 
+    # Provenance for any pending rows this context queues (origin_table /
+    # origin_id) — lets every pending node be traced to its source message /
+    # raw_dump / run. Optional: when absent, queue_pending_candidates emits a
+    # WARNING so untraceable-ghost rows are visible for cleanup.
+    pending_provenance: Optional[dict] = None
+
     def is_empty(self) -> bool:
         return (self.organization_id is None and self.pending_org_id is None
                 and not self.person_ids and not self.pending_person_ids)
@@ -85,6 +92,7 @@ class EntityContext:
             organization_name=data.get("organization_name"),
             pending_org_id=data.get("pending_org_id"),
             pending_org_label=data.get("pending_org_label"),
+            pending_provenance=data.get("pending_provenance"),
             person_ids=data.get("person_ids") or [],
             person_names=data.get("person_names") or [],
             pending_person_ids=data.get("pending_person_ids") or [],
@@ -97,16 +105,205 @@ class EntityContext:
         )
 
 
-# ── Pending node creation helpers ────────────────────────────────────────────
+# ── Evidence gate: common words / generic patterns / label quality ──────────
+#
+# The evidence gate is NOT a growing blacklist of past failures. There is a
+# SMALL bounded set of common words that, when they appear as a single token
+# in a person/org candidate, are rejected as clearly-non-entity (these are the
+# core of known junk labels like "Please", "Chief", "Staff"). Everything else
+# is gated by PATTERNS and heuristics that generalize instead of enumerating:
+#
+#   1. Generic-pattern rejection — single-word meta-categories (news/media/
+#      update/status/...), discourse markers and common verbs (please/sure/
+#      hey/what/you/...), and single letters are never entities.
+#   2. Label-quality heuristics — multi-word proper-noun-ish labels and all-caps
+#      abbreviations are evidence-POSITIVE signals.
+#   3. LLM-only minimum evidence — a person/org candidate that only the LLM
+#      phase produced (no deterministic signal, not a known name) must clear an
+#      evidence bar before it may become a pending row.
+#
+# If a NEW class of junk appears that isn't caught, the fix is to tighten the
+# evidence logic (add a heuristic, raise the LLM-evidence bar, add a generic
+# pattern), NOT to add another word to a list.
+_COMMON_WORDS: frozenset = frozenset({
+    "please", "chief", "staff",
+})
 
-def _create_pending_org(label: str, source_text: str, owner_id: str = None) -> Optional[int]:
-    """Create a pending org node, deduplicating against existing pending/approved nodes.
+_GENERIC_PATTERNS = [
+    # generic single-word categories / meta-labels
+    re.compile(r"^\s*(news|media|info|information|update|status|report|summary"
+               r"|feedback|note|comment|remark|message|chat|text|input|data"
+               r"|file|document|attachment|link|url|website|page|entry"
+               r"|task|note|meeting|call|email|thread|conversation|session"
+               r"|event|reminder|request|command|phrase|idea|concept|issue"
+               r"|question|reply|follow|review|submit|pay|clean|finish|start"
+               r"|stop|open|close|send|get|make|give|take|known|unknown)\s*$", re.I),
+    # sentence fragments / discourse markers / common verbs that should never be
+    # a person or org label (catches "Please", "Sure", "Ok", "Yes", "No",
+    # "What", "You", "Why", "How", "Hey", "Hi", "Thanks", etc. as a label)
+    re.compile(r"^\s*(please|sure|ok|okay|yes|no|yeah|nope|maybe|possibly"
+               r"|absolutely|definitely|certainly|probably|hopefully|wow|omg"
+               r"|oops|ugh|aha|oh|hey|hi|hello|thanks|thank|yep|nah|sure)\s*$", re.I),
+    # single lowercase letter — never an entity
+    re.compile(r"^\s*[a-z]\s*$", re.I),
+]
 
-    Returns pending_nodes.id or None if org already exists as approved graph node.
+
+def _label_is_common_word(label: str) -> bool:
+    """One evidence-gate signal: single token that is a common word."""
+    t = label.strip()
+    if not t or " " in t:
+        return False
+    return t.lower() in _COMMON_WORDS
+
+
+def _label_matches_generic_pattern(label: str) -> bool:
+    """One evidence-gate signal: label matches a clearly-generic/nonsensical pattern."""
+    t = label.strip()
+    if not t:
+        return False
+    for pat in _GENERIC_PATTERNS:
+        if pat.fullmatch(t):
+            return True
+    return False
+
+
+def _label_is_all_caps_abbreviation(label: str) -> bool:
+    """An evidence-POSITIVE signal: all-caps abbreviation (e.g. DBS, AWS, ICP)."""
+    t = label.strip()
+    if not t or " " in t or not t.isupper():
+        return False
+    return len(t) >= 2
+
+
+def _label_has_capitalization_heuristic(label: str) -> bool:
+    """An evidence-POSITIVE signal: multi-word label with normal proper-noun-ish caps."""
+    parts = label.split()
+    if len(parts) < 2:
+        return False
+    return all(p[0].isupper() for p in parts if p and not p.isupper())
+
+
+def _rejected_pending_label(label: str, kind: str) -> bool:
+    """Evidence gate: should a candidate label be REJECTED before becoming a
+    pending node?
+
+    Returns True only when the label is clearly non-entity under the bounded
+    evidence heuristics (too short, common word, or clearly-generic pattern).
+    This is a SAFETY NET that catches the common-word / generic-phrase junk
+    class WITHOUT enumerating every past failure. The primary mechanism is
+    structural evidence (deterministic detection, known names, entity-like
+    label quality, dedup); this helper is the bounded safety net on top.
+    """
+    t = label.strip()
+    if not t:
+        return True
+    if len(t) <= 2:
+        return True
+    if _label_is_common_word(t):
+        return True
+    if _label_matches_generic_pattern(t):
+        return True
+    return False
+
+
+def _llm_candidate_has_minimum_evidence(
+    label: str,
+    detected_entities: Optional[list],
+    person_names: Optional[list],
+) -> bool:
+    """Evidence gate for a candidate that came only from the LLM phase.
+
+    A purely-LLM person/org candidate must clear at least ONE of:
+      - it was also detected deterministically (appears in detected_entities), OR
+      - it already exists as a person name on the context (person_names), OR
+      - it is an all-caps abbreviation (DBS, AWS, ICP-like), OR
+      - it is a multi-word proper-noun-ish label that does NOT trigger the
+        generic-pattern rejection, OR
+      - it is a single token that is >= 3 chars, NOT a common word, and does
+        NOT match a generic pattern (entity-like single token).
+
+    This is the main guard against LLM-only over-guesses like 'Please' becoming
+    a pending person WITHOUT structural evidence.
+    """
+    t = label.strip()
+    if not t:
+        return False
+    if _rejected_pending_label(t, "person"):
+        return False
+
+    # Strong evidence: already detected deterministically
+    if detected_entities:
+        for e in detected_entities:
+            el = (e.get("label") or "").strip().lower()
+            if el == t.lower():
+                return True
+
+    # Strong evidence: already a known person name on the context
+    if person_names:
+        for n in person_names:
+            nl = (n or "").strip().lower()
+            if nl == t.lower():
+                return True
+
+    # Positive signal: all-caps abbreviation
+    if _label_is_all_caps_abbreviation(t):
+        return True
+
+    # Positive signal: multi-word proper-noun-ish label
+    if _label_has_capitalization_heuristic(t):
+        return True
+
+    # Multi-word label that is not an abbreviation and not capitalization-heuristic:
+    # allow only if it doesn't trigger the generic-pattern rejection
+    if " " in t:
+        if not _label_matches_generic_pattern(t):
+            return True
+
+    # Single-token label: require entity-like quality (not common word, not
+    # generic, >= 3 chars)
+    if " " not in t:
+        if _label_is_common_word(t) or _label_matches_generic_pattern(t):
+            return False
+        return len(t) >= 3 and t[0].isupper()
+
+    return False
+
+
+# ── Pending node creation helpers (decision-gated, evidence-gated) ──────────
+
+def _create_pending_org(
+    label: str,
+    source_text: str,
+    owner_id: Optional[str] = None,
+    *,
+    provenance: Optional[dict] = None,
+) -> Optional[int]:
+    """Create a pending org node, gated by evidence + provenance, deduplicating
+    against existing pending/approved nodes.
+
+    provenance: optional dict with keys origin_table, origin_id (and optional
+    source_text_hash). When present, written to pending_nodes.provenance as JSON.
+    When absent, the row is still created (live call sites aren't provenance-
+    aware yet) but a WARNING is emitted so untraceable-ghost rows are visible.
+
+    Returns pending_nodes.id or None if the candidate was rejected by the
+    evidence gate or already exists as an approved graph node.
     """
     from core.services.db import tenant_aware_client, get_tenant
     supabase = tenant_aware_client()
     owner_id = owner_id or get_tenant()
+
+    label = (label or "").strip()
+    if not label:
+        return None
+
+    # ── Evidence gate: reject clearly-non-entity labels ─────────────────────
+    if _rejected_pending_label(label, "organization"):
+        audit_log_sync("entity_context", "WARNING",
+            f"Rejected pending org candidate '{label}' — fails evidence gate "
+            f"(generic/common-word label)")
+        return None
 
     # Check pending nodes first (avoid duplicates). Only an UNRESOLVED pending
     # row counts — an 'approved' row already has a live graph node (Step 2), so
@@ -124,15 +321,25 @@ def _create_pending_org(label: str, source_text: str, owner_id: str = None) -> O
     if existing_gn and existing_gn.data:
         return None  # Already approved — caller should use graph_node id
 
-    # Create new pending node
+    # Create new pending node (with provenance when available)
+    row = {
+        'label': label,
+        'node_type': 'organization',
+        'source_text': source_text[:200] if source_text else '',
+        'status': 'pending',
+        'owner_id': owner_id,
+    }
+    if provenance:
+        try:
+            row['provenance'] = json.dumps(provenance)
+        except Exception:
+            row['provenance'] = None
+    else:
+        audit_log_sync("entity_context", "WARNING",
+            f"Pending org '{label}' created without provenance "
+            f"(origin_table/origin_id missing) — untraceable pending row")
     try:
-        res = supabase.table('pending_nodes').insert({
-            'label': label,
-            'node_type': 'organization',
-            'source_text': source_text[:200] if source_text else '',
-            'status': 'pending',
-            'owner_id': owner_id,
-        }).execute()
+        res = supabase.table('pending_nodes').insert(row).execute()
         if res.data:
             pending_id = res.data[0]['id']
             audit_log_sync("entity_context", "INFO",
@@ -144,14 +351,67 @@ def _create_pending_org(label: str, source_text: str, owner_id: str = None) -> O
     return None
 
 
-def _create_pending_person(label: str, source_text: str, owner_id: str = None) -> Optional[int]:
-    """Create a pending person node, deduplicating against existing nodes.
+def _create_pending_person(
+    label: str,
+    source_text: str,
+    owner_id: Optional[str] = None,
+    *,
+    provenance: Optional[dict] = None,
+    detected_entities: Optional[list] = None,
+    person_names: Optional[list] = None,
+) -> Optional[int]:
+    """Create a pending person node, gated by evidence + provenance, deduplicating
+    against existing pending/approved nodes.
 
-    Returns pending_nodes.id or None if person already exists.
+    For LLM-only candidates, an additional evidence bar is enforced (must clear
+    _llm_candidate_has_minimum_evidence) so that pure LLM guesses like 'Please'
+    do not become pending persons. detected_entities / person_names are the
+    context signals used to decide whether the candidate is LLM-only.
+
+    provenance: optional dict (origin_table, origin_id). Written to
+    pending_nodes.provenance as JSON; when absent a WARNING is emitted.
+
+    Returns pending_nodes.id, or None if rejected by the evidence gate / the
+    LLM-only minimum-evidence bar / an existing approved graph node.
     """
     from core.services.db import tenant_aware_client, get_tenant
     supabase = tenant_aware_client()
     owner_id = owner_id or get_tenant()
+
+    label = (label or "").strip()
+    if not label:
+        return None
+
+    # ── Evidence gate: reject clearly-non-entity labels ─────────────────────
+    if _rejected_pending_label(label, "person"):
+        audit_log_sync("entity_context", "WARNING",
+            f"Rejected pending person candidate '{label}' — fails evidence gate "
+            f"(generic/common-word label)")
+        return None
+
+    # ── LLM-only candidates: require minimum evidence ───────────────────────
+    # Only enforced when the caller passes the context signals (queue_pending_
+    # candidates always does). A candidate that was also detected deterministi-
+    # cally, or is already a known person name, has structural evidence and is
+    # allowed; a pure LLM guess must clear the evidence bar below.
+    if detected_entities is not None and person_names is not None:
+        already_deterministic = any(
+            (e.get("label") or "").strip().lower() == label.lower()
+            for e in detected_entities
+        )
+        already_known_person = any(
+            (n or "").strip().lower() == label.lower()
+            for n in person_names
+        )
+        if not already_deterministic and not already_known_person:
+            if not _llm_candidate_has_minimum_evidence(
+                label, detected_entities, person_names
+            ):
+                audit_log_sync("entity_context", "WARNING",
+                    f"Rejected pending person candidate '{label}' — LLM-only "
+                    f"guess without minimum evidence (no deterministic signal, "
+                    f"not a known person name, and no entity-like label quality)")
+                return None
 
     # Check pending nodes
     existing = supabase.table('pending_nodes').select('id').ilike(
@@ -167,15 +427,25 @@ def _create_pending_person(label: str, source_text: str, owner_id: str = None) -
     if existing_gn and existing_gn.data:
         return None
 
-    # Create new pending node
+    # Create new pending node (with provenance when available)
+    row = {
+        'label': label,
+        'node_type': 'person',
+        'source_text': source_text[:200] if source_text else '',
+        'status': 'pending',
+        'owner_id': owner_id,
+    }
+    if provenance:
+        try:
+            row['provenance'] = json.dumps(provenance)
+        except Exception:
+            row['provenance'] = None
+    else:
+        audit_log_sync("entity_context", "WARNING",
+            f"Pending person '{label}' created without provenance "
+            f"(origin_table/origin_id missing) — untraceable pending row")
     try:
-        res = supabase.table('pending_nodes').insert({
-            'label': label,
-            'node_type': 'person',
-            'source_text': source_text[:200] if source_text else '',
-            'status': 'pending',
-            'owner_id': owner_id,
-        }).execute()
+        res = supabase.table('pending_nodes').insert(row).execute()
         if res.data:
             pending_id = res.data[0]['id']
             audit_log_sync("entity_context", "INFO",
@@ -187,7 +457,12 @@ def _create_pending_person(label: str, source_text: str, owner_id: str = None) -
     return None
 
 
-def queue_pending_candidates(ctx: EntityContext, owner_id: str = None) -> None:
+def queue_pending_candidates(
+    ctx: EntityContext,
+    owner_id: str = None,
+    *,
+    provenance: Optional[dict] = None,
+) -> None:
     """Decision-gated materialization: create pending rows for unmatched candidates.
 
     THE only sanctioned place pending_nodes rows originate from an EntityContext.
@@ -198,6 +473,12 @@ def queue_pending_candidates(ctx: EntityContext, owner_id: str = None) -> None:
     Extraction itself (extract_context_from_source) never writes — this is the
     explicit, gated write step.
 
+    Every row created is evidence-gated (common-word / generic labels are
+    rejected) and, when provenance is available, stamped with it so pending
+    nodes stay traceable to their source message / raw_dump / run. When
+    provenance is absent a WARNING is emitted (live call sites aren't all
+    provenance-aware yet) so untraceable-ghost rows are visible for cleanup.
+
     Fills ctx.pending_org_id / ctx.pending_person_ids so downstream creators can
     stamp pending_org_id on tasks/notes (resolved to a live org on approval).
     Deduplicates against existing pending/approved nodes via the helpers, so
@@ -206,15 +487,19 @@ def queue_pending_candidates(ctx: EntityContext, owner_id: str = None) -> None:
     if ctx is None:
         return
 
+    provenance = provenance or ctx.pending_provenance
+
     # Org: queue the primary unmatched org candidate (label recorded by extraction)
     if not ctx.organization_id and ctx.pending_org_label:
-        pending_id = _create_pending_org(ctx.pending_org_label, ctx.source_text, owner_id)
+        pending_id = _create_pending_org(
+            ctx.pending_org_label, ctx.source_text, owner_id, provenance=provenance
+        )
         if pending_id:
             ctx.pending_org_id = pending_id
         else:
             # No pending row created — a live graph node already exists for this
-            # label (or creation failed). Resolve to the live node directly so
-            # the org isn't left unlinked (Step 2: pending rows always resolve).
+            # label (or the candidate failed the evidence gate). Resolve to the
+            # live node directly so the org isn't left unlinked.
             existing = _find_existing_org(ctx.pending_org_label, owner_id)
             if existing and not ctx.organization_id:
                 ctx.organization_id = existing['id']
@@ -232,7 +517,14 @@ def queue_pending_candidates(ctx: EntityContext, owner_id: str = None) -> None:
         label = (e.get("label") or "").strip()
         if not label:
             continue
-        pending_id = _create_pending_person(label, ctx.source_text, owner_id)
+        pending_id = _create_pending_person(
+            label,
+            ctx.source_text,
+            owner_id,
+            provenance=provenance,
+            detected_entities=ctx.detected_entities,
+            person_names=ctx.person_names,
+        )
         if pending_id and pending_id not in ctx.pending_person_ids:
             ctx.pending_person_ids.append(pending_id)
 

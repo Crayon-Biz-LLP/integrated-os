@@ -222,7 +222,7 @@ class TestQueuePendingCandidates:
         from core.lib.entity_context import EntityContext, queue_pending_candidates
         calls = []
 
-        def fake_create_pending_org(label, source_text, owner_id=None):
+        def fake_create_pending_org(label, source_text, owner_id=None, **kwargs):
             calls.append(("org", label))
             return 101
 
@@ -238,7 +238,7 @@ class TestQueuePendingCandidates:
         from core.lib.entity_context import EntityContext, queue_pending_candidates
         calls = []
 
-        def fake_create_pending_org(label, source_text, owner_id=None):
+        def fake_create_pending_org(label, source_text, owner_id=None, **kwargs):
             calls.append(label)
             return 101
 
@@ -276,7 +276,7 @@ class TestQueuePendingCandidates:
         from core.lib.entity_context import EntityContext, queue_pending_candidates
         calls = []
 
-        def fake_create_pending_org(label, source_text, owner_id=None):
+        def fake_create_pending_org(label, source_text, owner_id=None, **kwargs):
             calls.append(label)
             return None  # live node already exists → no pending row created
 
@@ -298,7 +298,7 @@ class TestQueuePendingCandidates:
         from core.lib.entity_context import EntityContext, queue_pending_candidates
         calls = []
 
-        def fake_create_pending_person(label, source_text, owner_id=None):
+        def fake_create_pending_person(label, source_text, owner_id=None, **kwargs):
             calls.append(label)
             return 201
 
@@ -323,7 +323,7 @@ class TestQueuePendingCandidates:
         from core.lib.entity_context import EntityContext, queue_pending_candidates
         calls = []
 
-        def fake_create_pending_person(label, source_text, owner_id=None):
+        def fake_create_pending_person(label, source_text, owner_id=None, **kwargs):
             calls.append(label)
             return 201  # same id as already-tracked pending
 
