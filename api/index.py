@@ -8,6 +8,7 @@ import json
 import uuid
 import asyncio
 import contextvars
+import base64
 from urllib.parse import urlencode, quote
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone, timedelta
@@ -4846,7 +4847,7 @@ async def multimodal_input_route(request: Request):
                 "parsed_breakdown": breakdown,
             }
             if retain_bytes:
-                doc_row["file_bytes"] = retain_bytes
+                doc_row["file_bytes"] = base64.b64encode(retain_bytes).decode("ascii")
             doc_result = supabase.table("documents").insert(doc_row).execute()
 
             document_id = doc_result.data[0]["id"] if doc_result.data else None
