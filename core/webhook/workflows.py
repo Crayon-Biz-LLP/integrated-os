@@ -479,14 +479,25 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
                     # Use the first approved org label as the org context
                     organization_name = list(approved_orgs.keys())[0]
 
-                if sig_type in ("deadline", "calendar_event"):
-                    res = await create_task_direct(title=title, reminder_at=reminder_at, organization_name=organization_name, entity_context=entity_ctx)
-                    if res.get("action") == "created":
-                        reply_text += f"\n✅ Task created: {title}"
-                elif sig_type == "task_imperative":
-                    res = await create_task_direct(title=title, reminder_at=reminder_at, organization_name=organization_name, entity_context=entity_ctx)
-                    if res.get("action") == "created":
-                        reply_text += f"\n✅ Task created: {title}" 
+                # Unified three-case creation. The task kind (simple / date-only /
+                # date+time) is decided inside create_task_direct by whether reminder_at
+                # carries a time — no per-signal branching here.
+                res = await create_task_direct(
+                    title=title,
+                    reminder_at=reminder_at,
+                    organization_name=organization_name,
+                    entity_context=entity_ctx,
+                )
+                if res.get("action") == "created":
+                    reply_text += f"\n✅ Task created: {title}"
+                    # Tell the user what kind of task this became, so the reply is
+                    # informative rather than a bare "Task created" every time.
+                    if reminder_at:
+                        _has_time = bool(reminder_at) and ('T' in str(reminder_at) or ':' in str(reminder_at))
+                        if _has_time:
+                            reply_text += f" (calendar event + task)"
+                        else:
+                            reply_text += f" (task due {str(reminder_at)[:10]})"
                 elif sig_type == "task_closure":
                     if not active_tasks:
                         tasks_res = supabase.table("tasks") \

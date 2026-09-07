@@ -126,15 +126,30 @@ async def create_task_direct(
 
         task_id = res.data[0]['id']
 
-        # Calendar sync only for explicit times or recurring
-        has_explicit_time = reminder_at and ('T' in str(reminder_at) or ':' in str(reminder_at))
-        if reminder_at and (has_explicit_time or recurrence):
+        # ── Sync contract: one rule for all three task kinds ──────────────────────
+        # "task kind" is decided once, here, by the effective due time on the created
+        # task. All creation paths (document confirm, workflow signals, executor) rely
+        # on this single decision, not on per-field string heuristics scattered across
+        # callers. The rule:
+        #   * no due date/time        → simple Rhodey task only
+        #   * date only               → Google Task due that day (no calendar event)
+        #   * date + explicit time    → Google Calendar event + Google Task
+        # The effective due time is `reminder_at` if set, else `deadline` — matching
+        # the value passed to sync_to_google below.
+        effective_due = reminder_at or deadline
+
+        def _has_explicit_time(value: str | None) -> bool:
+            return bool(value) and ('T' in str(value) or ':' in str(value))
+
+        has_time = _has_explicit_time(effective_due) or bool(recurrence)
+
+        if has_time and effective_due:
             try:
                 from core.services.google_service import check_conflict
-                formatted = format_rfc3339(reminder_at)
+                formatted = format_rfc3339(effective_due)
 
                 try:
-                    conflict_title = check_conflict(reminder_at)
+                    conflict_title = check_conflict(effective_due)
                     if conflict_title:
                         audit_log_sync("tools", "INFO", f"Calendar conflict detected for '{title}': overlaps with '{conflict_title}'")
                 except Exception:
@@ -146,10 +161,12 @@ async def create_task_direct(
             except Exception as cal_e:
                 audit_log_sync("tools", "WARNING", f"Calendar sync failed for task {task_id}: {cal_e}")
 
-        # Google Tasks sync — persist returned ID for downstream completion sync
-        if deadline or reminder_at:
+        # Google Tasks sync — persist returned ID for downstream completion sync.
+        # Fires for both date-only and date+time due tasks.
+        if effective_due:
             try:
-                g_task_id = sync_to_google(get_tasks_service(), title=title, task_id=None, status="needsAction", due_at=deadline or reminder_at, explicit_time=has_explicit_time)
+                effective_due_for_sync = effective_due
+                g_task_id = sync_to_google(get_tasks_service(), title=title, task_id=None, status="needsAction", due_at=effective_due_for_sync, explicit_time=has_time)
                 if g_task_id:
                     supabase.table('tasks').update({'google_task_id': g_task_id}).eq('id', task_id).execute()
             except Exception as gt_e:

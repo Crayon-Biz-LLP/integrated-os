@@ -6170,27 +6170,28 @@ async def _run_suggestion_confirm_background(body: dict):
                     
                     entity_id = None
                     
-                    if item_type == "task":
-                        result = await create_task_direct(
-                            title=title,
-                            entity_context=entity_context_obj,
-                            deadline=deadline,
-                            notes=description,
-                        )
-                        entity_id = result.get("task_id") if result else None
-                        if entity_id:
-                            created_entity_refs.append(("tasks", entity_id))
-                            
-                    elif item_type == "event":
-                        result = await create_task_direct(
-                            title=title,
-                            entity_context=entity_context_obj,
-                            reminder_at=date,
-                            notes=description,
-                        )
-                        entity_id = result.get("task_id") if result else None
-                        if entity_id:
-                            created_entity_refs.append(("tasks", entity_id))
+                    # Unified three-case creation. The task kind (simple / date-only /
+                    # date+time) is decided inside create_task_direct by the effective due
+                    # field it receives, which is exactly the value sync_to_calendar and
+                    # sync_to_google inspect. Do not scatter per-type field mapping here.
+                    #   item_type "note" is the only branch that does NOT go through
+                    # create_task_direct (it is a memory, not a task).
+                    effective_due = date or deadline
+                    result = await create_task_direct(
+                        title=title,
+                        entity_context=entity_context_obj,
+                        reminder_at=effective_due,
+                        deadline=None,
+                        notes=description,
+                    )
+                    entity_id = result.get("task_id") if result else None
+                    if entity_id:
+                        created_entity_refs.append(("tasks", entity_id))
+                        # Optionally annotate the reply context with the task kind so
+                        # the document-confirm response can describe what was created.
+                        # (Kept minimal deliberately — the confirm path already sends a
+                        # single summary line; item-level detail is intentionally avoided
+                        # here to avoid over-notifying on every card confirm.)
                             
                     elif item_type == "note":
                         result = await ingest(
