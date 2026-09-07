@@ -242,7 +242,7 @@ def main():
         _d.close()
         print(f"Real PDF: {pdf_path} ({len(pdf)} bytes, text {len(text)} chars)")
     elif os.path.exists("Kron Tech - Concept Brief.pdf"):
-        doc = sb.table("documents").select("extracted_text").eq("owner_id", danny.data["id"]).eq("id", 12).execute()
+        doc = sb.table("documents").select("extracted_text").eq("owner_id", uid).eq("id", 12).execute()
         text = doc.data[0]["extracted_text"]
         pdf = rebuild_pdf(text)
         print(f"Real PDF not found — rebuilt from stored text ({len(pdf)} bytes)")
