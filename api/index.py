@@ -4821,7 +4821,13 @@ async def multimodal_input_route(request: Request):
             if not extracted_text:
                 return await _classic_multimodal_flow(file_bytes, mime_type)
 
-            breakdown = await parse_document(extracted_text)
+            # Retain the original bytes so document intelligence can send the
+            # REAL document to Gemini (native understanding) instead of the
+            # lossy text-extraction path. NULL/absent → parser falls back to
+            # the text path (legacy rows unaffected).
+            retain_bytes = file_bytes if (mime_type == "application/pdf" and len(file_bytes) <= 10 * 1024 * 1024) else None
+
+            breakdown = await parse_document(extracted_text, pdf_bytes=retain_bytes, mime_type=mime_type)
             if not breakdown:
                 return await _classic_multimodal_flow(file_bytes, mime_type)
 
@@ -4832,13 +4838,16 @@ async def multimodal_input_route(request: Request):
 
             # Store document and breakdown
             supabase = tenant_aware_client()
-            doc_result = supabase.table("documents").insert({
+            doc_row = {
                 "owner_id": owner_id,
                 "filename": filename,
                 "mime_type": mime_type,
                 "extracted_text": extracted_text[:10000],
                 "parsed_breakdown": breakdown,
-            }).execute()
+            }
+            if retain_bytes:
+                doc_row["file_bytes"] = retain_bytes
+            doc_result = supabase.table("documents").insert(doc_row).execute()
 
             document_id = doc_result.data[0]["id"] if doc_result.data else None
 

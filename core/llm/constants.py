@@ -28,6 +28,10 @@ SAFE_HOLD_CLASSIFICATION = {
 
 CLASSIFICATION_MODEL = "gemini-3.5-flash-lite"
 SYNTHESIS_MODEL = "gemini-3.6-flash"
+# Document intelligence (playbook + critic) — validated Sep 2026: both stages
+# on flash-lite produced verified, grounded actions + clean entities for the
+# Kron proposal and Cricket strategy PDFs (see scripts/proto_gemini_native_doc.py).
+DOCUMENT_MODEL = "gemini-3.5-flash-lite"
 EMBEDDING_MODEL = "gemini-embedding-2-preview"
 GEMMA_FALLBACK_MODEL = "gemma-4-31b-it"
 OPENROUTER_MODEL = "nvidia/nemotron-3-super-120b-a12b:free"

@@ -52,3 +52,6 @@ rhodey_app/android/build/reports/
 .coverage.*
 htmlcov/
 .git_commit_msg_tmp
+
+# Real business documents used for local doc-parsing tests — never commit
+/*.pdf
