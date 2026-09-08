@@ -32,6 +32,7 @@ class _SuggestionItem {
   String? deadline;
   String? date;
   String? description;
+  String? evidenceQuote; // grounding quote from the source document/message
   bool selected;
   bool edited;
   
@@ -48,6 +49,7 @@ class _SuggestionItem {
     this.deadline,
     this.date,
     this.description,
+    this.evidenceQuote,
     this.selected = true,
     this.edited = false,
     this.confidence,
@@ -69,6 +71,7 @@ class _SuggestionItem {
         'deadline': deadline,
         'date': date,
         'description': description,
+        'evidence_quote': evidenceQuote,
         'edited': edited,
         'raw_action': rawAction,
       };
@@ -118,7 +121,15 @@ class _SuggestionCardState extends State<SuggestionCard> {
         owner: action['owner'],
         deadline: action['deadline'] ?? (action['params'] is Map ? action['params']['deadline'] : null),
         date: action['date'] ?? (action['params'] is Map ? action['params']['time'] : null),
-        description: action['description'] ?? (action['params'] is Map ? action['params']['notes'] : null),
+        // Both item shapes carry the description under different keys: the
+        // message-suggestion shape uses params.notes, the document-parser
+        // shape uses params.description (document_parser.py _step_to_action).
+        // Read both so neither path drops the text the user approved.
+        description: action['description'] ??
+            (action['params'] is Map
+                ? (action['params']['description'] ?? action['params']['notes'])
+                : null),
+        evidenceQuote: action['params'] is Map ? action['params']['evidence_quote'] : null,
         rawAction: action,
       ));
     }
@@ -327,6 +338,57 @@ class _SuggestionCardState extends State<SuggestionCard> {
     }
   }
 
+  /// Human-readable date/time line for task/event items.
+  ///
+  /// The document parser puts an extracted "when" into params.deadline for
+  /// BOTH tasks and events (document_parser.py _step_to_action), and the
+  /// card parser maps params.deadline -> item.deadline, params.time ->
+  /// item.date. A time-bearing value (ISO 'T' or ':') means a calendar
+  /// event will be created on confirm; a bare date means a Google Task due
+  /// that day; absent means a simple task with no date. Mirrors the
+  /// backend's three-case rule in create_task_direct.
+  String _taskWhenLabel(_SuggestionItem item) {
+    final dl = _asString(item.deadline);
+    final dt = _asString(item.date);
+    if (dl.isEmpty && dt.isEmpty) return '';
+
+    // Prefer the time-bearing field; the document parser puts an extracted
+    // "when" into params.deadline even for events, so the time marker must
+    // be checked on the value actually shown, not just item.date.
+    final v = dt.isNotEmpty ? dt : dl;
+    final hasTime = v.contains('T') || v.contains(':');
+    if (hasTime) return '📅 ${_fmtDateTime(v)}';
+    return '📅 Due ${_fmtDate(v)}';
+  }
+
+  String _asString(dynamic v) => v == null ? '' : v.toString().trim();
+
+  String _fmtDate(String v) {
+    if (v.isEmpty) return '';
+    try {
+      final iso = DateTime.parse(v.replaceFirst('Z', '+00:00'));
+      final m = iso.month.toString().padLeft(2, '0');
+      final d = iso.day.toString().padLeft(2, '0');
+      return '${iso.year}-$m-$d';
+    } catch (_) {
+      return v;
+    }
+  }
+
+  String _fmtDateTime(String v) {
+    if (v.isEmpty) return '';
+    try {
+      final iso = DateTime.parse(v.replaceFirst('Z', '+00:00'));
+      final m = iso.month.toString().padLeft(2, '0');
+      final d = iso.day.toString().padLeft(2, '0');
+      final hh = iso.hour.toString().padLeft(2, '0');
+      final mm = iso.minute.toString().padLeft(2, '0');
+      return '${iso.year}-$m-$d $hh:$mm';
+    } catch (_) {
+      return v;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final summary = widget.breakdown['summary'] as String? ?? '';
@@ -425,6 +487,26 @@ class _SuggestionCardState extends State<SuggestionCard> {
                               Text(
                                 '👤 ${item.owner}',
                                 style: AppTheme.caption.copyWith(fontSize: 10, color: AppTheme.textTertiary),
+                              ),
+                            if (item.category == 'task' && _taskWhenLabel(item).isNotEmpty)
+                              Text(
+                                _taskWhenLabel(item),
+                                style: AppTheme.caption.copyWith(fontSize: 10, color: AppTheme.textTertiary),
+                              ),
+                            if (item.category == 'task' && (item.description?.isNotEmpty ?? false))
+                              Text(
+                                item.description!,
+                                style: AppTheme.caption.copyWith(fontSize: 10, color: AppTheme.textSecondary, height: 1.3),
+                                maxLines: 3, overflow: TextOverflow.ellipsis,
+                              ),
+                            if (item.category == 'task' && (item.evidenceQuote?.isNotEmpty ?? false))
+                              Padding(
+                                padding: const EdgeInsets.only(top: 2),
+                                child: Text(
+                                  '↳ "${item.evidenceQuote}"',
+                                  style: AppTheme.caption.copyWith(fontSize: 9, color: AppTheme.textTertiary, fontStyle: FontStyle.italic, height: 1.3),
+                                  maxLines: 2, overflow: TextOverflow.ellipsis,
+                                ),
                               ),
                             if (item.category == 'entity')
                               Row(

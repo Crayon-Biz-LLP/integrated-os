@@ -495,7 +495,7 @@ async def check_and_resume_workflow(chat_id: int, text: str, thread_id: str) -> 
                     if reminder_at:
                         _has_time = bool(reminder_at) and ('T' in str(reminder_at) or ':' in str(reminder_at))
                         if _has_time:
-                            reply_text += f" (calendar event + task)"
+                            reply_text += " (calendar event + task)"
                         else:
                             reply_text += f" (task due {str(reminder_at)[:10]})"
                 elif sig_type == "task_closure":

@@ -67,6 +67,18 @@ PLAYBOOK_SCHEMA = {
                 "required": ["name", "kind"],
             },
         },
+        "relationships": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "source": {"type": "string", "description": "entity name (must match an entity in the entities list)"},
+                    "target": {"type": "string", "description": "entity name (must match an entity in the entities list)"},
+                    "type": {"type": "string", "description": "relationship between them, e.g. USES, CLIENT_OF, WORKS_WITH, PARTNER_OF"},
+                },
+                "required": ["source", "target", "type"],
+            },
+        },
     },
     "required": ["document_type", "one_line_purpose", "explicit_ask", "next_steps"],
 }
@@ -118,6 +130,7 @@ Answer as JSON:
     - "evidence_quote": the exact phrase in the document that justifies this step
   If the document implies nothing actionable, return an empty array.
 - entities: the REAL people/organizations/products named, with their role in this document. Do NOT treat section titles, feature names, or abstract phrases as people or organizations.
+- relationships: the meaningful relationships BETWEEN the entities you listed, as {source, target, type}. Each source/target must be an entity from your entities list. Use a specific type where the document supports it (e.g. USES, CLIENT_OF, WORKS_WITH, PARTNER_OF), else ASSOCIATED_WITH. Only include relationships the document actually implies — do NOT invent connections between every pair.
 
 Rules: read the actual document attached. Every next_step must be grounded in the document text — no invention."""
 
@@ -181,6 +194,22 @@ def _kind_to_node_type(kind: str) -> str:
     return "concept"
 
 
+def _build_entities(stage1: dict) -> list:
+    """Map stage-1 playbook entities onto the card's suggested_entities shape."""
+    entities = []
+    for e in stage1.get("entities") or []:
+        if not isinstance(e, dict) or not (e.get("name") or "").strip():
+            continue
+        entities.append({
+            "type": _kind_to_node_type(str(e.get("kind") or "other")),
+            "label": str(e.get("name")).strip(),
+            "confidence": 0.9,
+            "source": "document_understanding",
+            "role": (e.get("role") or "").strip(),
+        })
+    return entities
+
+
 def _step_to_action(step: dict, source: str = "playbook") -> dict:
     """Map a next_step onto the executor-action shape the confirm flow accepts."""
     implied = step.get("implied_type") or "task"
@@ -213,8 +242,9 @@ def _step_to_action(step: dict, source: str = "playbook") -> dict:
 def _build_breakdown(stage1: dict, critic: Optional[dict], entities: list) -> dict:
     """Assemble the card payload — same shape the Flutter SuggestionCard renders.
 
-    Breakdown keys: document_type, summary, suggested_actions, suggested_entities.
-    Critic verdicts/recovery provenance ride in `intelligence` for observability.
+    Breakdown keys: document_type, summary, suggested_actions, suggested_entities,
+    suggested_relationships. Critic verdicts/recovery provenance ride in
+    `intelligence` for observability.
     """
     supported_actions: list = []
     rejected: list = []
@@ -248,11 +278,29 @@ def _build_breakdown(stage1: dict, critic: Optional[dict], entities: list) -> di
     supported_actions = [a for a in supported_actions if a.get("human_label")]
 
     summary = stage1.get("one_line_purpose") or ""
+    # Relationships the document implies between its entities. These are
+    # proposal-only: the confirm path inserts them as pending_graph_edges and
+    # section 1c auto-approves them once both endpoints are live (HITL card =
+    # user approval of the links). Only edges whose endpoints are in the
+    # entity list survive — the playbook schema already enforces this, but
+    # defensively re-check so a stray relationship can't create junk edges.
+    entity_labels = {str((e.get("label") or "")).strip().lower() for e in entities if e.get("label")}
+    relationships: list = []
+    for r in stage1.get("relationships") or []:
+        if not isinstance(r, dict):
+            continue
+        source = str(r.get("source") or "").strip()
+        target = str(r.get("target") or "").strip()
+        rel = str(r.get("type") or "").strip() or "ASSOCIATED_WITH"
+        if source.lower() in entity_labels and target.lower() in entity_labels:
+            relationships.append({"source": source, "target": target, "relationship": rel})
+
     breakdown = {
         "document_type": stage1.get("document_type") or "document",
         "summary": summary,
         "suggested_actions": supported_actions,
         "suggested_entities": entities,
+        "suggested_relationships": relationships,
         "intelligence": {
             "engine": "gemini_native_document_understanding",
             "model": DOCUMENT_MODEL,
@@ -284,17 +332,7 @@ async def parse_document(extracted_text: str, pdf_bytes: Optional[bytes] = None,
                                f"Critic pass failed (keeping playbook output): {critic_err}")
                 critic = None
 
-            entities = []
-            for e in stage1.get("entities") or []:
-                if not isinstance(e, dict) or not (e.get("name") or "").strip():
-                    continue
-                entities.append({
-                    "type": _kind_to_node_type(str(e.get("kind") or "other")),
-                    "label": str(e.get("name")).strip(),
-                    "confidence": 0.9,
-                    "source": "document_understanding",
-                    "role": (e.get("role") or "").strip(),
-                })
+            entities = _build_entities(stage1)
 
             breakdown = _build_breakdown(stage1, critic, entities)
             audit_log_sync("document_parser", "INFO",
@@ -329,5 +367,17 @@ async def _parse_document_text(extracted_text: str) -> Optional[dict]:
     ctx = await extract_context_from_source(extracted_text, timing="card")
     breakdown["suggested_entities"] = ctx.detected_entities
     breakdown["entity_context"] = ctx.to_dict()
+    # Same relationship channel the native path uses (key-shape mapping:
+    # EntityContext uses source_label/target_label). The confirm path inserts
+    # these as pending_graph_edges; section 1c auto-approves on confirm.
+    breakdown["suggested_relationships"] = [
+        {
+            "source": e.get("source_label") or e.get("source") or "",
+            "target": e.get("target_label") or e.get("target") or "",
+            "relationship": e.get("relationship") or "ASSOCIATED_WITH",
+        }
+        for e in (ctx.org_to_org_edges or [])
+        if (e.get("source_label") or e.get("source")) and (e.get("target_label") or e.get("target"))
+    ]
 
     return breakdown

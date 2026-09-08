@@ -28,6 +28,11 @@ STAGE1_KRON = {
     "document_type": "proposal",
     "one_line_purpose": "Solvstrat proposes a modular microservices platform for Kron Technologies.",
     "explicit_ask": "We propose a focused 30-minute alignment session with your core team",
+    "relationships": [
+        {"source": "Kron Technologies", "target": "Pipedrive", "type": "USES"},
+        {"source": "Kron Technologies", "target": "Katana", "type": "USES"},
+        {"source": "Kron Technologies", "target": "Martian Tools", "type": "USES"},  # not in entities
+    ],
     "next_steps": [
         {
             "action": "Schedule a 30-minute alignment session with Solvstrat.",
@@ -52,6 +57,7 @@ STAGE1_KRON = {
         {"name": "Solvstrat", "role": "vendor", "kind": "organization"},
         {"name": "Kron Technologies", "role": "client", "kind": "organization"},
         {"name": "Katana", "role": "manufacturing tool to replace", "kind": "product"},
+        {"name": "Pipedrive", "role": "CRM to replace", "kind": "product"},
     ],
 }
 
@@ -240,3 +246,36 @@ class TestParseDocumentFallback:
         assert kinds["Solvstrat"] == "organization"
         roles = {e["label"]: e.get("role") for e in out["suggested_entities"]}
         assert roles["Kron Technologies"] == "client"
+
+
+# ── 5. relationship extraction (document channel joins the edge flow) ────────
+
+class TestRelationshipExtraction:
+    def test_relationships_only_between_listed_entities(self):
+        """A relationship whose endpoint isn't in the entity list must be
+        dropped — the defensive guard that keeps stray LLM output from
+        creating junk edges."""
+        bd = dp._build_breakdown(STAGE1_KRON, None, entities=dp._build_entities(STAGE1_KRON))
+        rels = bd["suggested_relationships"]
+        assert {r["target"] for r in rels} == {"Pipedrive", "Katana"}
+        assert all(r["source"] == "Kron Technologies" for r in rels)
+
+    def test_relationship_key_shape_matches_confirm_contract(self):
+        """The confirm path reads source/target/relationship — the exact keys
+        the pending-edge proposal block consumes."""
+        bd = dp._build_breakdown(STAGE1_KRON, None, entities=dp._build_entities(STAGE1_KRON))
+        for r in bd["suggested_relationships"]:
+            assert set(r) == {"source", "target", "relationship"}
+
+    def test_no_relationships_key_absent_input(self):
+        """Old playbook outputs without relationships still produce the key
+        (empty list) — field-survival: absence degrades to nothing, not KeyError."""
+        stage1 = {k: v for k, v in STAGE1_KRON.items() if k != "relationships"}
+        bd = dp._build_breakdown(stage1, None, entities=[])
+        assert bd["suggested_relationships"] == []
+
+    def test_empty_relationship_type_defaults(self):
+        stage1 = dict(STAGE1_KRON)
+        stage1["relationships"] = [{"source": "Kron Technologies", "target": "Katana", "type": ""}]
+        bd = dp._build_breakdown(stage1, None, entities=dp._build_entities(STAGE1_KRON))
+        assert bd["suggested_relationships"][0]["relationship"] == "ASSOCIATED_WITH"

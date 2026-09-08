@@ -5853,7 +5853,8 @@ async def _run_suggestion_confirm_background(body: dict):
             if doc_res.data[0].get("owner_id") != owner_id:
                 raise HTTPException(status_code=403, detail="Not authorized")
             extracted_text = doc_res.data[0].get("extracted_text", "")
-            stored_ctx_dict = (doc_res.data[0].get("parsed_breakdown") or {}).get("entity_context")
+            _stored_breakdown = doc_res.data[0].get("parsed_breakdown") or {}
+            stored_ctx_dict = _stored_breakdown.get("entity_context")
             matched_task_id = None
         elif source_type == "message":
             msg_res = supabase.table("raw_dumps").select("owner_id, content, metadata").eq("id", source_id).limit(1).execute()
@@ -5864,6 +5865,7 @@ async def _run_suggestion_confirm_background(body: dict):
             extracted_text = msg_res.data[0].get("content", "")
             metadata = msg_res.data[0].get("metadata") or {}
             stored_ctx_dict = metadata.get("entity_context")
+            _stored_breakdown = (metadata.get("suggestion_breakdown") or {})
             matched_task_id = (metadata.get("suggestion_breakdown") or {}).get("matched_task_id")
             
         from core.lib.entity_context import EntityContext
@@ -6014,12 +6016,70 @@ async def _run_suggestion_confirm_background(body: dict):
                 )
                 if res and res.get('success'):
                     created_items.append({"type": node_type, "title": label, "entity_id": res.get("node_id")})
-                    
+
+            # 1a. Propose document relationships as pending graph edges.
+            # The Gemini-native parser lost the legacy path's relationship
+            # extraction (its schema had entities but no edges), so document
+            # concepts were born orphaned — Kron had no USES→Pipedrive links.
+            # The parser now emits suggested_relationships; route them through
+            # the shared hardened writer (dedup + validation + auto-correct),
+            # then section 1c auto-approves them once both endpoints are live.
+            if source_type == "document":
+                suggested_rels = (_stored_breakdown or {}).get("suggested_relationships") or []
+                if suggested_rels:
+                    from core.lib.graph_rules import insert_pending_edge
+                    # Actual node types per label (card entities carry type;
+                    # created_items is the authoritative post-resolution list).
+                    label_types = {}
+                    for e in selected_entities:
+                        lbl = str(e.get("label") or "").strip().lower()
+                        if lbl:
+                            label_types[lbl] = e.get("type") or "concept"
+                    for item in created_items:
+                        lbl = str(item.get("title") or "").strip().lower()
+                        if lbl:
+                            label_types[lbl] = item.get("type") or "concept"
+                    proposed_edges = 0
+                    for rel_item in suggested_rels:
+                        if not isinstance(rel_item, dict):
+                            continue
+                        s_label = str(rel_item.get("source") or "").strip()
+                        t_label = str(rel_item.get("target") or "").strip()
+                        rel = str(rel_item.get("relationship") or "ASSOCIATED_WITH").strip()
+                        if not s_label or not t_label:
+                            continue
+                        s_l = s_label.lower()
+                        t_l = t_label.lower()
+                        outcome = insert_pending_edge(
+                            s_label, t_label, rel,
+                            {
+                                "source_text": f"document:{source_id}",
+                                "source_table": "documents",
+                                "source_type": label_types.get(s_l, "concept"),
+                                "target_type": label_types.get(t_l, "concept"),
+                            }
+                        )
+                        if outcome.get("status") in ("inserted", "deduped"):
+                            proposed_edges += 1
+                    if proposed_edges:
+                        audit_log_sync("api", "INFO",
+                                       f"suggestion_confirm: proposed {proposed_edges} document relationship edge(s) from parsed breakdown")
 
             # 1b. Merge user-selected entities into the metadata EntityContext.
             # The stored context's org is AUTHORITATIVE — this loop only promotes a
             # pending/newly-created org to live, and never lets a second confirmed
             # org overwrite the first (Bug 7: no last-org-wins).
+            #
+            # Document channel onboarding (Sep 7): the Gemini-native document path
+            # never builds an EntityContext at parse time, so entity_context_obj
+            # arrives None and this whole merge block was skipped — confirmed orgs
+            # were created but the task fell back to ad-hoc resolution and landed
+            # on "Personal". Start from an empty context so the promotion logic
+            # below runs for documents exactly as it does for messages: the
+            # confirmed entities become the context, and the same creation
+            # contract (org linkage, notes, dedup) applies to both channels.
+            if entity_context_obj is None:
+                entity_context_obj = EntityContext()
             if entity_context_obj:
                 # Promotion preference (Aug 26): a confirmed org whose label matches
                 # the context's pending_org_label is the extraction's intended org —
@@ -6072,8 +6132,11 @@ async def _run_suggestion_confirm_background(body: dict):
                     # truncate at PostgREST's 1000-row page cap (same disease as
                     # match_existing_nodes, Aug 25) — a pending edge whose endpoint
                     # label fell outside page 1 would never auto-approve.
+                    # concept included (Sep 8): document relationships propose
+                    # concept-touching edges (Kron USES Pipedrive); without it the
+                    # auto-approval pre-check rejected them as not-live.
                     live_res = supabase.table('graph_nodes').select('label').eq('is_current', True).eq('owner_id', owner_id) \
-                        .in_('type', ['person', 'organization', 'place', 'event', 'emotional_state']).execute()
+                        .in_('type', ['person', 'organization', 'place', 'event', 'emotional_state', 'concept']).execute()
                     live_labels = {(n.get('label') or '').strip().lower() for n in (live_res.data or [])}
                     pe_res = supabase.table('pending_graph_edges').select('id, source_label, target_label') \
                         .eq('owner_id', owner_id).eq('status', 'pending').limit(200).execute()
@@ -6177,12 +6240,18 @@ async def _run_suggestion_confirm_background(body: dict):
                     #   item_type "note" is the only branch that does NOT go through
                     # create_task_direct (it is a memory, not a task).
                     effective_due = date or deadline
+                    # Same dedup contract the executor path applies (title+org scoped
+                    # hash): a double-tap, a retry, or re-confirming the same document
+                    # content must skip, not duplicate the current task.
+                    _dedup_org = (entity_context_obj.organization_id if entity_context_obj else None) or ""
+                    _dedup_key = hashlib.md5(f"{title.lower().strip()}:{_dedup_org}".encode()).hexdigest()[:16] if title else None
                     result = await create_task_direct(
                         title=title,
                         entity_context=entity_context_obj,
                         reminder_at=effective_due,
                         deadline=None,
                         notes=description,
+                        dedup_key=_dedup_key,
                     )
                     entity_id = result.get("task_id") if result else None
                     if entity_id:
@@ -6227,6 +6296,20 @@ async def _run_suggestion_confirm_background(body: dict):
                     target_id=source_id,
                     content=extracted_text
                 )
+
+                # 4. Channel parity with the message path: persist the merged
+                # EntityContext (confirmed org/persons resolved to live nodes) on
+                # the document row, so the confirm result is traceable and any
+                # later re-processing starts from the confirmed linkage.
+                if entity_context_obj and source_id:
+                    try:
+                        doc_res = supabase.table("documents").select("parsed_breakdown").eq("id", source_id).limit(1).execute()
+                        if doc_res and doc_res.data:
+                            pb = doc_res.data[0].get("parsed_breakdown") or {}
+                            pb["entity_context"] = entity_context_obj.to_dict()
+                            supabase.table("documents").update({"parsed_breakdown": pb}).eq("id", source_id).execute()
+                    except Exception as ctx_e:
+                        audit_log_sync("api", "WARNING", f"suggestion_confirm: entity_context write-back failed for document {source_id}: {ctx_e}")
                 
         except Exception as e:
             import traceback
