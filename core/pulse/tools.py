@@ -11,6 +11,7 @@ from core.lib.audit_logger import audit_log_sync
 from core.services.google_service import sync_to_calendar, sync_to_google, get_tasks_service, delete_calendar_event, delete_calendar_instance, format_rfc3339
 from core.models import ActionResult, accumulate_action
 from core.lib.state_machines import guard_require_valid_transition
+from core.lib.time_utils import derive_due_fields, now_for_user
 
 supabase = tenant_aware_client()
 
@@ -45,6 +46,7 @@ async def create_task_direct(
     project_name: str = None,  # Kept for backward compat — no longer used
     notes: str = None,  # Original message context — shown on the app's focal card
     entity_context=None,  # EntityContext from extract_context_from_source
+    source_text: str = None,  # Raw source text — enables the deterministic due-date gate below
 ) -> dict:
     """Direct task creation — no process_single_dump dependency.
 
@@ -65,6 +67,24 @@ async def create_task_direct(
             if exist.data:
                 audit_log_sync("tools", "INFO", f"Direct create skipped (dedup): {title}")
                 return {"action": "skipped", "task_id": exist.data[0]['id']}
+
+        # ── Validation gate: time-bearing text must never create a dateless task ──
+        # Invariant #2 (creation case), chokepoint enforcement: EVERY creator —
+        # executor, workflows resume, suggestion-card confirm, document confirm —
+        # funnels through here. If the caller dropped the due fields but the raw
+        # source text carries an explicit date phrase, recover it deterministically
+        # (derive_due_fields). Silent dateless creation of a time-bearing request
+        # (the Sep 10 Gopi class) becomes structurally impossible.
+        if not reminder_at and not deadline and source_text:
+            _reminder, _deadline = derive_due_fields(source_text, now_for_user())
+            if _deadline:
+                reminder_at = reminder_at or _reminder
+                deadline = _deadline
+                audit_log_sync(
+                    "tools", "INFO",
+                    f"Due-gate recovery: LLM dropped time on time-bearing create "
+                    f"(reminder_at={reminder_at}, deadline={deadline}) — '{str(source_text)[:60]}'"
+                )
 
         # ── Resolve org from EntityContext (primary path) ──
         resolved_org_id = None

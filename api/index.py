@@ -6252,6 +6252,10 @@ async def _run_suggestion_confirm_background(body: dict):
                         deadline=None,
                         notes=description,
                         dedup_key=_dedup_key,
+                        # Due-gate backstop: document text may carry the date the
+                        # item mapping dropped ("send by Friday"). Chokepoint
+                        # derives it deterministically when reminder_at is empty.
+                        source_text=extracted_text,
                     )
                     entity_id = result.get("task_id") if result else None
                     if entity_id:

@@ -25,6 +25,7 @@ from core.actions.models import (
     UpdateMetadataAction,
     action_param_error,
     inject_deterministic_delta,
+    inject_deterministic_due,
     inject_deterministic_title,
     validation_missing_fields,
 )
@@ -336,3 +337,40 @@ def test_validation_missing_fields_unknown_errors_kept_verbatim():
     # A field-level error locates the field directly and is preserved as-is.
     missing = validation_missing_fields([{"loc": ("params", "new_deadline"), "msg": "bad date"}])
     assert missing == ["params.new_deadline"]
+
+
+# ── inject_deterministic_due: creation-case backstop (Sep 10 Gopi regression) ──
+
+
+def test_inject_due_when_llm_dropped_time():
+    """The Gopi case: planner emitted create_task with params {title} only for
+    'Remind me to call Gopi ... tomorrow at 11AM' — backstop injects the due
+    fields deterministically so the task reaches Google Calendar."""
+    a = {"operation": "create_task", "params": {"title": "Call Gopi"},
+         "human_label": "Call Gopi from Nithminds Recruitment"}
+    out = inject_deterministic_due(
+        a, "Remind me to call Gopi from Nithminds Recruitment tomorrow at 11AM."
+    )
+    assert out["params"]["reminder_at"].startswith(
+        datetime.now().strftime("%Y-%m-%dT11:00:00")[:8]  # date part is today-relative
+    ) or "T11:00:00" in out["params"]["reminder_at"]
+    assert "T11:00:00" in out["params"]["reminder_at"]
+    assert out["params"]["deadline"]
+    _validate(out)  # injected action passes the typed contract
+
+
+def test_inject_due_keeps_llm_provided_fields():
+    a = {"operation": "create_task",
+         "params": {"title": "X", "reminder_at": "2026-08-19T14:00:00+05:30"}}
+    out = inject_deterministic_due(a, "remind me tomorrow at 11AM")
+    assert out["params"]["reminder_at"] == "2026-08-19T14:00:00+05:30"
+
+
+def test_inject_due_unchanged_when_no_date_phrase():
+    a = {"operation": "create_task", "params": {"title": "X"}}
+    assert inject_deterministic_due(a, "remind me to call Gopi") is a
+
+
+def test_inject_due_ignores_non_create_ops():
+    a = {"operation": "close_task", "target_id": "5", "params": {}}
+    assert inject_deterministic_due(a, "tomorrow at 11AM") is a

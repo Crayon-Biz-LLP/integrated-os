@@ -134,6 +134,23 @@ _DAY_NAMES = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'
 
 _TIME_PATTERN = re.compile(r'\b(?:at\s+)?(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)\b')
 
+# Hour-only clock phrase: "at 11am", "at 11 AM", "at 3pm", "at 12 noon".
+# Deliberately requires the AM/PM marker — bare "at 11" is ambiguous (11:00
+# vs 23:00) and must NOT be derived silently (the "don't invent a time" rule).
+_HOUR_PATTERN = re.compile(r'\b(?:at\s+)?(\d{1,2})\s*(:\d{2})?\s*(AM|PM|am|pm)\b')
+
+
+def _parse_clock(match: "re.Match") -> tuple[int, int]:
+    """Convert a _HOUR_PATTERN match to (hour24, minute)."""
+    hour = int(match.group(1))
+    minute = int((match.group(2) or ":0").lstrip(":"))
+    ampm = match.group(3).lower()
+    if ampm == "pm" and hour < 12:
+        hour += 12
+    elif ampm == "am" and hour == 12:
+        hour = 0
+    return hour, minute
+
 
 def _end_of_day(dt: datetime) -> datetime:
     """Return end-of-day for the given datetime."""
@@ -337,6 +354,96 @@ def extract_time_delta(text: str) -> Optional[dict]:
         return {"amount": amount, "unit": _DELTA_UNITS[m.group(3)], "direction": direction}
 
     return None
+
+
+def derive_due_fields(text: str, reference: datetime) -> tuple[Optional[str], Optional[str]]:
+    """Deterministically derive (reminder_at, deadline) from natural-language text.
+
+    Invariant #2 backstop for the CREATION case (the delta case is
+    extract_time_delta + resolve_time_delta): the LLM reads the phrasing, but
+    the code does the arithmetic. Born from the Sep 10 Gopi regression — the
+    Aug 22 planner prompt told the model "tomorrow → deadline, return null for
+    reminder_at", which also suppressed "tomorrow at 11AM" — so a reminder
+    with an explicit clock time was created dateless and never synced to
+    Google Calendar. The Jul 27 fix (16744af) had hardened the old
+    workflows tail; the Aug 22 unification rebuilt the extraction tail without
+    carrying the invariant. This function is the chokepoint-side guarantee:
+    even when the planner drops the time, the creation path can recover it.
+
+    Resolution rules (mirror resolve_relative_dates / resolve_expiry):
+    - explicit clock time present  → ("<ISO with time>", "<date only>")
+      The caller decides which field wins; derive both so any consumer
+      (three-case creation) sees the exact intent.
+    - date phrase, no clock time   → (None, "<date only>") — a reminder on a
+      day, not a specific minute. Never invents a time.
+    - no date phrase               → (None, None)
+
+    Accepted date phrases: today/tonight, tomorrow, day after tomorrow,
+    this/next/bare weekday names, in/by N days|weeks, next week.
+
+    All arithmetic runs in the reference's timezone (pass a tz-aware
+    reference — now_for_user()); output ISO strings carry that offset.
+    """
+    if not text or not isinstance(text, str):
+        return None, None
+
+    text_lower = text.lower()
+    ref = reference
+
+    def _apply(days_ahead: int) -> datetime:
+        return (ref + timedelta(days=days_ahead)).replace(
+            hour=0, minute=0, second=0, microsecond=0) if days_ahead else ref.replace(
+            hour=0, minute=0, second=0, microsecond=0)
+
+    # 1. Resolve the date component.
+    base: Optional[datetime] = None
+    if re.search(r'\bday\s+after(?:\s+tomorrow)?\b', text_lower):
+        base = _apply(2)
+    elif re.search(r'\btomorrow\b', text_lower):
+        base = _apply(1)
+    elif re.search(r'\b(today|tonight)\b', text_lower):
+        base = _apply(0)
+    elif re.search(r'\bnext\s+week\b', text_lower):
+        base = _apply(7)
+    else:
+        m = re.search(r'\bin\s+(\d+)\s+(day|week)s?\b', text_lower)
+        if m:
+            base = _apply(int(m.group(1)) * (7 if m.group(2) == "week" else 1))
+        else:
+            # Weekday names: "next <day>" is checked BEFORE the bare form so
+            # its +7 semantics can't be swallowed by the bare-day match.
+            for i, day in enumerate(_DAY_NAMES):
+                if re.search(rf'\bnext\s+{day}\b', text_lower):
+                    days_ahead = (i - ref.weekday()) % 7 or 7
+                    base = _apply(days_ahead + 7)
+                    break
+            if base is None:
+                for i, day in enumerate(_DAY_NAMES):
+                    if re.search(rf'\b(?:this\s+)?{day}\b', text_lower):
+                        days_ahead = (i - ref.weekday()) % 7
+                        days_ahead = days_ahead or 7  # "this Monday" on a Monday → next week
+                        base = _apply(days_ahead)
+                        break
+
+    if base is None:
+        return None, None
+
+    # 2. Resolve the clock component.
+    hour = minute = None
+    m = _HOUR_PATTERN.search(text_lower)
+    if m:
+        hour, minute = _parse_clock(m)
+    else:
+        m2 = _TIME_PATTERN.search(text_lower)
+        if m2:
+            hour, minute = _parse_clock(m2)
+
+    # 3. Compose ISO strings. reminder_at carries the wall-clock intent when an
+    # explicit time was given; deadline always carries the date.
+    if hour is not None:
+        reminder_dt = base.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        return reminder_dt.isoformat(), base.date().isoformat()
+    return None, base.date().isoformat()
 
 
 def resolve_expiry(content: str, created_at: datetime) -> Optional[datetime]:

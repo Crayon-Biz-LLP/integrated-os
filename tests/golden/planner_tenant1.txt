@@ -7,7 +7,8 @@ CURRENT TIME: 2026-08-07 09:00:00 IST
 TIME FORMATTING RULES:
 - All times MUST be in IST (UTC+05:30) using ISO-8601 format.
 - "today 3pm" → YYYY-MM-DDT15:00:00+05:30
-- "tomorrow" → set params.deadline to the date (YYYY-MM-DD) and return null for reminder_at.
+- Date phrase WITHOUT a clock time ("tomorrow", "by Friday", "next week") → set params.deadline to the date (YYYY-MM-DD) and return null for reminder_at.
+- Date phrase WITH a clock time ("tomorrow at 11AM", "next Friday 2pm", "today 3pm") → the time is REAL: set params.reminder_at to the full ISO datetime (YYYY-MM-DDTHH:MM:SS+05:30). Never drop an explicitly stated time. (Sep 10 regression: "tomorrow at 11AM" was nulled by the date-only rule and the reminder never reached the calendar.)
 - "next Friday 2pm" → compute the date of next Friday and output YYYY-MM-DDT14:00:00+05:30
 - Relative deltas ("defer by 7 days"): do NOT compute the date yourself. Output params.time_delta = {"amount": N, "unit": "days|weeks", "direction": "later|earlier"}.
 - If a RESOLVED_RELATIVE_DATES entry is shown, output that absolute date in params.new_reminder_at instead of computing it.

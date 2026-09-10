@@ -10,6 +10,7 @@ from core.actions.models import (
     NeedsClarification,
     PLAN_ACTION_ADAPTER,
     inject_deterministic_delta,
+    inject_deterministic_due,
     inject_deterministic_title,
     validation_missing_fields,
 )
@@ -98,7 +99,8 @@ CURRENT TIME: {current_time}
 TIME FORMATTING RULES:
 - All times MUST be in {tz_lbl} (UTC{tz_off}) using ISO-8601 format.
 - "today 3pm" → YYYY-MM-DDT15:00:00{tz_off}
-- "tomorrow" → set params.deadline to the date (YYYY-MM-DD) and return null for reminder_at.
+- Date phrase WITHOUT a clock time ("tomorrow", "by Friday", "next week") → set params.deadline to the date (YYYY-MM-DD) and return null for reminder_at.
+- Date phrase WITH a clock time ("tomorrow at 11AM", "next Friday 2pm", "today 3pm") → the time is REAL: set params.reminder_at to the full ISO datetime (YYYY-MM-DDTHH:MM:SS{tz_off}). Never drop an explicitly stated time. (Sep 10 regression: "tomorrow at 11AM" was nulled by the date-only rule and the reminder never reached the calendar.)
 - "next Friday 2pm" → compute the date of next Friday and output YYYY-MM-DDT14:00:00{tz_off}
 - Relative deltas ("defer by 7 days"): do NOT compute the date yourself. Output params.time_delta = {{"amount": N, "unit": "days|weeks", "direction": "later|earlier"}}.
 - If a RESOLVED_RELATIVE_DATES entry is shown, output that absolute date in params.new_reminder_at instead of computing it.
@@ -344,6 +346,7 @@ async def extract_suggestions(text: str, title: str = "", entity: str = "", acti
                         text=text, operation=op, target_id=None, missing_fields=["target_id"])
             
             a = inject_deterministic_delta(a, text)
+            a = inject_deterministic_due(a, text)
             a = inject_deterministic_title(a, title, text)
             
             try:

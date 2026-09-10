@@ -12,7 +12,12 @@ import pytest
 
 from datetime import datetime, timedelta, timezone
 
-from core.lib.time_utils import extract_time_delta, resolve_relative_dates, resolve_time_delta
+from core.lib.time_utils import (
+    derive_due_fields,
+    extract_time_delta,
+    resolve_relative_dates,
+    resolve_time_delta,
+)
 pytestmark = pytest.mark.decision
 
 
@@ -127,3 +132,56 @@ def test_extract_none_when_no_delta():
     assert extract_time_delta("what's on my calendar") is None
     assert extract_time_delta("") is None
     assert extract_time_delta(None) is None
+
+
+# ── derive_due_fields: deterministic (reminder_at, deadline) for creation ──
+# Sep 10 Gopi regression: "Remind me to call Gopi ... tomorrow at 11AM" was
+# created dateless because the planner prompt nulled reminder_at for
+# "tomorrow". These tests pin the code-does-the-arithmetic invariant.
+
+
+def test_derive_tomorrow_at_time():
+    reminder, deadline = derive_due_fields(
+        "Remind me to call Gopi from Nithminds Recruitment tomorrow at 11AM.", REF
+    )
+    assert reminder is not None and deadline is not None
+    assert reminder.startswith("2026-08-13T11:00:00")
+    assert deadline == "2026-08-13"
+
+
+def test_derive_today_at_time_lowercase_pm():
+    reminder, deadline = derive_due_fields("call the vendor today at 3:30pm", REF)
+    assert reminder.startswith("2026-08-12T15:30:00")
+    assert deadline == "2026-08-12"
+
+
+def test_derive_date_only_no_time_invented():
+    reminder, deadline = derive_due_fields("submit the invoice by tomorrow", REF)
+    assert reminder is None
+    assert deadline == "2026-08-13"
+
+
+def test_derive_no_date_phrase():
+    assert derive_due_fields("remind me to call Gopi", REF) == (None, None)
+    assert derive_due_fields("", REF) == (None, None)
+    assert derive_due_fields(None, REF) == (None, None)
+
+
+def test_derive_in_days():
+    reminder, deadline = derive_due_fields("follow up in 3 days", REF)
+    assert reminder is None
+    assert deadline == "2026-08-15"
+
+
+def test_derive_next_weekday():
+    # REF is a Wednesday — next Friday = Aug 21.
+    reminder, deadline = derive_due_fields("meeting next Friday at 2pm", REF)
+    assert reminder.startswith("2026-08-21T14:00:00")
+    assert deadline == "2026-08-21"
+
+
+def test_derive_bare_ambiguous_hour_not_invented():
+    # Bare "at 11" without am/pm is ambiguous — must not silently become 11:00.
+    reminder, deadline = derive_due_fields("remind me tomorrow at 11", REF)
+    assert reminder is None
+    assert deadline == "2026-08-13"

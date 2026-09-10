@@ -19,6 +19,8 @@ from typing import Annotated, Any, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, TypeAdapter, model_validator
 
+from core.lib.time_utils import derive_due_fields, now_for_user
+
 from core.lib.time_utils import extract_time_delta, resolve_time_delta
 
 # Fields that are part of the action envelope, not per-op parameters.
@@ -346,6 +348,40 @@ def inject_deterministic_delta(action: dict, text: str) -> dict:
         return action
     params = dict(params)
     params["time_delta"] = delta
+    action = dict(action)
+    action["params"] = params
+    return action
+
+
+def inject_deterministic_due(action: dict, text: str) -> dict:
+    """Deterministic backstop (invariant #2) for the CREATION case: if the LLM
+    produced a create_task action with NO due fields while the raw text carries
+    an explicit clock time and/or date phrase ("Remind me to call Gopi tomorrow
+    at 11AM"), re-read the text deterministically and inject the due fields
+    before validation.
+
+    Born from the Sep 10 Gopi regression: the planner prompt's "tomorrow →
+    deadline, return null for reminder_at" rule also suppressed "tomorrow at
+    11AM", so a time-bearing reminder was created dateless and never synced to
+    Google Calendar. Uses derive_due_fields() — code does the arithmetic, never
+    the LLM. Ambiguous clock references (bare "at 11" without am/pm) are NOT
+    invented; when no date phrase exists the action is returned unchanged.
+
+    Mirrors inject_deterministic_title / inject_deterministic_delta: silent
+    data loss is replaced by deterministic recovery at the same injection site.
+    """
+    if action.get("operation") != "create_task":
+        return action
+    params = action.get("params") or {}
+    if params.get("reminder_at") or params.get("deadline"):
+        return action
+    reminder_at, deadline = derive_due_fields(text, now_for_user())
+    if not deadline:
+        return action
+    params = dict(params)
+    if reminder_at:
+        params["reminder_at"] = reminder_at
+    params["deadline"] = deadline
     action = dict(action)
     action["params"] = params
     return action

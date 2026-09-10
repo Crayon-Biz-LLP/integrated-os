@@ -669,6 +669,9 @@ async def execute_planned_actions(
                         # the focal card.
                         notes=text[:500] if text else None,
                         entity_context=_entity_ctx,
+                        # Due-gate backstop: if the planner dropped the time on a
+                        # time-bearing create, the chokepoint derives it from text.
+                        source_text=text,
                     )
                 if result.get("action") == "created":
                     results.append(ExecutionResult("create_task", target_id=result.get("task_id"), title=action.human_label or title, values={"reminder_at": reminder_at}))
