@@ -103,6 +103,52 @@ async def test_recurrence_syncs_both(mock_supabase, mock_google_sync):
     m_gt.assert_called_once()
     m_gc.assert_called_once()
 
+# --- 1b. Title-fingerprint dedup (the Gopi-twin class, Sep 11) ---
+
+@pytest.mark.asyncio
+async def test_title_fingerprint_skips_twin(mock_supabase, mock_google_sync):
+    """Same normalized title, open, <24h -> skip, regardless of caller dedup_key.
+
+    Regression #5868/#5869: the direct pipeline created the task BEFORE the org
+    was approved (key hashed without org); the card confirm re-hashed WITH the
+    org. Different keys -> exact-match miss -> twin task + twin calendar event
+    + twin Google Task. The fingerprint is org-blind, so the org-state change
+    between producers can no longer defeat identity."""
+    mock_supa, _ = mock_supabase
+    mock_supa.table().select().eq().not_.in_().gte().limit().execute.return_value = MagicMock(
+        data=[{"id": 5868, "title": "Remind me to call Gopi from Nithminds Recruitment today at 11AM."}]
+    )
+    result = await create_task_direct(
+        title="Remind me to call Gopi from Nithminds Recruitment today at 11AM.",
+        dedup_key="aaaaaaaaaaaaaaaa",  # caller key misses — org state changed
+    )
+    assert result["action"] == "skipped"
+    assert result["task_id"] == 5868
+    # The twin's real cost was double Google artifacts — none may be created.
+    m_gt, m_gc = mock_google_sync
+    m_gt.assert_not_called()
+    m_gc.assert_not_called()
+
+@pytest.mark.asyncio
+async def test_title_fingerprint_normalizes_punctuation(mock_supabase, mock_google_sync):
+    """Case/punctuation differences must not defeat the fingerprint."""
+    mock_supa, _ = mock_supabase
+    mock_supa.table().select().eq().not_.in_().gte().limit().execute.return_value = MagicMock(
+        data=[{"id": 5900, "title": "Call Gopi re: Nithminds!!"}]
+    )
+    result = await create_task_direct(title="call gopi re nithminds")
+    assert result["action"] == "skipped"
+    assert result["task_id"] == 5900
+
+@pytest.mark.asyncio
+async def test_title_fingerprint_lets_different_tasks_through(mock_supabase, mock_google_sync):
+    """Different titles must still create — the fallback is identity, not censorship."""
+    mock_supa, _ = mock_supabase
+    mock_supa.table().select().eq().not_.in_().gte().limit().execute.return_value = MagicMock(data=[])
+    result = await create_task_direct(title="A genuinely different task")
+    assert result["action"] == "created"
+    assert result.get("task_id") == 999
+
 # --- 2. Undo Cleanup in compensate_action ---
 
 @pytest.mark.asyncio

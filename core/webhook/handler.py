@@ -1608,17 +1608,20 @@ async def _process_webhook(update: dict):
                     # The card surfaces new entities for user confirmation;
                     # actions (create_task, create_events) execute right away
                     # so the user never loses work by ignoring the card.
+                    #
+                    # Gopi-twin fix (Sep 11): suggested_actions is the EXECUTED
+                    # receipt, deliberately NOT an approval list. Path A already
+                    # created these items 88s before the user taps confirm —
+                    # listing them as approvable offered a decision that didn't
+                    # exist, and confirming re-created the task (twin #5868/#5869:
+                    # different dedup keys because the org state changed between
+                    # creation and confirm). Confirming entities is the only real
+                    # decision left; the summary/receipt tells the user what was
+                    # already done. Belt-and-suspenders: suggestion_confirm also
+                    # ignores task items on message sources, and create_task_direct
+                    # fingerprints titles, so no single failure re-opens this class.
                     if suggestion_dict:
-                        suggestion_dict["suggested_actions"] = [
-                            {
-                                "operation": a.operation,
-                                "target_id": a.target_id,
-                                "confidence": getattr(a, "confidence", 1.0),
-                                "human_label": (a.human_label if a.human_label else None) or a.params.get("title") or a.params.get("content") or a.params.get("notes") or "Untitled",
-                                "params": a.params
-                            }
-                            for a in actions
-                        ]
+                        suggestion_dict["suggested_actions"] = []
 
                     if _anaphora_task:
                         _anaphora_task.cancel()

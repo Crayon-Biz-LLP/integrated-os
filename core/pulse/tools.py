@@ -1,7 +1,7 @@
 import asyncio
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from core.retrieval.pipeline import schedule_index_memory
 from core.llm.compat import get_embedding_sync
@@ -14,6 +14,15 @@ from core.lib.state_machines import guard_require_valid_transition
 from core.lib.time_utils import derive_due_fields, now_for_user
 
 supabase = tenant_aware_client()
+
+
+def _norm_title_key(title: str) -> str:
+    """Normalized title fingerprint: lowercase, punctuation stripped, whitespace collapsed.
+    Used by the title-fingerprint dedup fallback — comparison is only meaningful
+    when both sides normalize identically."""
+    return " ".join(
+        "".join(ch for ch in (title or "").lower() if ch.isalnum() or ch.isspace()).split()
+    )
 
 
 def _resolve_org_id(organization_name: str = None):
@@ -67,6 +76,39 @@ async def create_task_direct(
             if exist.data:
                 audit_log_sync("tools", "INFO", f"Direct create skipped (dedup): {title}")
                 return {"action": "skipped", "task_id": exist.data[0]['id']}
+
+        # ── Title-fingerprint dedup fallback (the Gopi-twin class, hardened) ──
+        # The caller-supplied dedup_key hashes title + org linkage — but the org
+        # linkage can CHANGE between two producers handling the same logical item
+        # (the direct pipeline creates before the org is approved; the card confirm
+        # re-hashes after). Different hash → exact-match miss → twin task, twin
+        # calendar event, twin Google Task. This fallback is org-blind: same
+        # normalized title, same tenant, still open, created within the last 24h
+        # → same logical task. Sitting at the chokepoint, it holds no matter how
+        # many producers compute their keys differently.
+        if title:
+            try:
+                _norm = _norm_title_key(title)
+                _cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+                fp_res = supabase.table('tasks').select('id, title') \
+                    .eq('is_current', True) \
+                    .not_.in_('status', ['done', 'cancelled']) \
+                    .gte('created_at', _cutoff) \
+                    .limit(200) \
+                    .execute()
+                for row in (fp_res.data or []):
+                    if _norm_title_key(row.get('title') or "") == _norm:
+                        audit_log_sync(
+                            "tools", "INFO",
+                            f"Direct create skipped (title fingerprint): '{title}' "
+                            f"matches open task {row['id']} created <24h ago"
+                        )
+                        return {"action": "skipped", "task_id": row['id'],
+                                "reason": "duplicate_title_fingerprint"}
+            except Exception as _fp_err:
+                # Fail open — dedup is a guard, not a creation requirement.
+                audit_log_sync("tools", "WARNING",
+                               f"Title-fingerprint dedup lookup failed: {_fp_err}")
 
         # ── Validation gate: time-bearing text must never create a dateless task ──
         # Invariant #2 (creation case), chokepoint enforcement: EVERY creator —

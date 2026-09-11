@@ -5855,7 +5855,6 @@ async def _run_suggestion_confirm_background(body: dict):
             extracted_text = doc_res.data[0].get("extracted_text", "")
             _stored_breakdown = doc_res.data[0].get("parsed_breakdown") or {}
             stored_ctx_dict = _stored_breakdown.get("entity_context")
-            matched_task_id = None
         elif source_type == "message":
             msg_res = supabase.table("raw_dumps").select("owner_id, content, metadata").eq("id", source_id).limit(1).execute()
             if not msg_res.data:
@@ -5866,7 +5865,6 @@ async def _run_suggestion_confirm_background(body: dict):
             metadata = msg_res.data[0].get("metadata") or {}
             stored_ctx_dict = metadata.get("entity_context")
             _stored_breakdown = (metadata.get("suggestion_breakdown") or {})
-            matched_task_id = (metadata.get("suggestion_breakdown") or {}).get("matched_task_id")
             
         from core.lib.entity_context import EntityContext
         entity_context_obj = EntityContext.from_dict(stored_ctx_dict) if stored_ctx_dict else None
@@ -6156,71 +6154,40 @@ async def _run_suggestion_confirm_background(body: dict):
 
             # 2. Update existing task or create tasks (for documents/messages)
             if source_type == "message":
+                # Gopi-twin fix (Sep 11): message cards NEVER create tasks. The
+                # direct pipeline already executed message actions at arrival
+                # (handler Path A executes immediately), so anything executable
+                # arriving here is a stale card or stale raw_action — executing
+                # it produced twin tasks with divergent dedup keys (the org
+                # state changed between arrival and confirm). Belt-and-suspenders
+                # behind the Path A receipt change and the create_task_direct
+                # title fingerprint. Entity confirmation below still proceeds;
+                # the old matched_task_id org-stamp here was unreachable without
+                # executable actions — org linkage now rides Bridge C on org
+                # approval and the enrichment backfill.
                 if selected_tasks:
-                    from core.actions.executor import execute_actions_harden
-                    from core.actions.models import Action
-                    
-                    actions_to_execute = []
-                    for item in selected_tasks:
-                        raw = item.get("raw_action")
-                        if not raw:
-                            continue
-                        
-                        try:
-                            # If edited on the UI, override title
-                            if item.get("edited") and item.get("title"):
-                                if raw.get("params") and isinstance(raw["params"], dict):
-                                    if "title" in raw["params"]:
-                                        raw["params"]["title"] = item["title"]
-                                    elif "content" in raw["params"]:
-                                        raw["params"]["content"] = item["title"]
-                                    elif "notes" in raw["params"]:
-                                        raw["params"]["notes"] = item["title"]
-                                raw["human_label"] = item["title"]
-
-                            act = Action(
-                                operation=raw.get("operation", "no_op"),
-                                target_id=raw.get("target_id"),
-                                params=raw.get("params", {}),
-                                human_label=raw.get("human_label"),
-                                confidence=raw.get("confidence")
-                            )
-                            actions_to_execute.append(act)
-                        except Exception as e:
-                            print(f"Error parsing action for execution: {e}")
-                            
-                    # Only update matched_task_id if the user actually confirmed the modification action
-                    confirmed_target_ids = [str(a.target_id) for a in actions_to_execute if a.target_id]
-                    if matched_task_id and str(matched_task_id) in confirmed_target_ids and entity_context_obj and entity_context_obj.organization_id:
-                        supabase.table("tasks").update({"organization_id": entity_context_obj.organization_id}).eq("id", matched_task_id).execute()
-                    
-                    if actions_to_execute:
-                        import uuid
-                        results = await execute_actions_harden(
-                            actions_to_execute,
-                            chat_id=0,
-                            text=extracted_text,
-                            source="suggestion_confirm",
-                            sender="user",
-                            session_id=str(uuid.uuid4()),
-                            suppress_telegram=True,
-                            active_anchor=None,
-                            entity_context=entity_context_obj
+                    _executable_count = sum(
+                        1 for item in selected_tasks
+                        if (item.get("raw_action") or {}).get("operation", "no_op") != "no_op"
+                    )
+                    if _executable_count:
+                        audit_log_sync(
+                            "api", "WARNING",
+                            f"suggestion_confirm: message source {source_id} carried "
+                            f"{_executable_count} executable task item(s) — ignored "
+                            f"(message actions execute at arrival, not at confirm)"
                         )
-                        
-                        if results:
-                            for res in results:
-                                if res.status == "committed":
-                                    created_items.append({"type": res.operation, "title": res.title or f"{res.operation} completed"})
-                                        
-                        # Write confirmed entity_context back to raw_dumps metadata
-                        if entity_context_obj and source_id:
-                            msg_res = supabase.table("raw_dumps").select("metadata").eq("id", source_id).limit(1).execute()
-                            if msg_res and msg_res.data:
-                                meta = msg_res.data[0].get("metadata") or {}
-                                meta["entity_context"] = entity_context_obj.to_dict()
-                                supabase.table("raw_dumps").update({"metadata": meta}).eq("id", source_id).execute()
-                                
+
+                # Write the confirmed EntityContext (org promoted to live, persons
+                # added) back onto the inbound dump so later consumers see the
+                # resolved linkage, not the arrival-time one.
+                if entity_context_obj and source_id:
+                    msg_res = supabase.table("raw_dumps").select("metadata").eq("id", source_id).limit(1).execute()
+                    if msg_res and msg_res.data:
+                        meta = msg_res.data[0].get("metadata") or {}
+                        meta["entity_context"] = entity_context_obj.to_dict()
+                        supabase.table("raw_dumps").update({"metadata": meta}).eq("id", source_id).execute()
+
             elif source_type == "document":
                 # Original document logic creates tasks here
                 for item in selected_tasks:
