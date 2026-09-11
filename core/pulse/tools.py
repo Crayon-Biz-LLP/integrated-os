@@ -111,17 +111,13 @@ async def create_task_direct(
                                f"Title-fingerprint dedup lookup failed: {_fp_err}")
 
         # ── Validation gate: time-bearing text must never create a dateless task ──
-        # Invariant #2 (creation case), chokepoint enforcement: EVERY creator —
-        # executor, workflows resume, suggestion-card confirm, document confirm —
-        # funnels through here. If the caller dropped the due fields but the raw
-        # source text carries an explicit date phrase, recover it deterministically
-        # (derive_due_fields). Silent dateless creation of a time-bearing request
-        # (the Sep 10 Gopi class) becomes structurally impossible.
         if not reminder_at and not deadline and source_text:
-            _reminder, _deadline = derive_due_fields(source_text, now_for_user())
+            _reminder, _deadline, _duration = derive_due_fields(source_text, now_for_user())
             if _deadline:
                 reminder_at = reminder_at or _reminder
                 deadline = _deadline
+                if _duration:
+                    duration_mins = _duration
                 audit_log_sync(
                     "tools", "INFO",
                     f"Due-gate recovery: LLM dropped time on time-bearing create "
@@ -396,7 +392,8 @@ async def create_note_direct(
 
         res = supabase.table('memories').insert(insert_data).execute()
         if not res.data:
-            return {"action": "error", "reason": "DB insert returned no data"}
+            audit_log_sync("tools", "INFO", "Direct note create skipped (DB trigger swallowed duplicate)")
+            return {"action": "skipped", "reason": "duplicate"}
 
         memory_id = res.data[0]['id']
 

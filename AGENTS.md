@@ -55,6 +55,10 @@ Use **grep/ripgrep only as a fallback** when:
 
 For non-code files (Dockerfiles, shell scripts, configs), grep/glob remain the primary tool.
 
+**DB-investigation split (schema vs code):**
+- Table schema, columns, foreign keys, types → **live Supabase MCP** (`supabase list tables` verbose / `information_schema`). The graph has NO table/column nodes — never query the graph for schema.
+- Which code reads/writes a table → **`search_code` with the literal pattern** `.table("<table>")` (search_code is literal by default; regex escapes like `\.table\(` find nothing). This returns function-enriched call sites.
+
 ## Root Cause Investigation Procedure (Non-Negotiable)
 
 Before applying any fix, follow this procedure step by step. Do NOT skip steps. Each step ensures the fix targets the root cause, not a symptom or a wrong assumption.

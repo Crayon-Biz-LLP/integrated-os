@@ -375,12 +375,14 @@ def inject_deterministic_due(action: dict, text: str) -> dict:
     params = action.get("params") or {}
     if params.get("reminder_at") or params.get("deadline"):
         return action
-    reminder_at, deadline = derive_due_fields(text, now_for_user())
+    reminder_at, deadline, duration = derive_due_fields(text, now_for_user())
     if not deadline:
         return action
     params = dict(params)
     if reminder_at:
         params["reminder_at"] = reminder_at
+    if duration:
+        params["duration_mins"] = duration
     params["deadline"] = deadline
     action = dict(action)
     action["params"] = params

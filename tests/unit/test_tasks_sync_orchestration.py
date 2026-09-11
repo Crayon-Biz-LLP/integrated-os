@@ -142,3 +142,18 @@ def test_sync_to_google_invalid_due_skips_hack_and_due_key():
     body = service.tasks.return_value.insert.call_args.kwargs["body"]
     assert body["title"] == "No due"
     assert "due" not in body
+
+def test_sync_to_google_reopens_task_on_todo():
+    mock_service = MagicMock()
+    mock_patch = mock_service.tasks.return_value.patch
+    mock_patch.return_value.execute.return_value = {'id': 't999'}
+
+    res = sync_to_google(mock_service, title="Reopened task", task_id="t999", status="todo")
+    assert res == 't999'
+
+    mock_patch.assert_called_once()
+    args, kwargs = mock_patch.call_args
+    assert kwargs['tasklist'] == '@default'
+    assert kwargs['task'] == 't999'
+    assert kwargs['body']['status'] == 'needsAction'
+    assert kwargs['body']['title'] == 'Reopened task'

@@ -356,7 +356,7 @@ def extract_time_delta(text: str) -> Optional[dict]:
     return None
 
 
-def derive_due_fields(text: str, reference: datetime) -> tuple[Optional[str], Optional[str]]:
+def derive_due_fields(text: str, reference: datetime) -> tuple[Optional[str], Optional[str], Optional[int]]:
     """Deterministically derive (reminder_at, deadline) from natural-language text.
 
     Invariant #2 backstop for the CREATION case (the delta case is
@@ -385,7 +385,7 @@ def derive_due_fields(text: str, reference: datetime) -> tuple[Optional[str], Op
     reference — now_for_user()); output ISO strings carry that offset.
     """
     if not text or not isinstance(text, str):
-        return None, None
+        return None, None, None
 
     text_lower = text.lower()
     ref = reference
@@ -424,26 +424,61 @@ def derive_due_fields(text: str, reference: datetime) -> tuple[Optional[str], Op
                         days_ahead = days_ahead or 7  # "this Monday" on a Monday → next week
                         base = _apply(days_ahead)
                         break
+            if base is None:
+                _MONTH_MAP = {
+                    'january': 1, 'february': 2, 'march': 3, 'april': 4,
+                    'may': 5, 'june': 6, 'july': 7, 'august': 8,
+                    'september': 9, 'october': 10, 'november': 11, 'december': 12,
+                    'jan': 1, 'feb': 2, 'mar': 3, 'apr': 4, 'jun': 6,
+                    'jul': 7, 'aug': 8, 'sep': 9, 'oct': 10, 'nov': 11, 'dec': 12
+                }
+                _ABS_DATE_PATTERNS = [
+                    re.compile(r"\b(\d{1,2})(?:st|nd|rd|th)?\s+(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b", re.I),
+                    re.compile(r"\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s+(\d{1,2})(?:st|nd|rd|th)?\b", re.I),
+                ]
+                for pattern in _ABS_DATE_PATTERNS:
+                    m_abs = pattern.search(text_lower)
+                    if m_abs:
+                        if m_abs.group(1).isdigit():
+                            day = int(m_abs.group(1))
+                            month = _MONTH_MAP[m_abs.group(2).lower()]
+                        else:
+                            month = _MONTH_MAP[m_abs.group(1).lower()]
+                            day = int(m_abs.group(2))
+                        try:
+                            target_date = ref.replace(month=month, day=day, hour=0, minute=0, second=0, microsecond=0)
+                            if target_date.date() < ref.date():
+                                # Roll to next year if the date has already passed
+                                target_date = target_date.replace(year=ref.year + 1)
+                            base = target_date
+                            break
+                        except ValueError:
+                            pass
 
     if base is None:
-        return None, None
+        return None, None, None
 
     # 2. Resolve the clock component.
     hour = minute = None
-    m = _HOUR_PATTERN.search(text_lower)
-    if m:
-        hour, minute = _parse_clock(m)
-    else:
-        m2 = _TIME_PATTERN.search(text_lower)
-        if m2:
-            hour, minute = _parse_clock(m2)
+    duration_mins = None
+    matches = list(_HOUR_PATTERN.finditer(text_lower))
+    if not matches:
+        matches = list(_TIME_PATTERN.finditer(text_lower))
+    
+    if matches:
+        hour, minute = _parse_clock(matches[0])
+        if len(matches) > 1:
+            end_hour, end_minute = _parse_clock(matches[1])
+            duration_mins = (end_hour * 60 + end_minute) - (hour * 60 + minute)
+            if duration_mins < 0:
+                duration_mins += 24 * 60
 
     # 3. Compose ISO strings. reminder_at carries the wall-clock intent when an
     # explicit time was given; deadline always carries the date.
     if hour is not None:
         reminder_dt = base.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        return reminder_dt.isoformat(), base.date().isoformat()
-    return None, base.date().isoformat()
+        return reminder_dt.isoformat(), base.date().isoformat(), duration_mins
+    return None, base.date().isoformat(), None
 
 
 def resolve_expiry(content: str, created_at: datetime) -> Optional[datetime]:

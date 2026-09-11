@@ -141,7 +141,7 @@ def test_extract_none_when_no_delta():
 
 
 def test_derive_tomorrow_at_time():
-    reminder, deadline = derive_due_fields(
+    reminder, deadline, _ = derive_due_fields(
         "Remind me to call Gopi from Nithminds Recruitment tomorrow at 11AM.", REF
     )
     assert reminder is not None and deadline is not None
@@ -150,38 +150,66 @@ def test_derive_tomorrow_at_time():
 
 
 def test_derive_today_at_time_lowercase_pm():
-    reminder, deadline = derive_due_fields("call the vendor today at 3:30pm", REF)
+    reminder, deadline, _ = derive_due_fields("call the vendor today at 3:30pm", REF)
     assert reminder.startswith("2026-08-12T15:30:00")
     assert deadline == "2026-08-12"
 
 
 def test_derive_date_only_no_time_invented():
-    reminder, deadline = derive_due_fields("submit the invoice by tomorrow", REF)
+    reminder, deadline, _ = derive_due_fields("submit the invoice by tomorrow", REF)
     assert reminder is None
     assert deadline == "2026-08-13"
 
 
 def test_derive_no_date_phrase():
-    assert derive_due_fields("remind me to call Gopi", REF) == (None, None)
-    assert derive_due_fields("", REF) == (None, None)
-    assert derive_due_fields(None, REF) == (None, None)
+    assert derive_due_fields("remind me to call Gopi", REF) == (None, None, None)
+    assert derive_due_fields("", REF) == (None, None, None)
+    assert derive_due_fields(None, REF) == (None, None, None)
 
 
 def test_derive_in_days():
-    reminder, deadline = derive_due_fields("follow up in 3 days", REF)
+    reminder, deadline, _ = derive_due_fields("follow up in 3 days", REF)
     assert reminder is None
     assert deadline == "2026-08-15"
 
 
 def test_derive_next_weekday():
     # REF is a Wednesday — next Friday = Aug 21.
-    reminder, deadline = derive_due_fields("meeting next Friday at 2pm", REF)
+    reminder, deadline, _ = derive_due_fields("meeting next Friday at 2pm", REF)
     assert reminder.startswith("2026-08-21T14:00:00")
     assert deadline == "2026-08-21"
 
 
 def test_derive_bare_ambiguous_hour_not_invented():
     # Bare "at 11" without am/pm is ambiguous — must not silently become 11:00.
-    reminder, deadline = derive_due_fields("remind me tomorrow at 11", REF)
+    reminder, deadline, _ = derive_due_fields("remind me tomorrow at 11", REF)
     assert reminder is None
     assert deadline == "2026-08-13"
+
+def test_derive_absolute_date():
+    # Base reference date is 2026-08-12 (Wed)
+    # Day-first with time
+    rem, dl, dur = derive_due_fields("dinner on 18th September at 7pm till 9pm", REF)
+    assert rem.startswith("2026-09-18T19:00:00")
+    assert dl == "2026-09-18"
+    assert dur == 120
+
+    # Month-first with time
+    rem, dl, dur = derive_due_fields("meeting on Sep 18, 7 PM", REF)
+    assert rem.startswith("2026-09-18T19:00:00")
+    assert dl == "2026-09-18"
+    assert dur is None
+
+    # Date only, no time
+    rem, dl, dur = derive_due_fields("due 25th October", REF)
+    assert rem is None
+    assert dl == "2026-10-25"
+    assert dur is None
+
+def test_derive_absolute_date_rollover():
+    # If the absolute date has passed in the current year, roll to next year.
+    # REF is 2026-08-12.
+    rem, dl, _ = derive_due_fields("meeting on March 5", REF)
+    assert rem is None
+    assert dl == "2027-03-05"
+

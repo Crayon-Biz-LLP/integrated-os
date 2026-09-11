@@ -747,6 +747,7 @@ async def execute_planned_actions(
                         organization_name=action.params.get("organization_name"),
                         notes=text[:500] if text else None,
                         entity_context=_event_entity_ctx,
+                        source_text=text,
                     )
                 if result.get("action") == "created":
                     results.append(ExecutionResult("create_event", target_id=result.get("task_id"), title=action.human_label or title, values={"reminder_at": event_time}))

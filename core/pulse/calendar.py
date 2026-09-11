@@ -67,7 +67,7 @@ def sync_completed_tasks_from_google(supabase_client, tasks_service):
     completed = []
     try:
         result = supabase_client.table('tasks')\
-            .select('id, title, google_task_id, status')\
+            .select('id, title, google_task_id, status, updated_at')\
             .eq('status', 'todo')\
             .eq('is_current', True)\
             .not_.is_('google_task_id', None)\
@@ -94,6 +94,18 @@ def sync_completed_tasks_from_google(supabase_client, tasks_service):
                 ).execute()
 
                 if google_task.get('status') == 'completed':
+                    google_completed = google_task.get('completed')
+                    task_updated = task.get('updated_at')
+                    if google_completed and task_updated:
+                        try:
+                            # Normalize 'Z' for Python < 3.11 just in case, though we are on 3.11+
+                            dt_google = datetime.fromisoformat(google_completed.replace('Z', '+00:00'))
+                            dt_task = datetime.fromisoformat(task_updated.replace('Z', '+00:00'))
+                            if dt_task > dt_google:
+                                continue
+                        except Exception:
+                            pass
+
                     try:
                         # Standard update relies on temporal lineage BEFORE UPDATE trigger
                         supabase_client.table('tasks').update({

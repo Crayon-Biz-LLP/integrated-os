@@ -339,6 +339,8 @@ def sync_to_google(service, title=None, due_at=None, task_id=None, status='todo'
         if rfc_date:
             body['due'] = rfc_date
         if task_id:
+            if status == 'todo':
+                body['status'] = 'needsAction'
             res = service.tasks().patch(tasklist='@default', task=task_id, body=body).execute()
         else:
             res = service.tasks().insert(tasklist='@default', body=body).execute()
