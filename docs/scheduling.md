@@ -27,7 +27,6 @@ Modal function, not a web request.
 | Call recording ingest | **GHA** | `call_ingest.yml` |
 | Retrieval index backfill | **GHA** | `retrieval_backfill.yml` |
 | Clean duplicate nodes | **GHA** | `clean_duplicate_nodes.yml` |
-| Concept sweep | **GHA** | `concept_sweep.yml` |
 | Knowledge synthesis | **GHA** | `synthesis.yml` |
 | Persona synthesis | **GHA** | `persona_synthesis.yml` |
 | Memory clusters / orphan cleanup | **GHA** | `memory_clusters.yml` |
@@ -38,7 +37,10 @@ Modal function, not a web request.
 `dedupe_pending.yml` + `core/skills/dedupe_pending.py` (duplicate cron of the inline approval-path
 merge proposal — proposals lacked origin linkage and never resolved), `research_worker.yml` (research
 agent no longer scheduled), `validate_deployment.yml` (auto-trigger broke after the CI workflow rename;
-removed), `diag-connectivity.yml` (throwaway diagnostic).
+removed), `diag-connectivity.yml` (throwaway diagnostic), `concept_sweep.yml` (weekly concept
+sweep retired — Phase 20 removed concept extraction on Jul 9 but the workflow kept
+auto-re-proposing ~250 low-confidence ASSOCIATED_WITH edges every Saturday; the
+91 approved concept nodes remain in the graph).
 
 ## Rules (enforced by history, not by code)
 
