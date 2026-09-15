@@ -2,8 +2,16 @@
 
 Regression for the "✅ Closed" mislabel: every successful mutation used to be
 acknowledged as a closure, so a reschedule read "✅ Closed: <task>" while the
-task stayed open. A reschedule must read "✅ Rescheduled … → <date>", closures
-must keep "✅ Closed", and mixed batches must produce one line per operation.
+task stayed open. A reschedule must read "Moved <task> to <date> at <time>.",
+closures must keep "Done — <task> is off your plate.", and mixed batches must
+produce one line per operation.
+
+Sep 15 contract update (rental-agreement ack incident):
+- Canonical title: mutation acks carry the task's own title from the DB row,
+  never the planner's echo of the user's phrasing ("Reschedule X to today").
+- Timezone-honest clock: reschedule acks show the moved time in the user's
+  zone ("Aug 20 at 12:40 PM"), not a date-only string — 11:30 UTC must read
+  5:00 PM IST, and the time is the proof the reschedule preserved it.
 
 Run: python -m pytest tests/unit/test_executor_acks.py -v
 """
@@ -147,7 +155,7 @@ def _last_kwargs(send: AsyncMock) -> dict:
 async def test_reschedule_ack_voice_with_date():
     send = await _run([_reschedule()], _task_row())
     msg = _last_message(send)
-    assert msg == "Moved Purchase the Ashraya domain to Aug 20, 2026."
+    assert msg == "Moved Purchase the Ashraya domain to Aug 20 at 12:40 PM."
     assert "Closed" not in msg
 
 
@@ -190,13 +198,15 @@ async def test_close_ack_voice_done():
 @pytest.mark.asyncio
 async def test_update_metadata_ack():
     send = await _run([_update_metadata()], _task_row(task_id=2468))
-    assert _last_message(send) == "Updated Renew the lease's priority."
+    # Canonical title: the row's title wins over the planner's human_label.
+    assert _last_message(send) == "Updated Purchase the Ashraya domain's priority."
 
 
 @pytest.mark.asyncio
 async def test_modify_recurring_ack():
     send = await _run([_modify_recurring()], _task_row(task_id=2469))
-    assert _last_message(send) == "Updated Weekly sync's schedule."
+    # Canonical title: the row's title wins over the planner's human_label.
+    assert _last_message(send) == "Updated Purchase the Ashraya domain's schedule."
 
 
 @pytest.mark.asyncio
@@ -214,7 +224,7 @@ async def test_mixed_batch_emits_one_line_per_operation():
         ],
     )
     msg = _last_message(send)
-    assert "Moved Purchase the Ashraya domain to Aug 20, 2026." in msg
+    assert "Moved Reply to the client to Aug 20 at 12:40 PM." in msg
     assert "Done — Reply to the client is off your plate." in msg
     assert msg.index("Moved") < msg.index("Done")
 
@@ -336,6 +346,6 @@ def test_render_acks_orders_creations_mutations_closures():
     ])
     assert lines == [
         "N — logged.",
-        "Moved R to Aug 20, 2026.",
+        "Moved R to Aug 20 at 12:40 PM.",
         "Done — C is off your plate.",
     ]

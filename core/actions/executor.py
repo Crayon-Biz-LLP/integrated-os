@@ -1,6 +1,6 @@
 import hashlib
 from typing import List, Optional
-from core.actions.models import Action, action_param_error
+from core.actions.models import Action, action_param_error, deadline_rollover
 from core.services.db import tenant_aware_client
 from core.lib.audit_logger import audit_log_sync
 from core.lib.state_machines import guard_require_valid_transition
@@ -473,14 +473,17 @@ async def execute_planned_actions(
                     # Phase 3 PATCH semantics: deltas only, never None
                     upd = update_metadata_updates(action)
                     if upd:
+                        # Canonical ack + Google sync both need the task row —
+                        # one fetch. The patch never touches title, so the
+                        # row's title is canonical for the ack.
+                        task_meta = supabase.table('tasks').select('title, google_task_id, google_event_id').eq('id', int(action.target_id)).limit(1).execute()
+                        td = task_meta.data[0] if task_meta.data else {}
                         supabase.table('tasks').update(upd).eq('id', int(action.target_id)).execute()
-                        results.append(ExecutionResult("update_metadata", target_id=action.target_id, title=action.human_label, values=upd))
+                        results.append(ExecutionResult("update_metadata", target_id=action.target_id, title=td.get('title') or action.human_label, values=upd))
                         # Sync metadata changes to Google Tasks/Calendar
                         try:
                             from core.services.google_service import sync_to_google, get_tasks_service
-                            task_meta = supabase.table('tasks').select('title, google_task_id, google_event_id').eq('id', int(action.target_id)).limit(1).execute()
-                            if task_meta.data:
-                                td = task_meta.data[0]
+                            if td:
                                 g_id = td.get('google_task_id')
                                 if g_id:
                                     sync_to_google(get_tasks_service(), title=td['title'], task_id=g_id,
@@ -532,7 +535,8 @@ async def execute_planned_actions(
                                                   recurrence=upd.get('recurrence') or td.get('recurrence'))
                         if e_id:
                             supabase.table('tasks').update({'google_event_id': e_id}).eq('id', int(action.target_id)).execute()
-                        results.append(ExecutionResult("modify_recurring", target_id=action.target_id, title=action.human_label, values=upd))
+                        # Canonical ack: the task's own title, not the planner's echo.
+                        results.append(ExecutionResult("modify_recurring", target_id=action.target_id, title=td.get('title') or action.human_label, values=upd))
                     else:
                         sync_failed = True
                         failed_tasks.append(f"Task {action.target_id}: modify_recurring — task not found")
@@ -553,7 +557,15 @@ async def execute_planned_actions(
                         task_ref = supabase.table('tasks').select('*').eq('id', int(action.target_id)).limit(1).execute()
                         if task_ref.data:
                             td = task_ref.data[0]
-                            supabase.table('tasks').update({'reminder_at': formatted}).eq('id', int(action.target_id)).execute()
+                            # Deterministic code owns fact alignment: roll a
+                            # stale date-only deadline forward when the new
+                            # reminder crosses it (a still-future deadline is a
+                            # real commitment — never touched).
+                            upd = {"reminder_at": formatted}
+                            rolled = deadline_rollover(td.get("deadline"), new_reminder)
+                            if rolled:
+                                upd["deadline"] = rolled
+                            supabase.table('tasks').update(upd).eq('id', int(action.target_id)).execute()
                             # Google Tasks sync — move the task's due date too.
                             # Previously reschedule never touched Google Tasks, so a
                             # re-scheduled task's due date went stale in her calendar app.
@@ -573,7 +585,10 @@ async def execute_planned_actions(
                                                           duration_mins=td.get('duration_mins', 15))
                             if new_e_id and new_e_id != e_id:
                                 supabase.table('tasks').update({'google_event_id': new_e_id}).eq('id', int(action.target_id)).execute()
-                            results.append(ExecutionResult("reschedule", target_id=action.target_id, title=action.human_label, values={"new_reminder_at": new_reminder}))
+                            # Canonical ack: the task's own title from the row
+                            # just fetched — not the planner's echo of the
+                            # user's phrasing ("Reschedule X to today").
+                            results.append(ExecutionResult("reschedule", target_id=action.target_id, title=td.get('title') or action.human_label, values={"new_reminder_at": new_reminder}))
                         else:
                             sync_failed = True
                             failed_tasks.append(f"Task {action.target_id}: reschedule — task not found")

@@ -25,7 +25,7 @@ Usage::
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Union, List
 
 
@@ -54,6 +54,30 @@ def human_date(iso_value: str) -> str:
         return dt.strftime("%b %d, %Y")
     except Exception:
         return str(iso_value)
+
+
+def human_datetime(iso_value: str, tz=None) -> str:
+    """'2026-09-15T11:30:00+00:00' -> 'Sep 15 at 5:00 PM' in the user's zone.
+
+    Timezone hygiene: the DB stores UTC; a bare UTC clock rendered as-is
+    reads "11:30 AM" for a 5:00 PM IST meeting — after an incident that was
+    entirely about time preservation, the ack must show the moved time in
+    the user's timezone (settings → env → IST via get_user_timezone). A
+    naive timestamp is assumed UTC (the DB contract), never local. Falls
+    back to date-only rendering on any parse failure.
+    """
+    try:
+        dt = datetime.fromisoformat(str(iso_value).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        if tz is None:
+            from core.lib.time_utils import get_user_timezone
+            tz = get_user_timezone()
+        dt = dt.astimezone(tz)
+        clock = dt.strftime("%I:%M %p").lstrip("0")
+        return f"{dt.strftime('%b %d')} at {clock}"
+    except Exception:
+        return human_date(iso_value)
 
 
 # Structured ack intents for the app's card renderer. The app keys off this
@@ -114,7 +138,7 @@ def render_acks(results: List[ExecutionResult]) -> List[str]:
         if r.operation == "reschedule":
             new_time = (r.values or {}).get("new_reminder_at")
             if new_time:
-                lines.append(f"Moved {_title(r)} to {human_date(new_time)}.")
+                lines.append(f"Moved {_title(r)} to {human_datetime(new_time)}.")
             else:
                 lines.append(f"Moved {_title(r)}.")
         elif r.operation == "modify_recurring":

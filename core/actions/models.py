@@ -14,7 +14,8 @@ Backward compatibility:
   typed fields, so the executor is unchanged.
 """
 
-from datetime import datetime
+import re
+from datetime import datetime, timedelta
 from typing import Annotated, Any, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, TypeAdapter, model_validator
@@ -32,6 +33,17 @@ _ENVELOPE_FIELDS = {
     "organization_id",
     "params",
 }
+
+
+class ExtractionDegraded(RuntimeError):
+    """Raised when the extraction LLM itself failed (all providers down / safe
+    hold) — Sep 14 L2 contract: an infrastructure failure is NOT an unclear
+    answer, so it must never be conflated with NeedsClarification.
+
+    Callers must keep pending state alive and tell the user the truth ("my
+    side had a problem, try again"), never cancel a parked decision and never
+    blame the user's wording.
+    """
 
 
 class NeedsClarification(Exception):
@@ -326,6 +338,125 @@ def inject_deterministic_title(action: dict, title: str, text: str) -> dict:
     return action
 
 
+# Sep 14 fix #1 (Mode A): the planner returned `reschedule` with EMPTY params
+# for date-only requests — reproducibly — and every backstop downstream needs
+# SOMETHING to work with. This map lets deterministic code own the date
+# arithmetic for the small closed set of day-words English actually uses.
+_DATE_WORD_DAYS = {
+    "today": 0,
+    "tonight": 0,
+    "tomorrow": 1,
+}
+
+
+def inject_deterministic_date_words(action: dict, text: str, current_reminder_at=None) -> dict:
+    """Sep 14 fix #1: date-word backstop for date-only reschedules.
+
+    The planner's prompt rule ("date without clock time → deadline, null
+    reminder_at") is right for CREATION but structurally invalid for
+    RESCHEDULE (validation requires a time), and when the planner returns
+    `params: {}` outright there is no date for the preserve-time injector to
+    work with — the action dies at validation and the user gets asked for a
+    time their task already has (live repro, Sep 14: 'Move my rental
+    agreement signing task to tomorrow' → input {'params': {}}).
+
+    Deterministic recovery, in the codebase's own invariant #2 spirit ("the
+    LLM reads the phrasing, the code does the arithmetic"): if the raw text
+    carries an unambiguous day-word (today/tomorrow/tonight), the code injects
+    the DATE itself and keeps the task's CURRENT clock time (via the
+    preserve-time injector's anchoring) — the planner only had to say "move
+    it", not do calendar math. Never fires when the planner already produced a
+    time or delta; never invents a time when the task has none (fail-closed
+    clarification still applies); unknown day-phrasings are left to the LLM.
+
+    Args:
+        action: raw planner action dict (pre-validation).
+        text: the raw user text (day-words are read from here, not the LLM).
+        current_reminder_at: the target task's current reminder (ISO str or
+            None). When None, only the date is injected and the preserve-time
+            step decides whether a time can be anchored.
+    """
+    if action.get("operation") != "reschedule":
+        return action
+    params = action.get("params") or {}
+    if params.get("new_reminder_at") or params.get("time_delta"):
+        return action  # planner produced a usable answer — nothing to rescue
+    match = re.search(r"\b(today|tonight|tomorrow)\b", (text or "").lower())
+    if not match:
+        return action  # no unambiguous day-word — leave to the LLM/clarification
+    try:
+        from core.lib.time_utils import now_for_user
+        base_date = now_for_user().date() + timedelta(days=_DATE_WORD_DAYS[match.group(1)])
+    except Exception:
+        return action  # can't anchor "now" deterministically — fail closed
+
+    params = dict(params)
+    current_dt = None
+    if current_reminder_at:
+        try:
+            current_dt = datetime.fromisoformat(str(current_reminder_at).replace("Z", "+00:00"))
+        except Exception:
+            current_dt = None
+    if current_dt is not None:
+        # Date from the day-word + the task's own clock time, in the task's
+        # existing tz offset. Anchored to the task's reminder, never now().
+        preserved = current_dt.replace(
+            year=base_date.year, month=base_date.month, day=base_date.day
+        )
+        params["new_reminder_at"] = preserved.isoformat()
+    else:
+        # No current time to preserve: inject the date as the deadline so the
+        # preserve-time injector (or validation) decides the rest — at least
+        # the planner's empty-params hole is filled with a real date.
+        params["deadline"] = base_date.isoformat()
+    action = dict(action)
+    action["params"] = params
+    return action
+
+
+def inject_deterministic_preserve_time(action: dict, current_reminder_at=None) -> dict:
+    """Sep 14 backstop for the date-without-clock-time reschedule ("move my
+    task to tomorrow"). The planner prompt's "date-only → deadline, null
+    reminder_at" rule is right for CREATION but wrong for RESCHEDULE: the
+    RescheduleAction contract then fails validation → NeedsClarification,
+    asking the user for a time they already have (the task's current one).
+
+    Deterministic recovery: keep the task's existing clock time, move the
+    date. Never invents a time when the task has none — the fail-closed
+    clarification path still applies there (truly no time to preserve).
+    """
+    if action.get("operation") != "reschedule":
+        return action
+    params = action.get("params") or {}
+    if params.get("new_reminder_at") or params.get("time_delta"):
+        return action  # explicit time or computable delta — nothing to preserve
+    deadline = params.get("deadline")
+    if not deadline:
+        return action  # no date at all — legit NeedsClarification
+    # Anchor to the task's CURRENT reminder, not now(): if processing is
+    # delayed past the slot (or runs the next day), the preserved clock time
+    # must still come from the task, not from when the message was handled.
+    if not current_reminder_at:
+        return action
+    try:
+        from datetime import datetime as _dt
+        current_dt = _dt.fromisoformat(str(current_reminder_at).replace('Z', '+00:00'))
+        deadline_date = str(deadline)[:10]
+        preserved = current_dt.replace(year=int(deadline_date[:4]),
+                                       month=int(deadline_date[5:7]),
+                                       day=int(deadline_date[8:10]))
+        params = dict(params)
+        params["new_reminder_at"] = preserved.isoformat()
+        params.pop("deadline", None)
+        action = dict(action)
+        action["params"] = params
+        return action
+    except Exception:
+        # Malformed deadline/current reminder — fail closed (clarification),
+        # never guess.
+        return action
+
+
 def inject_deterministic_delta(action: dict, text: str) -> dict:
     """Phase 2 backstop (invariant #2): if the LLM produced a time-bearing
     action with NO time (the Aug 12 silent-ack class — live LLM flake seen in
@@ -412,6 +543,39 @@ def validation_missing_fields(errors: list) -> list[str]:
         if parts:
             missing.append(".".join(parts))
     return missing
+
+
+def deadline_rollover(current_deadline, new_reminder_at) -> Optional[str]:
+    """Keep a date-only `deadline` honest when a reschedule crosses it.
+
+    A stale-in-the-past date-only deadline (set when the task was created for
+    "today") must roll to the new reminder's date when the reminder moves past
+    it; a deadline still in the future is a real commitment and stays put.
+    Time-bearing deadlines are never touched. Returns the ISO date string for
+    the patch, or None when no rollover applies (PATCH semantics — no write).
+    """
+    try:
+        if not current_deadline or not new_reminder_at:
+            return None
+        from datetime import timezone as _tz
+        # A time-bearing deadline is a precise commitment ("by 9:00"), not a
+        # day-level fact — never auto-moved; only date-only deadlines roll.
+        if "T" in str(current_deadline):
+            return None
+        # deadline is date-only ('2026-09-14'); compare as a date.
+        d = datetime.strptime(str(current_deadline)[:10], "%Y-%m-%d").date()
+        r = datetime.fromisoformat(str(new_reminder_at).replace("Z", "+00:00"))
+        if r.tzinfo is None:
+            r = r.replace(tzinfo=_tz.utc)
+        # Anchor to the *tenant's* calendar day, not UTC (11:30 UTC = 5pm IST
+        # is still Sep 15 in IST, but a 19:30 UTC reminder is Sep 16 in IST).
+        from core.lib.time_utils import get_user_timezone
+        r_date = r.astimezone(get_user_timezone()).date()
+        if r_date > d:
+            return r_date.isoformat()
+    except Exception:
+        return None
+    return None
 
 
 def action_param_error(action: "Action") -> Optional[str]:
