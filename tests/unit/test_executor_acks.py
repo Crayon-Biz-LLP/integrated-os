@@ -125,6 +125,7 @@ async def _run(actions, task_row, extra_patches=()):
         patch("core.actions.executor.audit_log_sync", MagicMock()),
         patch("core.services.google_service.sync_to_calendar", return_value=None),
         patch("core.services.google_service.sync_to_google", return_value=None),
+        patch("core.llm.compat.call_llm_with_fallback", side_effect=Exception("Mock LLM Failure")),
     ]
     patchers.extend(extra_patches)
     with ExitStack() as stack:
