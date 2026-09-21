@@ -55,3 +55,7 @@ htmlcov/
 
 # Real business documents used for local doc-parsing tests — never commit
 /*.pdf
+
+# Sep 14 L5: transfer-resident kit — prevent accidental staging.
+# The kit ships as tarball/zip, never as repo-tracked files.
+PORTABLE_AGENT_KIT/
