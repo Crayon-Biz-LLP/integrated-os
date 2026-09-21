@@ -11,7 +11,7 @@ from core.lib.decision_audit import set_decision_chain_id, log_decision, Decisio
 from core.lib.query_timer import start_timer, mark, report
 from core.lib.conversation import get_or_create_session, get_history, log_exchange, format_classify_context, _fresh_anchor
 from core.actions import capture_session_id, capture_response
-from core.webhook.telegram import deliver_reply, send_telegram
+from core.webhook.telegram import deliver_reply, send_telegram, send_conversational
 from core.webhook.telegram import answer_callback_query, download_telegram_file  # Telegram retired — these raise NotImplementedError if called
 from core.lib.rhodey_voice import ok, fail, ack_merged, ack_rejected, ack_undone, ack_verified
 from core.webhook.classify import classify_intent, check_task_overlap_for_update, UPDATE_TRIGGER_WORDS, INTENT_THRESHOLDS
@@ -671,7 +671,7 @@ async def _process_webhook(update: dict):
                     await process_multimodal_content(file_bytes, mime, chat_id, ist_hour=now.hour, core_json=core_json)
                     return {"success": True}
                 else:
-                    await send_telegram(chat_id, "That file type won't work — PDF, DOCX, or text only.")
+                    await send_conversational(chat_id, fallback_text="That file type won't work — PDF, DOCX, or text only.")
                     return {"success": True}
 
             await send_telegram(chat_id, "I can handle text, images, audio, and documents.")

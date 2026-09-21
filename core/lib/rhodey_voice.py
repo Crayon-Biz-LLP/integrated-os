@@ -98,6 +98,53 @@ ACK_INTENTS = {
 }
 
 
+async def synthesize_execution_voice(results: List[ExecutionResult], original_text: Optional[str] = None) -> str:
+    """Takes committed actions and uses the Voice Synthesizer to translate them into a natural sentence.
+    
+    If the LLM fails, automatically falls back to `render_acks` output.
+    """
+    committed = [r for r in results if r.status == "committed"]
+    if not committed:
+        return ""
+        
+    facts = render_acks(committed)
+    if not facts:
+        return ""
+        
+    facts_str = "\n".join(f"- {f}" for f in facts)
+    context_str = f"\nUser's original message:\n\"{original_text}\"\n" if original_text else ""
+    
+    try:
+        from core.prompts.voice import get_voice
+        from core.llm.compat import call_llm_with_fallback
+        import logging
+        
+        prompt = f"""{get_voice()}
+
+You are formulating the final confirmation receipt to the user.
+The database successfully executed these exact actions:
+{facts_str}
+{context_str}
+Write a single, natural, human-like sentence acknowledging this. 
+Rules:
+- Be concise (1-2 sentences max).
+- Speak naturally (e.g. "I've broken out those 5 moving chores...").
+- DO NOT invent any actions that aren't in the bulleted list.
+- DO NOT use the word "Done" or "Got it" at the beginning of every sentence.
+- If multiple things happened, combine them into one fluid thought.
+"""
+        resp = await call_llm_with_fallback(prompt)
+        text = resp.text.strip()
+        if text:
+            return text
+    except Exception as e:
+        import logging
+        logging.warning(f"Voice synthesis failed: {e}")
+        pass
+        
+    # Fallback to the hardcoded lines
+    return "\n".join(facts)
+
 def render_acks(results: List[ExecutionResult]) -> List[str]:
     """One Rhodey-voiced line per committed result, keyed by operation.
 

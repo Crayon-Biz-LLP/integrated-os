@@ -4,7 +4,7 @@ from core.actions.models import Action, action_param_error, deadline_rollover
 from core.services.db import tenant_aware_client
 from core.lib.audit_logger import audit_log_sync
 from core.lib.state_machines import guard_require_valid_transition
-from core.lib.rhodey_voice import ACK_INTENTS, ExecutionResult, render_acks
+from core.lib.rhodey_voice import ACK_INTENTS, ExecutionResult
 from core.webhook.telegram import send_telegram
 
 
@@ -642,7 +642,8 @@ async def execute_planned_actions(
                 else:
                     # "INFO:" means already in target state — no-op, don't track
                     if "INFO:" not in result_msg:
-                        results.append(ExecutionResult(action.operation, target_id=action.target_id, title=action.human_label))
+                        # Do not use action.human_label for closures; let the DB fetch the real title
+                        results.append(ExecutionResult(action.operation, target_id=action.target_id, title=None))
             except Exception as e:
                 sync_failed = True
                 failed_tasks.append(f"Task {action.target_id}: {e}")
@@ -809,7 +810,9 @@ async def execute_planned_actions(
         if not suppress_telegram:
             rollback_msg = f"↩️ Rolled back {len(completed_actions)} previously completed actions." if completed_actions else ""
             error_details = "\n".join(failed_tasks)
-            await send_telegram(chat_id, f"⚠️ **Partial Sync Failure**\nSome actions failed. {rollback_msg}\n\nDetails: {error_details}")
+            fallback = f"⚠️ **Partial Sync Failure**\nSome actions failed. {rollback_msg}\n\nDetails: {error_details}"
+            from core.webhook.telegram import send_conversational
+            await send_conversational(chat_id, fallback_text=fallback, context_text="Attempting to process user actions")
     
     # Send success messages — the verb table (render_acks) renders one honest
     # line per committed result. Fail-closed: nothing renders unless the DB
@@ -829,13 +832,17 @@ async def execute_planned_actions(
         for r in committed:
             if not r.title and r.target_id is not None:
                 r.title = titles_map.get(str(r.target_id))
-        ack_lines = render_acks(committed)
-        if ack_lines:
+        
+        # New Layer 4 Voice Synthesizer
+        from core.lib.rhodey_voice import synthesize_execution_voice
+        voice_text = await synthesize_execution_voice(committed, original_text=text)
+        
+        if voice_text:
             # The app renders the card from the structured intent + title (no
             # text parsing) — the line itself is free to sound like Rhodey.
             primary = committed[0]
             await send_telegram(
-                chat_id, "\n".join(ack_lines),
+                chat_id, voice_text,
                 intent=ACK_INTENTS.get(primary.operation),
                 ack_title=primary.title,
             )

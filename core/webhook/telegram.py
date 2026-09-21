@@ -113,6 +113,44 @@ async def send_telegram(
         persist_app=persist_app,
     )
 
+async def send_conversational(
+    chat_id: int,
+    fallback_text: str,
+    context_text: str = None,
+    **kwargs
+) -> bool:
+    """Wraps hardcoded system messages in the Universal Voice Synthesizer.
+    
+    If the LLM is down, it instantly falls back to `fallback_text` ensuring zero downtime.
+    """
+    try:
+        from core.prompts.voice import get_voice
+        from core.llm.compat import call_llm_with_fallback
+        import logging
+        
+        prompt = f"""{get_voice()}
+
+You need to tell the user the following system message/error:
+"{fallback_text}"
+{f'Context of what user tried to do: "{context_text}"' if context_text else ''}
+
+Rewrite this system message into a single, natural, conversational reply from Rhodey.
+Rules:
+- Be concise (1 sentence max).
+- Speak naturally (contractions allowed).
+- Do not lose the core meaning of the message (e.g. if it says "PDF only", make sure you say "PDF only").
+- Do not output the original string directly, make it sound like a human.
+"""
+        resp = await call_llm_with_fallback(prompt)
+        text = resp.text.strip()
+        if text:
+            return await send_telegram(chat_id, text, **kwargs)
+    except Exception as e:
+        import logging
+        logging.warning(f"send_conversational failed, using fallback: {e}")
+        pass
+        
+    return await send_telegram(chat_id, fallback_text, **kwargs)
 
 async def download_telegram_file(file_id: str) -> tuple[bytes, str]:
     """REMOVED — Telegram channel retired. Raises NotImplementedError."""
