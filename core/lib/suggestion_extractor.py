@@ -7,16 +7,20 @@ from pydantic import ValidationError
 
 from core.actions.models import (
     Action,
+    ExtractionDegraded,
     NeedsClarification,
     PLAN_ACTION_ADAPTER,
+    inject_deterministic_date_words,
     inject_deterministic_delta,
     inject_deterministic_due,
+    inject_deterministic_preserve_time,
     inject_deterministic_title,
     validation_missing_fields,
 )
 from core.llm.fallback import generate_content_with_fallback
 from core.llm.config import WorkloadProfile
 from core.llm.constants import SYNTHESIS_MODEL
+from core.lib.rate_limiter import planner_flash_limiter
 from core.services.db import tenant_aware_client
 from core.lib.audit_logger import audit_log_sync
 from core.lib.time_utils import get_user_timezone, resolve_relative_dates, tz_label, tz_offset_str
@@ -314,11 +318,21 @@ async def extract_suggestions(text: str, title: str = "", entity: str = "", acti
             prompt=prompt,
             workload=WorkloadProfile.INTERACTIVE,
             primary_model=planner_model,
+            limiter=planner_flash_limiter,
             config={
                 "response_mime_type": "application/json",
                 "response_schema": SUGGESTION_SCHEMA,
             }
         )
+        if getattr(res, "degraded", False) or not getattr(res, "success", True):
+            # Sep 14 L2: an LLM outage is NOT an unclear answer. Raise the
+            # dedicated infra-failure signal so callers keep pending state
+            # alive and tell the truth, instead of the empty-plan falling
+            # into the no-action note terminal ("saved it as a note") or a
+            # fake clarification.
+            raise ExtractionDegraded(
+                f"planner LLM degraded: {getattr(res, 'degraded_reason', 'unknown')}"
+            )
         parsed = res.parse_json()
         raw_actions = parsed.get("actions", [])
         
@@ -346,6 +360,26 @@ async def extract_suggestions(text: str, title: str = "", entity: str = "", acti
                         text=text, operation=op, target_id=None, missing_fields=["target_id"])
             
             a = inject_deterministic_delta(a, text)
+            # Sep 14: a date-without-clock-time reschedule ("move it to
+            # tomorrow") otherwise dies at validation (reschedule requires a
+            # time) and asks the user for a time the task already has. Two
+            # deterministic backstops, in order:
+            #   1. date-words (fix #1): planner returned nothing usable but the
+            #      raw text carries today/tomorrow/tonight — code injects the
+            #      date itself, preserving the task's current clock time.
+            #   2. preserve-time: planner produced a date but no clock time —
+            #      the task's existing time-of-day carries over.
+            if a.get("operation") == "reschedule":
+                _cur = None
+                try:
+                    _tid = a.get("target_id")
+                    if _tid is not None:
+                        _trow = supabase.table("tasks").select("reminder_at").eq("id", int(_tid)).limit(1).execute()
+                        _cur = (_trow.data or [{}])[0].get("reminder_at")
+                except Exception:
+                    _cur = None
+                a = inject_deterministic_date_words(a, text, current_reminder_at=_cur)
+                a = inject_deterministic_preserve_time(a, current_reminder_at=_cur)
             a = inject_deterministic_due(a, text)
             a = inject_deterministic_title(a, title, text)
             
@@ -392,6 +426,11 @@ async def extract_suggestions(text: str, title: str = "", entity: str = "", acti
         return actions, suggestion_dict
         
     except NeedsClarification:
+        raise
+    except ExtractionDegraded:
+        # Sep 14 L2: must propagate — the generic handler below would swallow
+        # it into ([], degraded-dict), which downstream reads as "no actions"
+        # and files the user's request as a note instead of telling the truth.
         raise
     except Exception as e:
         audit_log_sync("suggestion_extractor", "WARNING", f"Extraction failed: {e}")

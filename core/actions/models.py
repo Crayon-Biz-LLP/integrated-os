@@ -321,9 +321,10 @@ def inject_deterministic_title(action: dict, title: str, text: str) -> dict:
     executor gate, silently degrading the request to a fallback note), re-read
     the raw text deterministically and inject the title before validation.
 
-    Prefers the classifier-extracted title, falling back to the raw message
-    text. When the action carries a non-empty title (or is not a create op)
-    the action is returned unchanged.
+    Prefers the action's own human_label (the per-item label the planner
+    produced), then the classifier-extracted title, falling back to the raw
+    message text. When the action carries a non-empty title (or is not a
+    create op) the action is returned unchanged.
     """
     op = action.get("operation")
     if op not in ("create_task", "create_event"):
@@ -332,7 +333,7 @@ def inject_deterministic_title(action: dict, title: str, text: str) -> dict:
     if (params.get("title") or "").strip():
         return action
     params = dict(params)
-    params["title"] = (title or "").strip() or text
+    params["title"] = (action.get("human_label") or "").strip() or (title or "").strip() or text
     action = dict(action)
     action["params"] = params
     return action

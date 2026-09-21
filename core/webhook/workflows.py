@@ -173,27 +173,52 @@ async def _resume_action_clarification(chat_id: int, text: str, thread_id: str, 
     from core.lib.suggestion_extractor import extract_suggestions
     from core.lib.entity_context import extract_context_from_source
     from core.actions.executor import execute_actions_harden
-    from core.actions.models import NeedsClarification
-    
+    from core.actions.models import ExtractionDegraded, NeedsClarification
+
+    # Sep 14 L2 contract: an infrastructure failure is NOT an unclear answer.
+    # The user's parked decision must survive provider outages — only a
+    # genuinely unparseable answer (NeedsClarification below) may re-ask, and
+    # only the user may cancel. (Live failure, 13:52: all providers failed →
+    # 0 actions → this branch CANCELLED the parked workflow and told the user
+    # "I couldn't work that out from what you said" — blaming the wording for
+    # an outage and destroying their pending decision in one stroke.)
     try:
         actions, _ = await extract_suggestions(combined, title=title, entity=entity, intent=intent)
+    except ExtractionDegraded as deg:
+        audit_log_sync("workflow", "ERROR",
+                       f"Workflow resume blocked by LLM outage (w_id={w_id}, workflow kept active): {deg}")
+        await send_telegram(chat_id,
+            "⚙️ My side hit a technical problem (the AI service is briefly "
+            "unavailable) — nothing you did, and your request is still pending. "
+            "Try again in a moment.")
+        log_exchange(thread_id, 'user', 'WORKFLOW_REPLY', text, chat_id)
+        return True, None
     except NeedsClarification as nc:
         # Still unclear — re-ask and keep the workflow active
         await send_telegram(chat_id, nc.to_question())
         log_exchange(thread_id, 'user', 'WORKFLOW_REPLY', text, chat_id)
         return True, None
+    except Exception as plan_err:
+        # Unknown planning error — treat as degraded (fail-safe, keep alive).
+        audit_log_sync("workflow", "ERROR",
+                       f"Workflow resume planning failed unexpectedly (w_id={w_id}, workflow kept active): {plan_err}")
+        await send_telegram(chat_id,
+            "⚙️ My side hit a technical problem — nothing you did, and your "
+            "request is still pending. Try again in a moment.")
+        log_exchange(thread_id, 'user', 'WORKFLOW_REPLY', text, chat_id)
+        return True, None
 
     if not actions:
-        # Couldn't resolve an action from the reply — close the loop honestly.
-        try:
-            supabase.table('conversation_workflows').update({
-                'status': 'cancelled', 'resolved_at': now_iso, 'updated_at': now_iso,
-            }).eq('id', w_id).eq('status', 'active').execute()
-        except Exception:
-            pass
-        await send_telegram(chat_id, "I couldn't work that out from what you said — the task is unchanged. Try again whenever.")
+        # Sep 14 L2: 0 actions after a successful plan is almost always a
+        # degraded/safe-hold plan, not a bad answer. KEEP the workflow active
+        # (bounded by its 7-day expiry / supersede-on-repark) and say the
+        # honest thing — never cancel the user's pending decision.
+        audit_log_sync("workflow", "ERROR",
+                       f"Workflow resume produced 0 actions (w_id={w_id}, workflow kept active)")
+        await send_telegram(chat_id,
+            "⚙️ My side hit a technical problem processing that — nothing you "
+            "did, and your request is still pending. Try again in a moment.")
         log_exchange(thread_id, 'user', 'WORKFLOW_REPLY', text, chat_id)
-        await _emit_clarification_observation(workflow, thread_id, "failed")
         return True, None
 
     ctx = await extract_context_from_source(combined, timing="sync")

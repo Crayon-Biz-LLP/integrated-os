@@ -172,6 +172,30 @@ async def _run_full_health_check_impl() -> dict:
         if counts["llm_degradations"] > 0:
             lines.append(f"⚠️ {counts['llm_degradations']} LLM fallback/degradations (429s/timeouts) in last hour")
 
+        # ── LLM provider failures today (Sep 14 L4) ──
+        # The aggregate WARNING above hides WHICH provider failed and WHY.
+        # The per-provider ERROR lines (fallback.py) carry the real cause —
+        # surface the count and the most recent cause so outages are
+        # diagnosable from the health report alone.
+        try:
+            today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+            prov_res = supabase.table('audit_logs') \
+                .select('message, created_at') \
+                .eq('service', 'llm') \
+                .eq('level', 'ERROR') \
+                .like('message', 'LLM provider failed:%') \
+                .gte('created_at', today_start) \
+                .order('created_at', desc=True) \
+                .limit(20) \
+                .execute()
+            prov_rows = prov_res.data or []
+            counts["llm_provider_failures_today"] = len(prov_rows)
+            if prov_rows:
+                last = prov_rows[0]
+                lines.append(f"⚠️ {len(prov_rows)} LLM provider failures today — last: {str(last.get('message'))[:160]}")
+        except Exception as e:
+            audit_log_sync("pipeline", "WARNING", f"LLM provider-failure health check failed: {e}")
+
         # Separate informational lines from actual issues
         issues = [line for line in lines if line.startswith("⚠️")]
 

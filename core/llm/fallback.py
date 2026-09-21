@@ -195,12 +195,22 @@ async def generate_content_with_fallback(
             outcome = Outcome.SUCCESS if resp.attempts == 1 else Outcome.RETRY_SUCCESS
             log_llm_outcome(resp, outcome, prompt=prompt)
             return resp
-        except (DeadlineExceeded, NonRetryableError, ParseError):
+        except (DeadlineExceeded, NonRetryableError, ParseError) as e:
             gemini_breaker.record_failure()
-        except Exception:
+            # Sep 14 L4: the aggregate "all_providers_failed" line discarded the
+            # underlying cause — outages were undiagnosable from logs alone.
+            audit_log_sync("llm", "ERROR",
+                           f"LLM provider failed: gemini/{primary_model} — "
+                           f"{type(e).__name__}: {str(e)[:300]}")
+        except Exception as e:
             gemini_breaker.record_failure()
+            audit_log_sync("llm", "ERROR",
+                           f"LLM provider failed: gemini/{primary_model} — "
+                           f"{type(e).__name__}: {str(e)[:300]}")
     else:
         final_exc = BreakerOpenError("Gemini breaker is open")
+        audit_log_sync("llm", "ERROR",
+                       f"LLM provider skipped (circuit breaker open): gemini/{primary_model}")
 
     # Fallback path 1 (Gemma via Gemini SDK)
     if budget.has_budget_for_hop(1.0):
@@ -210,6 +220,10 @@ async def generate_content_with_fallback(
             return resp
         except Exception as e:
             final_exc = e
+            # Sep 14 L4: per-provider cause logging.
+            audit_log_sync("llm", "ERROR",
+                           f"LLM provider failed: gemma/{GEMMA_FALLBACK_MODEL} — "
+                           f"{type(e).__name__}: {str(e)[:300]}")
 
     # Fallback path 2 (OpenRouter)
     if budget.has_budget_for_hop(1.0):
@@ -219,6 +233,12 @@ async def generate_content_with_fallback(
             return resp
         except Exception as e:
             final_exc = e
+            # Sep 14 L4: per-provider cause logging — a missing OPENROUTER_API_KEY
+            # shows up here as its real error instead of vanishing into the
+            # aggregate "all_providers_failed".
+            audit_log_sync("llm", "ERROR",
+                           f"LLM provider failed: openrouter/{fallback_model} — "
+                           f"{type(e).__name__}: {str(e)[:300]}")
 
     # Determine degraded reason
     reason = "all_providers_failed"

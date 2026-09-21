@@ -193,6 +193,12 @@ flash_lite_limiter = MultiKeyLimiter(prefix="flash_lite", max_rpm_per_key=13, ma
 flash_3_5_limiter = MultiKeyLimiter(prefix="flash_3_5", max_rpm_per_key=4, max_rpd_per_key=18)
 
 # Sentinel workloads get their own pool so a sentinel burst can never starve
+# Sep 14: the action planner shares the flash pool with pulse briefings etc.;
+# a briefing burst starved the planner into safe-holds (live incident, Danny:
+# "move my task to tomorrow" → all_providers_failed with a mostly-idle pool).
+# Dedicated pool, same pattern as sentinel_flash_limiter (Aug 13 starvation fix).
+planner_flash_limiter = MultiKeyLimiter(prefix="planner_flash", max_rpm_per_key=6)
+
 # pulse briefings (and vice-versa) on the shared flash limiter — the two
 # workloads are independent and must fail independently.
 sentinel_flash_limiter = MultiKeyLimiter(prefix="sentinel_flash", max_rpm_per_key=4)
