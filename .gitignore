@@ -59,3 +59,9 @@ htmlcov/
 # Sep 14 L5: transfer-resident kit — prevent accidental staging.
 # The kit ships as tarball/zip, never as repo-tracked files.
 PORTABLE_AGENT_KIT/
+
+# PORTABLE_AGENT_KIT quarantine — the kit is a transfer/resume
+# carrier for this repo, NEVER an Integrated-OS artifact; it ships
+# only as a tarball, never via git (Sep 14 incident: 145 kit files
+# nearly swept into one atomic commit by a broad git add).
+PORTABLE_AGENT_KIT/

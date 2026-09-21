@@ -47,7 +47,6 @@ def test_contextvar_lifecycle():
     assert len(snapshot_action_context()) == 0
 
 def test_dedupe_acked_creation_receipts():
-    from core.actions import ActionResult
     from core.webhook.telegram import _dedupe_acked_creation_receipts
     receipts = [
         "✅ Task created: Buy milk",

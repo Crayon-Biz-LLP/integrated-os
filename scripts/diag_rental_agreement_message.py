@@ -3,6 +3,7 @@
 Aspect marker: app
 """
 import os
+from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 from supabase import create_client
@@ -43,7 +44,6 @@ for t in tasks:
           f"event={'Y' if t.get('google_event_id') else 'n'} gtask={'Y' if t.get('google_task_id') else 'n'}")
 
 print("\n=== 4. All tasks updated in last 24h ===")
-from datetime import datetime, timedelta, timezone
 cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
 recent = sb.table("tasks").select(
     "id, title, updated_at, status, version, is_current, completed_at, reminder_at"
@@ -59,9 +59,9 @@ try:
     logs = sb.table("audit_log").select("created_at, level, message") \
         .eq("owner_id", DANNY).gte("created_at", cutoff) \
         .order("created_at", desc=True).limit(50).execute().data or []
-    for l in logs:
-        msg = str(l.get("message", ""))
+    for entry in logs:
+        msg = str(entry.get("message", ""))
         if any(k in msg.lower() for k in ("rental", "agreement", "lease", "close", "reschedul", "move")):
-            print(f"  [{l['created_at'][11:19]}] {l.get('level')}: {msg[:130]}")
+            print(f"  [{entry['created_at'][11:19]}] {entry.get('level')}: {msg[:130]}")
 except Exception as ex:
     print(f"  (audit_log not readable: {ex})")

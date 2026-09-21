@@ -12,6 +12,7 @@ Checks the last 48h:
        no date   -> simple Rhodey task
 """
 import os
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
@@ -59,7 +60,6 @@ for t in tasks:
           f"  {ev} {gt} org={t.get('organization_id') or '-'}")
 
 print("\n=== 3. Twin check (same normalized title, last 48h) ===")
-from collections import Counter
 norm = Counter(str(t.get("title", "")).strip().lower() for t in tasks)
 twins = {k: v for k, v in norm.items() if v > 1}
 print(f"  duplicates: {twins if twins else 'none'}")
