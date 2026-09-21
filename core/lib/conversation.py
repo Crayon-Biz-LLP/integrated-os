@@ -861,42 +861,63 @@ async def _store_exchange_embedding(exchange_id: int, content: str):
 
 
 def log_exchange(session_id: str, role: str, intent: str, content: str, chat_id: int, metadata: dict = None):
-    """Insert an exchange row into conversations. Maps session_id to thread_id."""
-    try:
-        record = {
-            "session_id": session_id,
-            "thread_id": session_id, # We use the same UUID for both to maintain legacy compatibility
-            "role": role,
-            "intent": intent,
-            "content": content,
-            "chat_id": chat_id,
-            "token_count": _approx_tokens(content),
-            "metadata": metadata or {}
-        }
-        insert_res = tenant_aware_client().table('conversations').insert(record).execute()
-        _touch_thread(session_id)
-        
-        # Store embedding for user exchanges (Fix C — fire-and-forget)
-        if role == 'user' and insert_res.data:
-            import asyncio
-            try:
-                exchange_id = insert_res.data[0].get('id')
-                if exchange_id:
-                    loop = asyncio.get_running_loop()
-                    loop.create_task(_store_exchange_embedding(exchange_id, content))
-            except RuntimeError:
-                pass  # No running event loop
-        
-        if role == 'bot':
-            import asyncio
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(_background_summary_check(session_id))
-            except RuntimeError:
-                pass  # No running event loop
-    except Exception as e:
+    """Insert an exchange row into conversations. Maps session_id to thread_id.
+
+    Sep 14 L2: one bounded retry on the insert — a short Supabase blip (live
+    incident 13:32–13:36: 'JSON could not be generated' 500s) must not eat
+    both sides of an exchange; the app's chat history silently lost the user's
+    message and the bot's reply for that window. Retry once after a short
+    sleep, then fail-open with the audit row as before.
+    """
+    import time as _time
+    last_err = None
+    for attempt in range(2):
+        try:
+            _log_exchange_insert(session_id, role, intent, content, chat_id, metadata)
+            last_err = None
+            break
+        except Exception as e:
+            last_err = e
+            if attempt == 0:
+                _time.sleep(1.0)
+    if last_err is not None:
         from core.lib.audit_logger import audit_log_sync
-        audit_log_sync("conversation", "ERROR", f"log_exchange error: {e}")
+        audit_log_sync("conversation", "ERROR", f"log_exchange error (after 1 retry): {last_err}")
+
+
+def _log_exchange_insert(session_id: str, role: str, intent: str, content: str, chat_id: int, metadata: dict = None):
+    """Single insert attempt for log_exchange (retry wrapper above)."""
+    record = {
+        "session_id": session_id,
+        "thread_id": session_id, # We use the same UUID for both to maintain legacy compatibility
+        "role": role,
+        "intent": intent,
+        "content": content,
+        "chat_id": chat_id,
+        "token_count": _approx_tokens(content),
+        "metadata": metadata or {}
+    }
+    insert_res = tenant_aware_client().table('conversations').insert(record).execute()
+    _touch_thread(session_id)
+    
+    # Store embedding for user exchanges (Fix C — fire-and-forget)
+    if role == 'user' and insert_res.data:
+        import asyncio
+        try:
+            exchange_id = insert_res.data[0].get('id')
+            if exchange_id:
+                loop = asyncio.get_running_loop()
+                loop.create_task(_store_exchange_embedding(exchange_id, content))
+        except RuntimeError:
+            pass  # No running event loop
+    
+    if role == 'bot':
+        import asyncio
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(_background_summary_check(session_id))
+        except RuntimeError:
+            pass  # No running event loop
 
 def format_classify_context(pairs: list, active_anchor: dict = None) -> str:
     """Format the ONLY conversation-derived context block in the system.

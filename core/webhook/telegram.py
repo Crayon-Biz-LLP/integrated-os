@@ -15,6 +15,17 @@ from core.actions import (
 )
 
 
+def _dedupe_acked_creation_receipts(receipts: list[str], message_text: str) -> list[str]:
+    """B1: render_acks is the single creation voice. Drop emoji creation
+    receipts ("✅ Task created: X") whose label is already confirmed in the
+    message; keep failures and mutations, which render_acks does not carry."""
+    return [
+        r for r in receipts
+        if not (r.startswith("✅ Task created: ")
+                and r.split(": ", 1)[1].strip() in message_text)
+    ]
+
+
 async def deliver_reply(
     message_text: str,
     skip_validation: bool = False,
@@ -51,7 +62,7 @@ async def deliver_reply(
         # Clean up trailing spaces before newlines
         message_text = re.sub(r' +\n', '\n', message_text)
 
-        receipts = render_actions(evidence)
+        receipts = _dedupe_acked_creation_receipts(render_actions(evidence), message_text)
         if receipts:
             receipts_text = "\n".join(receipts)
             if receipts_text.strip() not in message_text:

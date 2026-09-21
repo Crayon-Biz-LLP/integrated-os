@@ -291,6 +291,18 @@ def test_inject_title_when_llm_dropped_title():
     assert act.params["title"] == "Follow up with Amita"
 
 
+def test_inject_title_prefers_human_label_for_multi_item_plans():
+    """Sep 21 incident: a 5-item list became one task because the shared
+    classifier title (text[:80]) was injected into every create_task action
+    lacking a title — identical titles → identical executor dedup_key → 4 of 5
+    silently dedup-skipped. The per-action human_label must win so multi-item
+    plans keep distinct titles/dedup keys."""
+    a = {"operation": "create_task", "params": {}, "human_label": "Call Hari Traders about furniture dismantling"}
+    out = inject_deterministic_title(a, "I have a bunch of household things to do", "I have a bunch of household things to do.")
+    assert out["params"]["title"] == "Call Hari Traders about furniture dismantling"
+    assert out["params"]["title"] != "I have a bunch of household things to do"
+
+
 def test_inject_title_falls_back_to_raw_text():
     """No classifier title → raw message text is used, so the request is
     never dropped for lack of a title."""

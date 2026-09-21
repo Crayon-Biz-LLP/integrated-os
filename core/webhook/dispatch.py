@@ -523,6 +523,26 @@ async def _route_by_intent(intent: str, text: str, chat_id: int, session_id: str
         summary=f"Routing {intent} ({confidence:.0%}) \u2192 {handler_name}"
     )
 
+    # B3 (Sep 14): a bare acknowledgment must never resolve to a destructive
+    # action while a task_update confirmation is pending in this thread. The
+    # Sep 14 incident: pending "which task?" + user "Yes." → COMPLETION (98%)
+    # → planner emitted close_task → task closed + calendar event deleted.
+    # Guard covers ALL intents: a bare ack carries no task content, so history-
+    # leaning classifications ("Yes." → TASK 95%) are exactly how the incident
+    # slipped through an intent-filtered guard. If the pending confirmation can
+    # answer this reply, consume it; otherwise re-ask instead of guessing.
+    if _is_bare_ack(text):
+        pending = await fetch_pending_task_update_confirmation(session_id)
+        if pending:
+            if await resolve_task_update_confirmation(text, chat_id, session_id, pending):
+                audit_log_sync("webhook", "INFO",
+                    f"B3 guard: bare ack resolved pending task_update confirmation ({text[:30]})")
+                return
+            await send_telegram(chat_id,
+                "\u26a0\ufe0f Still waiting on your answer above — which task did you mean? "
+                "Reply with the number, the task name, or 'cancel'.")
+            return
+
     contains_hidden = classification.get("contains_hidden_action", False) if classification else False
     
     title = classification.get('title', text) if classification else text
@@ -1643,53 +1663,242 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, ac
 async def handle_noise(chat_id: int):
     await send_telegram(chat_id, "\U0001f44d")
 
+# ── Task-update confirmation (app-era, Sep 14) ────────────────────────────
+# History: this flow was built for Telegram inline buttons (Update existing /
+# Create new). Telegram is retired and send_telegram drops inline_keyboard, so
+# the app received a bare statement with no visible question, and the resolver
+# only accepted button-tap letters ('u'/'n'). Sep 14 incident: "Move my rental
+# agreement signing task to tomorrow" was asked twice, the user's "Yes." fell
+# through to the classifier → COMPLETION (98%) → the planner closed the task
+# and deleted the linked calendar event. Rewrite contract:
+#   • The prompt must be a self-contained plain-text question (echo the request,
+#     state what to reply) — no buttons, no implicit context.
+#   • The resolver must accept natural answers: confirmations (yes/ok/sure),
+#     explicit update phrases, digits (1/2), declines (no/cancel), and a
+#     re-sent version of the original request.
+#   • Anything unrecognized must NOT consume the confirmation (the handler
+#     falls through to normal routing instead).
+_CONFIRM_YES = {'yes', 'y', 'yeah', 'yep', 'yup', 'ok', 'okay', 'sure', 'do it',
+                'go ahead', 'confirm', 'confirmed', 'proceed', 'please', 'haan',
+                'haanji', 'done', 'u', 'update'}  # 'u'/'update': legacy button-tap replies
+_CONFIRM_NO = {'no', 'n', 'nope', 'cancel', 'stop', "don't", 'dont', 'nah', 'nahi'}
+_UPDATE_WORDS = {'u', 'update'}  # legacy Telegram-era button answers → task 1
+
+
+def _is_bare_ack(text: str) -> bool:
+    """True if the message is ONLY an acknowledgment (no task content).
+
+    Used by two guards: (a) resolve_task_update_confirmation treats these as
+    answers to the pending question, and (b) the B3 destructive-op guard
+    blocks bare acks from driving close_task/delete_event while any
+    task_update confirmation is pending in the thread (Sep 14).
+    """
+    cleaned = text.strip().strip(".!?, ").lower()
+    if not cleaned:
+        return False
+    if cleaned in _CONFIRM_YES or cleaned in _CONFIRM_NO:
+        return True
+    # Very short affirmative-ish replies that carry no task nouns/verbs
+    if cleaned in {'k', 'kk', 'okok', 'fine', 'alright', 'cool', 'right', 'sahi', 'thik'}:
+        return True
+    return False
+
+
+def _task_update_confirmation_from_exchange(content: str, metadata: dict = None):
+    """Parse a logged CLARIFICATION exchange into a task_update payload.
+
+    Reads the structured payload from the row's `metadata` first (Sep 14 fix —
+    payloads moved out of message text so the app never renders raw JSON), and
+    falls back to JSON-in-content for legacy rows written before the fix.
+
+    Returns a dict (matched_tasks/original/candidate_request/classification,
+    or {'resolved': True} for markers) on success, None otherwise.
+    """
+    meta = None
+    if isinstance(metadata, dict) and metadata.get("confirmation") == "task_update":
+        meta = dict(metadata)
+    else:
+        try:
+            meta = json.loads(content)
+        except (ValueError, TypeError):
+            return None
+    if not isinstance(meta, dict) or meta.get("confirmation") != "task_update":
+        return None
+    if meta.get("resolved"):
+        # Resolved marker: the question was already answered elsewhere. Stop the
+        # scan — otherwise an answered question would stay "pending" forever and
+        # the B3 guard would re-fire it on a later bare ack (double execution).
+        return {"resolved": True}
+    if not meta.get("matched_tasks"):
+        return None
+    return meta
+
+
+async def fetch_pending_task_update_confirmation(session_id: str):
+    """Load the most recent unresolved task_update confirmation for a thread.
+
+    Returns the parsed confirmation payload, or None. Used by the B3 guard
+    and by the pre-route pending-question consumer in handler.py.
+    """
+    if not session_id:
+        return None
+    try:
+        res = supabase.table('conversations') \
+            .select('content, metadata') \
+            .eq('session_id', session_id) \
+            .eq('role', 'bot') \
+            .eq('intent', 'CLARIFICATION') \
+            .order('created_at', desc=True) \
+            .limit(5) \
+            .execute()
+        for row in (res.data or []):
+            payload = _task_update_confirmation_from_exchange(
+                row.get('content', ''), row.get('metadata'))
+            if payload and payload.get("resolved"):
+                return None
+            if payload:
+                return payload
+    except Exception as e:
+        audit_log_sync("webhook", "WARNING", f"fetch_pending_task_update_confirmation failed: {e}")
+    return None
+
+
+async def mark_task_update_confirmation_resolved(session_id: str, chat_id: int):
+    """Insert a resolved-marker row so the pending-question scan stops matching.
+
+    conversations has no status column, so consumption is recorded as a newer
+    CLARIFICATION row of the same type. See fetch_pending_task_update_confirmation.
+
+    Sep 14 fix: the marker must carry HUMAN-READABLE content — the app renders
+    any bot CLARIFICATION row as a "WAITING ON YOU" card, so raw JSON here
+    leaks straight into the user's chat. The machine payload lives in metadata,
+    where _task_update_confirmation_from_exchange reads it.
+    """
+    try:
+        log_exchange(session_id, 'bot', 'CLARIFICATION',
+                     "\u2705 Task update recorded.", chat_id,
+                     metadata={"confirmation": "task_update", "resolved": True})
+    except Exception as e:
+        audit_log_sync("webhook", "WARNING", f"mark_task_update_confirmation_resolved failed: {e}")
+
+
 async def ask_task_update_confirmation(text: str, classification: dict, chat_id: int, session_id: str, matched_tasks: list):
-    task = matched_tasks[0]
-    reply = f"\U0001f9d0 *This relates to an existing task:*\n\n_{task['title']}_"
-    keyboard = [
-        [{"text": "\U0001f504 Update existing", "callback_data": "u"}],
-        [{"text": "\u2795 Create new task", "callback_data": "n"}]
-    ]
+    """Ask which existing task the update targets — as a self-contained text question.
+
+    The Telegram-era inline buttons are gone (channel retired; send_telegram
+    drops inline_keyboard), so the prompt must carry its own reply instructions.
+    The raw request is stored as `candidate_request` so a verbatim re-send of
+    the same message resolves as "task 1" instead of re-triggering the gate.
+    """
+    lines = ["\U0001f9d0 You mentioned updating a task, and more than one could match:"]
+    for i, t in enumerate(matched_tasks[:5], start=1):
+        lines.append(f"  {i}. {t.get('title', '(untitled task)')}")
+    lines.append("")
+    lines.append("Which one? Reply with the number (e.g. 1), the task name, "
+                 "'new task' to create a separate one, or 'cancel'.")
+    reply = "\n".join(lines)
+    # Sep 14 fix: log the HUMAN-READABLE question as content (the app renders
+    # bot CLARIFICATION rows verbatim as "WAITING ON YOU" cards) and keep the
+    # machine payload in metadata, where the resolver reads it.
     log_exchange(
         session_id, 'bot', 'CLARIFICATION',
-        json.dumps({
+        reply,
+        chat_id,
+        metadata={
             "confirmation": "task_update",
             "matched_tasks": matched_tasks,
             "original": text,
+            "candidate_request": text,
             "classification": classification
-        }),
-        chat_id
+        }
     )
-    await send_telegram(chat_id, reply, show_keyboard=False, inline_keyboard=keyboard)
+    await send_telegram(chat_id, reply, show_keyboard=False)
+
+
+def _ack_targets_single_pending_task(last_clarification: dict) -> bool:
+    """Whether a yes/no ack can safely answer the pending task_update question.
+
+    Only meaningful when exactly ONE task was offered — "yes" is only
+    unambiguous when there is a single candidate to confirm.
+    """
+    return len(last_clarification.get('matched_tasks', [])) == 1
+
 
 async def resolve_task_update_confirmation(text: str, chat_id: int, session_id: str, last_clarification: dict) -> bool:
-    cleaned = text.strip().lower()
+    """Resolve a pending task_update confirmation from the user's natural reply.
+
+    Accepted answers (in order):
+      1. Digit selection ("1", "task 2").
+      2. Confirmation ack (yes/ok/…) — only when exactly ONE task was offered
+         (with several candidates a bare yes is ambiguous → not consumed).
+      3. Update phrasing ("update existing", "the first one") or a verbatim
+         re-send of the original request → "task 1".
+      4. Decline / "new task" → re-route the original text as a NEW task.
+    Returns False when the reply is not an answer to this question — the
+    handler then processes the message through normal routing.
+    """
+    cleaned = text.strip().lower().strip(".!?, ")
     matched_tasks = last_clarification.get('matched_tasks', [])
     original = last_clarification.get("original", text)
     classification = last_clarification.get("classification", {"title": original})
     classification["intent"] = "TASK"
 
-    is_update = cleaned in ('u', 'update') or 'update' in cleaned
-    is_new = cleaned in ('n', 'new', 'create') or 'new' in cleaned or 'create' in cleaned
-
-    if is_update and not is_new:
-        target = matched_tasks[0]
-        classification["task_update_id"] = target['id']
+    async def _route_update(target_id):
+        classification["task_update_id"] = target_id
         log_exchange(session_id, 'user', 'TASK', text, chat_id)
         await route_by_intent("TASK", original, chat_id, session_id,
-                              classification=classification, task_update_id=target['id'])
+                              classification=classification, task_update_id=target_id)
+
+    # 1. Digit selection ("1", "2", "task 2")
+    m = re.fullmatch(r"(?:task\s+)?(\d+)", cleaned)
+    if m:
+        idx = int(m.group(1))
+        if 1 <= idx <= len(matched_tasks):
+            await _route_update(matched_tasks[idx - 1]['id'])
+            return True
+        return False
+
+    # 1b. Reply names the task ("sign the rental agreement") — substring match
+    # against candidate titles, both directions, case-insensitive.
+    for t in matched_tasks:
+        t_title = (t.get('title') or '').strip().lower()
+        if t_title and (t_title in cleaned or cleaned in t_title):
+            await mark_task_update_confirmation_resolved(session_id, chat_id)
+            await _route_update(t['id'])
+            return True
+
+    is_new = any(p in cleaned for p in ("new task", "create new", "new one", "separate task"))
+
+    # 2. Update answers: legacy words ('u'/'update'), update phrasing, a verbatim
+    #    re-send of the original request, or a bare yes-ack when exactly ONE
+    #    task was offered.
+    candidate_request = (last_clarification.get("candidate_request") or original or "").strip().lower().strip(".!?, ")
+    is_update_word = cleaned in _UPDATE_WORDS
+    is_update_phrase = any(p in cleaned for p in ("update existing", "existing task", "update it", "first one"))
+    resend = bool(candidate_request) and cleaned == candidate_request
+    single_ack = _is_bare_ack(text) and cleaned not in _CONFIRM_NO \
+        and _ack_targets_single_pending_task(last_clarification)
+    if not is_new and (is_update_word or is_update_phrase or resend or single_ack):
+        await mark_task_update_confirmation_resolved(session_id, chat_id)
+        await _route_update(matched_tasks[0]['id'])
         return True
-    elif is_new:
+
+    # 3. "New task" → route the original request as a NEW task (legacy 'n' semantics)
+    if is_new:
+        classification.pop("task_update_id", None)
+        await mark_task_update_confirmation_resolved(session_id, chat_id)
         log_exchange(session_id, 'user', 'TASK', text, chat_id)
         await route_by_intent("TASK", original, chat_id, session_id, classification=classification)
         return True
-    elif is_update:
-        target = matched_tasks[0]
-        classification["task_update_id"] = target['id']
-        log_exchange(session_id, 'user', 'TASK', text, chat_id)
-        await route_by_intent("TASK", original, chat_id, session_id,
-                              classification=classification, task_update_id=target['id'])
+
+    # 4. Plain decline ("no", "cancel") → cancel the question; never guess.
+    if _is_bare_ack(text) and cleaned in _CONFIRM_NO:
+        await mark_task_update_confirmation_resolved(session_id, chat_id)
+        log_exchange(session_id, 'user', 'NOISE', text, chat_id)
+        await send_telegram(chat_id, "Okay, cancelled. Tell me what you'd like to do instead.")
         return True
+
+    # Not an answer to this question — let normal routing handle it.
     return False
 
 async def handle_declare_practice(text: str, chat_id: int, classification: dict):

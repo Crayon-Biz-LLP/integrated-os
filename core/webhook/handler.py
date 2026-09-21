@@ -11,7 +11,7 @@ from core.lib.decision_audit import set_decision_chain_id, log_decision, Decisio
 from core.lib.query_timer import start_timer, mark, report
 from core.lib.conversation import get_or_create_session, get_history, log_exchange, format_classify_context, _fresh_anchor
 from core.actions import capture_session_id, capture_response
-from core.webhook.telegram import send_telegram
+from core.webhook.telegram import deliver_reply, send_telegram
 from core.webhook.telegram import answer_callback_query, download_telegram_file  # Telegram retired — these raise NotImplementedError if called
 from core.lib.rhodey_voice import ok, fail, ack_merged, ack_rejected, ack_undone, ack_verified
 from core.webhook.classify import classify_intent, check_task_overlap_for_update, UPDATE_TRIGGER_WORDS, INTENT_THRESHOLDS
@@ -34,7 +34,8 @@ from core.lib.clarification_state import (
     get_active_clarification, get_active_session, set_clarification, set_session_state,
     resolve_clarification, clear_session
 )
-from core.webhook.dispatch import route_by_intent, ask_task_update_confirmation, resolve_task_update_confirmation, resolve_disambiguation, handle_daily_brief, interrogate_brain, handle_clarification, resolve_anaphora
+from core.webhook.dispatch import route_by_intent, ask_task_update_confirmation, resolve_task_update_confirmation, fetch_pending_task_update_confirmation, resolve_disambiguation, handle_daily_brief, interrogate_brain, handle_clarification, resolve_anaphora
+from core.actions.models import ExtractionDegraded, NeedsClarification
 from core.webhook.commands import handle_command, handle_undo_command
 from core.webhook.multimodal import process_multimodal_content
 
@@ -1252,11 +1253,17 @@ async def _process_webhook(update: dict):
         for _sc, (_intent_name, _intent_label) in INTENT_OPTIONS.items():
             _intent_option_words.add(_sc)
             _intent_option_words.add(_intent_name.lower().replace('_', ''))
-        _clar_reply_words = _intent_option_words | {'u', 'update', 'new', 'create', 'none'}
+        # Sep 14: bare acks (yes/ok/no) are answers to a pending question when
+        # one exists. Previously only button letters ('u'/'n'/digits) matched,
+        # so "Yes." escaped to the classifier → COMPLETION → close_task on the
+        # task the pending question was about.
+        _clar_reply_words = _intent_option_words | {'u', 'update', 'new', 'create', 'none',
+                                                    'yes', 'no', 'ok', 'okay', 'yeah', 'yep',
+                                                    'yup', 'nope', 'sure', 'cancel'}
         if text.strip().lower() in _clar_reply_words or text.strip().isdigit():
             try:
                 last_clar = supabase.table('conversations') \
-                    .select('content') \
+                    .select('content, metadata') \
                     .eq('session_id', session_id) \
                     .eq('role', 'bot') \
                     .eq('intent', 'CLARIFICATION') \
@@ -1265,8 +1272,17 @@ async def _process_webhook(update: dict):
                     .execute()
                 last_clar_data = last_clar.data[0] if last_clar.data else None
                 if last_clar_data:
-                    meta = json.loads(last_clar_data['content'])
-                    if isinstance(meta, dict):
+                    # Sep 14 fix: confirmation payloads moved from message text
+                    # into metadata (the app renders bot CLARIFICATION content
+                    # verbatim). Read metadata first; fall back to JSON-in-
+                    # content for legacy rows written before the fix.
+                    meta = last_clar_data.get('metadata')
+                    if not (isinstance(meta, dict) and meta.get('confirmation')):
+                        try:
+                            meta = json.loads(last_clar_data.get('content', ''))
+                        except (ValueError, TypeError):
+                            meta = None
+                    if isinstance(meta, dict) and not meta.get('resolved'):
                         if meta.get('confirmation') == 'task_update':
                             if await resolve_task_update_confirmation(text, chat_id, session_id, meta):
                                 return {"success": True}
@@ -1506,12 +1522,33 @@ async def _process_webhook(update: dict):
         if intent == 'TASK' and confidence >= CONFIDENCE_HIGH:
             first_word = text.strip().lower().split()[0] if text.strip() else ''
             if first_word in UPDATE_TRIGGER_WORDS:
+                # Sep 14: a verbatim re-send of a request that already has a
+                # pending "which task?" question is an ANSWER to that question
+                # (the user repeating themselves because nothing happened), not
+                # a new request. Consume it — previously it re-triggered this
+                # same gate and re-asked, and the user's eventual "Yes." leaked
+                # to the classifier as COMPLETION and closed the task.
+                pending = await fetch_pending_task_update_confirmation(session_id)
+                if pending:
+                    _pr = (pending.get('candidate_request') or pending.get('original') or '').strip().lower().strip('.!?, ')
+                    if _pr and text.strip().lower().strip('.!?, ') == _pr:
+                        if await resolve_task_update_confirmation(text, chat_id, session_id, pending):
+                            return {"success": True}
                 matched = check_task_overlap_for_update(text)
-                if matched:
+                if len(matched) >= 2:
+                    # Real ambiguity: ≥2 tasks match the message — asking is correct.
                     _anaphora_task.cancel()
-                    audit_log_sync("webhook", "INFO", f"Task update overlap detected — asking: {text[:50]}...")
+                    audit_log_sync("webhook", "INFO", f"Task update ambiguity (>=2 matches) — asking: {text[:50]}...")
                     await ask_task_update_confirmation(text, classification, chat_id, session_id, matched)
                     return {"success": True}
+                if matched:
+                    # Sep 14: exactly ONE match + an explicit request is not
+                    # ambiguous. The old gate interposed an "Update existing / Create
+                    # new" prompt whose buttons (a) were Telegram-only and silently
+                    # dropped, and (b) didn't include "yes, do it" anyway — stalling
+                    # a perfectly clear instruction. Route directly; the planner
+                    # targets the task via matched_task_id/candidates.
+                    audit_log_sync("webhook", "INFO", f"Single task match — executing update directly: {text[:50]}...")
 
         # COMPLETION intent no longer overridden by regex heuristic.
         # All intents go through the LLM classify; the `contains_hidden_action` 
@@ -1537,7 +1574,39 @@ async def _process_webhook(update: dict):
                 ctx = await extract_context_from_source(text, timing="card")
                 
                 # 2. Extract suggestions (absorbs planner)
-                actions, suggestion_dict = await extract_suggestions(text, title=title, entity=entity, active_anchor=active_anchor, intent=intent)
+                try:
+                    actions, suggestion_dict = await extract_suggestions(text, title=title, entity=entity, active_anchor=active_anchor, intent=intent)
+                except ExtractionDegraded as deg:
+                    # Sep 14 L2/L3: an LLM outage is NOT an unclear answer and
+                    # NOT a note. Tell the truth, keep nothing parked (no
+                    # pending decision exists yet), never blame the wording.
+                    _anaphora_task.cancel()
+                    audit_log_sync("webhook", "ERROR",
+                                   f"Extraction degraded (LLM outage) for web message: {deg}")
+                    await deliver_reply(
+                        "⚙️ My side hit a technical problem (the AI service is "
+                        "briefly unavailable) — nothing you did. Please try "
+                        "again in a moment.", intent="SYSTEM", skip_validation=True)
+                    report(req_trace_id)
+                    return {"success": True}
+                except NeedsClarification as nc:
+                    # Sep 14: the app path let this escape to the generic 500
+                    # handler ("Something went wrong") — a clarifyable planner
+                    # rejection (e.g. reschedule with a date but no time) became
+                    # a dead end. Mirror the Telegram path: park the pending
+                    # action, ask the real question. Never guess, never drop.
+                    _anaphora_task.cancel()
+                    from core.webhook.workflows import park_action_clarification
+                    if session_id:
+                        await park_action_clarification(
+                            chat_id=chat_id, thread_id=session_id, original_text=text,
+                            intent=intent, title=title, entity=entity,
+                            operation=nc.operation, target_id=nc.target_id,
+                            missing_fields=nc.missing_fields,
+                        )
+                    await handle_clarification(text, nc.to_question(), chat_id, session_id=session_id)
+                    report(req_trace_id)
+                    return {"success": True}
                 
                 matched_task_id = suggestion_dict.get("matched_task_id") if suggestion_dict else None
                 
@@ -1767,7 +1836,9 @@ async def _process_webhook(update: dict):
         report(req_trace_id)
         try:
             if chat_id:
-                await send_telegram(chat_id, "Something went wrong. Try again or report this.")
+                # Sep 14 L3: own the failure — never imply the user's message
+                # was the problem.
+                await send_telegram(chat_id, "⚙️ Something went wrong on my side — nothing you did. Please try again in a moment.")
         except Exception:
             pass
         return {"error": str(e), "status": 500}

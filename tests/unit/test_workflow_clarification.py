@@ -228,7 +228,12 @@ async def test_resume_replans_with_answer_and_resolves(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_resume_no_actions_closes_loop_honestly(monkeypatch):
+async def test_resume_no_actions_keeps_loop_alive(monkeypatch):
+    """Sep 14 L2 contract change: 0 actions after a successful plan is treated
+    as degraded extraction, NOT an unclear answer. The workflow stays ACTIVE
+    (the user's pending decision survives) and the message owns the failure —
+    the old behavior (cancel + "couldn't work that out from what you said")
+    blamed the user for an outage and destroyed their parked decision."""
     fake_client = MagicMock()
     monkeypatch.setattr(wf, "tenant_aware_client", lambda: fake_client)
     sent = []
@@ -236,14 +241,8 @@ async def test_resume_no_actions_closes_loop_honestly(monkeypatch):
     async def _fake_send(cid, msg):
         sent.append((cid, msg))
 
-    observations = []
-
-    async def _fake_emit(**kwargs):
-        observations.append(kwargs)
-
     monkeypatch.setattr(wf, "send_telegram", _fake_send)
     monkeypatch.setattr(wf, "log_exchange", lambda *a, **k: None)
-    monkeypatch.setattr("core.lib.telemetry.emit_observation", _fake_emit)
 
     async def _fake_plan(text, title="", entity="", active_anchor=None, intent=None):
         return [], None  # nothing resolvable
@@ -253,8 +252,7 @@ async def test_resume_no_actions_closes_loop_honestly(monkeypatch):
     handled, _ = await wf._resume_action_clarification(12345, "next week sometime", "thread-1", _make_workflow())
 
     assert handled is True
-    assert "couldn't work that out" in sent[0][1]
-    update_args = fake_client.table("conversation_workflows").update.call_args
-    assert update_args[0][0]["status"] == "cancelled"
-    # Learning loop: the failed resolution is persisted
-    assert observations and observations[0]["outcome"] == "failed"
+    assert "still pending" in sent[0][1]          # state preserved, honestly told
+    assert "couldn't work that out" not in sent[0][1]  # never blames the wording
+    # The workflow was NOT cancelled — no status update may fire
+    fake_client.table("conversation_workflows").update.assert_not_called()
