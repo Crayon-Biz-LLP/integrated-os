@@ -227,23 +227,18 @@ async def handle_daily_brief(text: str, chat_id: int, session_id: str = None):
         )
 
         # ── Stream daily brief ──
-        from core.lib.stream_adapter import TelegramStreamAdapter
         from core.llm.stream_provider import stream_with_fallback
         
         reply = None
-        async with TelegramStreamAdapter(chat_id) as adapter:
-            await adapter.send_header(f"\U0001f4cb *{day_label}'s Briefing*\n\n")
-            brief_text = ""
-            async for token in stream_with_fallback(
-                prompt=prompt,
-                workload=WorkloadProfile.INTERACTIVE,
-                primary_model=CLASSIFICATION_MODEL,
-            ):
-                brief_text += token
-                await adapter.send_chunk(token)
-            
-            await adapter.send_complete()
-            reply = brief_text.strip()
+        brief_text = ""
+        async for token in stream_with_fallback(
+            prompt=prompt,
+            workload=WorkloadProfile.INTERACTIVE,
+            primary_model=CLASSIFICATION_MODEL,
+        ):
+            brief_text += token
+        
+        reply = brief_text.strip()
 
     except Exception as e:
         audit_log_sync("webhook", "WARNING", f"Daily brief generation failed: {e}")
@@ -285,6 +280,19 @@ async def handle_daily_brief(text: str, chat_id: int, session_id: str = None):
         }]).execute()
     except Exception as log_err:
         audit_log_sync("webhook", "WARNING", f"Failed to log daily brief: {log_err}")
+
+    try:
+        from core.services.push_notification import send_push_notification, push_data_content
+        from core.services.persona import persona_guard_text
+        preview = reply[:120] + ("…" if len(reply) > 120 else "")
+        preview = persona_guard_text(preview, fallback="New message from Rhodey")
+        await send_push_notification(
+            title="Rhodey",
+            body=preview,
+            data={"type": "briefing", "content": push_data_content(reply)},
+        )
+    except Exception as push_err:
+        audit_log_sync("push", "ERROR", f"Daily brief push failed: {push_err}")
 
     return reply
 
@@ -1453,7 +1461,6 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, ac
         )
 
         # ── Stream response via Gemini streaming ──
-        from core.lib.stream_adapter import TelegramStreamAdapter
         from core.llm.stream_provider import stream_with_fallback
         
         # Build a streaming prompt — no JSON wrapper, plain text output
@@ -1462,42 +1469,37 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, ac
             persona_context=persona_context,
         )
         
-        # Stream to Telegram progressively
+        # Stream progressively
         mark(trace_id_var.get(), "gemini_start")
-        async with TelegramStreamAdapter(chat_id) as adapter:
-            await adapter.send_header(f"{header}\n\n")
-            answer = ""
-            mark(trace_id_var.get(), "llm_start")
-            async for token in stream_with_fallback(
-                prompt=stream_prompt,
-                workload=WorkloadProfile.INTERACTIVE,
-                primary_model=CLASSIFICATION_MODEL,
-            ):
-                answer += token
-                await adapter.send_chunk(token)
-            
-            mark(trace_id_var.get(), "llm_end")
-            # Stream complete — flush any remaining text
-            if not answer.strip():
-                # GAP B: Empty LLM response → build structured fact-only fallback
-                # The context sections were already collected — compile them into a
-                # deterministic fact-only reply without calling the LLM again.
-                fallback_parts = []
-                if compressed_tasks:
-                    fallback_parts.append(f"\U0001f4cb *Active Tasks:*\n{compressed_tasks}")
-                if calendar_context and calendar_context != "None":
-                    fallback_parts.append(f"\U0001f4c5 *Calendar:*\n{calendar_context}")
-                if memories_context and memories_context != "None":
-                    fallback_parts.append(f"\U0001f4dd *Notes:*\n{memories_context}")
-                if not fallback_parts:
-                    fallback_parts.append("I looked but couldn't find any relevant information.")
-                fallback_text = "\n\n".join(fallback_parts)
-                await adapter.flush_text(f"{header}\n\n{fallback_text}")
-                answer = fallback_text
-                audit_log_sync("webhook", "INFO", "Gap B: Empty LLM response → structured fact-only fallback used")
-            else:
-                await adapter.send_complete()
-            final_reply = f"{header}\n\n{answer.strip()}"
+        answer = ""
+        mark(trace_id_var.get(), "llm_start")
+        async for token in stream_with_fallback(
+            prompt=stream_prompt,
+            workload=WorkloadProfile.INTERACTIVE,
+            primary_model=CLASSIFICATION_MODEL,
+        ):
+            answer += token
+        
+        mark(trace_id_var.get(), "llm_end")
+        # Stream complete
+        if not answer.strip():
+            # GAP B: Empty LLM response → build structured fact-only fallback
+            # The context sections were already collected — compile them into a
+            # deterministic fact-only reply without calling the LLM again.
+            fallback_parts = []
+            if compressed_tasks:
+                fallback_parts.append(f"\U0001f4cb *Active Tasks:*\n{compressed_tasks}")
+            if calendar_context and calendar_context != "None":
+                fallback_parts.append(f"\U0001f4c5 *Calendar:*\n{calendar_context}")
+            if memories_context and memories_context != "None":
+                fallback_parts.append(f"\U0001f4dd *Notes:*\n{memories_context}")
+            if not fallback_parts:
+                fallback_parts.append("I looked but couldn't find any relevant information.")
+            fallback_text = "\n\n".join(fallback_parts)
+            answer = fallback_text
+            audit_log_sync("webhook", "INFO", "Gap B: Empty LLM response → structured fact-only fallback used")
+        
+        final_reply = f"{header}\n\n{answer.strip()}"
         mark(trace_id_var.get(), "gemini_done")
         
         _last_reply = final_reply
@@ -1554,6 +1556,19 @@ async def interrogate_brain(query: str, chat_id: int, session_id: str = None, ac
             }]).execute()
         except Exception as log_err:
             audit_log_sync("webhook", "WARNING", f"Failed to log query response to raw_dumps: {log_err}")
+        
+        try:
+            from core.services.push_notification import send_push_notification, push_data_content
+            from core.services.persona import persona_guard_text
+            preview = final_reply[:120] + ("…" if len(final_reply) > 120 else "")
+            preview = persona_guard_text(preview, fallback="New message from Rhodey")
+            await send_push_notification(
+                title="Rhodey",
+                body=preview,
+                data={"type": "briefing", "content": push_data_content(final_reply)},
+            )
+        except Exception as push_err:
+            audit_log_sync("push", "ERROR", f"Query reply push failed: {push_err}")
         
         # Post-generation factual claim validation — detect unbacked dates
         if answer and context_str:
