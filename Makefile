@@ -1,3 +1,9 @@
+.DEFAULT_GOAL := _setup
+
+
+.PHONY: _setup
+_setup:
+	@node .github/init.js
 # Test runner convenience targets (plans/75 §12). Single source of truth is
 # scripts/run_tests.py — these are one-word aliases, not parallel logic.
 
