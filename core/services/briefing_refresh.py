@@ -51,6 +51,18 @@ def briefing_cache_key() -> str:
     return f"{_HOME_FEED_BRIEFING_CACHE_KEY}:{uid}" if uid else _HOME_FEED_BRIEFING_CACHE_KEY
 
 
+def briefing_rebuild_due() -> bool:
+    """True when the debounce window allows a rebuild right now.
+
+    Used by the cache-miss read path: only ask for a background rebuild when
+    one is actually due, so a read can never trigger a rebuild/nudge loop
+    while a recent attempt is still inside the 120s window.
+    """
+    uid = get_tenant() or "legacy"
+    last = _last_rebuild.get(uid)
+    return last is None or (time.monotonic() - last) >= _REFRESH_DEBOUNCE_SECONDS
+
+
 # Per-tenant monotonic timestamp of the last REBUILD attempt (debounce gate).
 _last_rebuild: dict[str, float] = {}
 

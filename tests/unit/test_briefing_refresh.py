@@ -185,3 +185,47 @@ def test_fire_briefing_refresh_safe_without_running_loop():
         mod.fire_briefing_refresh(source="task_status_change")
 
     audit.assert_any_call("briefing_refresh", "WARNING", ANY)
+
+
+def test_briefing_rebuild_due_tracks_the_debounce_window():
+    """The cache-miss read path only asks for a rebuild when one is due."""
+    assert mod.briefing_rebuild_due() is True  # never rebuilt
+    mod._last_rebuild["legacy"] = mod.time.monotonic()
+    assert mod.briefing_rebuild_due() is False
+    mod._last_rebuild["legacy"] = (
+        mod.time.monotonic() - mod._REFRESH_DEBOUNCE_SECONDS - 1
+    )
+    assert mod.briefing_rebuild_due() is True
+
+
+def test_home_feed_briefing_returns_none_and_never_builds_on_cache_miss():
+    """A user-facing read must never wait on the LLM briefing rebuild."""
+    from api.index import _home_feed_briefing
+
+    with (
+        patch("core.lib.redis_cache.cache_get", return_value=None),
+        patch("api.index.fire_briefing_refresh") as fire,
+        patch("api.briefing.build_briefing", new=AsyncMock()) as build,
+    ):
+        result = _run(_home_feed_briefing())
+
+    assert result is None
+    build.assert_not_awaited()
+    fire.assert_called_once()
+
+
+def test_home_feed_briefing_serves_cache_without_rebuilding():
+    """A warm cache is served verbatim — no rebuild, no push."""
+    from api.index import _home_feed_briefing
+
+    cached = _briefing_payload()
+    with (
+        patch("core.lib.redis_cache.cache_get", return_value=cached),
+        patch("api.index.fire_briefing_refresh") as fire,
+        patch("api.briefing.build_briefing", new=AsyncMock()) as build,
+    ):
+        result = _run(_home_feed_briefing())
+
+    assert result == cached
+    build.assert_not_awaited()
+    fire.assert_not_called()

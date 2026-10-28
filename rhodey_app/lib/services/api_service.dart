@@ -51,11 +51,17 @@ class HomeFeed {
   final List<Map<String, dynamic>> tasks;
   final PersonaSummary persona;
 
+  /// False when the server had no cached briefing (cache miss). The caller
+  /// must keep the last good briefing instead of replacing it with an empty
+  /// one — the rebuild lands later via the `briefing_refresh` push.
+  final bool hasBriefing;
+
   const HomeFeed({
     required this.briefing,
     required this.decisions,
     required this.tasks,
     this.persona = PersonaSummary.empty,
+    this.hasBriefing = true,
   });
 
   bool get isEmpty =>
@@ -146,15 +152,20 @@ class ApiService {
   /// Public so that screens (e.g. Inbox) can fetch arbitrary endpoints.
   /// [timeout] defaults to 10s; heavier aggregate endpoints (home-feed,
   /// briefing) pass a longer window since they bundle multiple queries.
+  /// [maxRetries] controls how many times to retry on timeout/server errors.
+  /// Pass 0 for latency-critical reads where a retry would only double the
+  /// wait (the cached render is already on screen).
   Future<ApiResult<dynamic>> get(
     String path, {
     Map<String, String>? query,
     Duration timeout = const Duration(seconds: 10),
+    int maxRetries = 2,
   }) async {
     final uri = query != null
         ? _uri(path).replace(queryParameters: query)
         : _uri(path);
-    for (var attempt = 0; attempt < 3; attempt++) {
+    final attempts = maxRetries + 1; // +1 for the initial attempt
+    for (var attempt = 0; attempt < attempts; attempt++) {
       try {
         final resp = await _client
             .get(uri, headers: _headers())
@@ -163,15 +174,17 @@ class ApiService {
           return ApiResult.ok(jsonDecode(resp.body));
         }
         if (resp.statusCode == 429 || resp.statusCode >= 500) {
-          // Retryable
-          await Future.delayed(
-            Duration(milliseconds: 200 * (attempt + 1) + Random().nextInt(200)),
-          );
-          continue;
+          if (attempt < maxRetries) {
+            await Future.delayed(
+              Duration(milliseconds: 200 * (attempt + 1) + Random().nextInt(200)),
+            );
+            continue;
+          }
+          return ApiResult.fail('${resp.statusCode}: ${resp.body}');
         }
         return ApiResult.fail('${resp.statusCode}: ${resp.body}');
       } catch (e) {
-        if (attempt < 2) {
+        if (attempt < maxRetries) {
           await Future.delayed(
             Duration(milliseconds: 200 * (attempt + 1) + Random().nextInt(200)),
           );
@@ -1076,41 +1089,26 @@ class ApiService {
 
   // ── Briefing ──────────────────────────────────────────────
 
-  /// Fetches the structured briefing from /api/briefing.
-  Future<BriefingResponse> getBriefing() async {
-    final result = await get(
-      '/api/briefing',
-      timeout: const Duration(seconds: 15),
-    );
-    if (result.success && result.data is Map) {
-      return BriefingResponse.fromJson(result.data as Map<String, dynamic>);
-    }
-    return BriefingResponse.empty();
-  }
-
   /// ONE-CALL home load (P2): briefing + pending decisions + active tasks
   /// from /api/home-feed. Collapses the app's 6 startup round-trips into 1.
-  Future<HomeFeed> getHomeFeed() async {
+  ///
+  /// Returns null on failure or timeout. No retries: the caller already has a
+  /// cached render on screen, and retrying a slow rebuild only doubles the
+  /// wait. The server rebuilds a missing briefing in the background and
+  /// nudges the app via push.
+  Future<HomeFeed?> getHomeFeed() async {
     final result = await get(
       '/api/home-feed',
-      timeout: const Duration(seconds: 15),
+      timeout: const Duration(seconds: 8),
+      maxRetries: 0,
     );
-    if (!result.success || result.data is! Map) {
-      // Fallback: home-feed unavailable (older backend) — the caller's
-      // individual fetchers remain the source of truth.
-      return HomeFeed(
-        briefing: BriefingResponse.empty(),
-        decisions: const [],
-        tasks: const [],
-      );
-    }
+    if (!result.success || result.data is! Map) return null;
     final data = result.data as Map<String, dynamic>;
-    // Write-behind: keep the on-device cache warm for instant cold opens.
-    // Only persist a payload that actually carries content — a transient
-    // success-but-empty response must not wipe a good cache (which would
-    // make the next cold open render nothing at all).
     final feed = _parseHomeFeed(data);
-    if (!feed.isEmpty) {
+    // Write-behind: keep the on-device cache warm for instant cold opens.
+    // Only persist a payload that actually carries the briefing — a cache-miss
+    // response (briefing: null) must not wipe the last good one.
+    if (feed.hasBriefing) {
       await _homeFeedCache.save(data);
     }
     return feed;
@@ -1155,6 +1153,7 @@ class ApiService {
       decisions: decisions,
       tasks: tasks,
       persona: persona,
+      hasBriefing: data['briefing'] is Map,
     );
   }
 

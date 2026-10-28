@@ -28,6 +28,7 @@ from core.webhook import (
 from core.webhook.handler import process_message_direct
 from core.services.briefing_refresh import (
     briefing_cache_key,
+    briefing_rebuild_due,
     fire_briefing_refresh,
     trigger_briefing_refresh,
 )
@@ -875,35 +876,33 @@ async def get_persona_route(request: Request):
 
 
 async def _home_feed_briefing():
-    """Build the briefing payload for /api/home-feed (defensive wrapper).
+    """Briefing payload for /api/home-feed — cache-only, never builds inline.
 
-    Read-through Redis cache (2 min TTL, PER-TENANT key): the briefing is a
-    generated artifact (LLM + 9 data sources) that takes 9-16s to rebuild
-    and was blocking the event loop for every request queued behind it.
-    Within the TTL window home-feed serves the cached payload in ~1s —
-    Pulse regenerates the underlying data on its own schedule, so staleness
-    is bounded and deliberate. Cache failures fail open to a live build.
+    The briefing is an LLM artifact (9-16s to build). A user-facing read must
+    never wait for it: serve the cached payload when present; on a miss return
+    None immediately and rebuild in the background (the rebuild pushes a
+    silent `briefing_refresh`, which makes the app fetch again and pick up the
+    fresh payload). The app keeps its last good briefing in the meantime.
     """
-    from api.briefing import build_briefing
-    from core.lib.redis_cache import cache_get, cache_set
+    from core.lib.redis_cache import cache_get
 
     cache_key = briefing_cache_key()
     try:
         cached = cache_get(cache_key)
-        if cached is not None and isinstance(cached, dict):
+        if isinstance(cached, dict):
             return cached
     except Exception as e:
         print(f"[Briefing] Cache read failed (non-fatal): {e}")
 
-    supabase = tenant_aware_client()
-    briefing = await build_briefing(supabase)
-    payload = json.loads(json.dumps(briefing, default=str))
-
-    try:
-        cache_set(cache_key, payload, ttl=120)
-    except Exception as e:
-        print(f"[Briefing] Cache write failed (non-fatal): {e}")
-    return payload
+    # Cache miss — never block the request on the rebuild. Only trigger when
+    # one is due (the debounce guard prevents a read/nudge rebuild loop while
+    # a recent attempt is still inside its window).
+    if briefing_rebuild_due():
+        try:
+            fire_briefing_refresh(source="home_feed_cache_miss")
+        except Exception as e:
+            print(f"[Briefing] Background rebuild trigger failed (non-fatal): {e}")
+    return None
 
 # --- EVENING ROUNDUP ---
 @app.get("/api/roundup")

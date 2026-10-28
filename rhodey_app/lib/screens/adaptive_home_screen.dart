@@ -314,19 +314,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
 
   // ── Pulse intelligence ───────────────────────────────────────────
 
-  Future<void> _loadBriefing() async {
-    try {
-      final briefing = await _api.getBriefing();
-      if (mounted) _applyBriefing(briefing);
-    } catch (_) {
-      if (mounted) {
-        setState(() => _briefingLoading = false);
-      }
-    }
-  }
-
-  /// Applies a fetched briefing to state — shared by the legacy _loadBriefing
-  /// and the single-call _loadHome (P2).
+  /// Applies a fetched briefing to state — the single-call _loadHome path.
   ///
   /// [liveItemIds] — ids currently on the live, snooze-filtered board
   /// (pending decisions + active tasks). When provided, the LLM's
@@ -385,7 +373,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
           } else {
             _focalItems.insert(0, newItem);
           }
-          // Remove any duplicate from _loadFocalItems that has the same natural ID
+          // Remove any duplicate from the live board that has the same natural ID
           if (naturalId.isNotEmpty) {
             _focalItems.removeWhere(
               (f) => f.id == naturalId && f.id != newItem.id,
@@ -425,31 +413,8 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
 
   // ── Focal items ─────────────────────────────────────────────────
 
-  Future<void> _loadFocalItems() async {
-    try {
-    final decResult = await _api.getPendingDecisions();
-    // Fetch open (todo) AND committed (in_progress) tasks: committed tasks
-    // stay visible in the ledger/count but never become focal cards below.
-    final taskResult = await _api.getTasks(status: 'todo,in_progress');
-      if (!mounted) return;
-      final decisions = (decResult.success && decResult.data != null)
-          ? decResult.data!
-          : <PendingDecision>[];
-      final tasks = (taskResult.success && taskResult.data != null)
-          ? taskResult.data!
-          : <Map<String, dynamic>>[];
-      _applyFocalData(decisions, tasks);
-    } catch (_) {
-      // Network or parse error — show empty state
-    } finally {
-      if (mounted) {
-        setState(() => _focalLoading = false);
-      }
-    }
-  }
-
-  /// Applies fetched decisions + tasks to the focal board — shared by the
-  /// legacy _loadFocalItems and the single-call _loadHome (P2).
+  /// Applies fetched decisions + tasks to the focal board — the single-call
+  /// _loadHome path.
   void _applyFocalData(
     List<PendingDecision> decisions,
     List<Map<String, dynamic>> tasks,
@@ -595,9 +560,17 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       try {
         final feed = await _api.getHomeFeed();
         if (!mounted) return;
-        if (feed.isEmpty) {
-          // Older backend without /api/home-feed — use the legacy calls.
-          await Future.wait([_loadBriefing(), _loadFocalItems()]);
+        // Failure/timeout (null) or an empty payload: keep the cached render.
+        // The server rebuilds a missing briefing in the background and nudges
+        // via `briefing_refresh`; there is no legacy fallback to re-trigger
+        // the same slow rebuild from the client.
+        if (feed == null || feed.isEmpty) {
+          if (mounted) {
+            setState(() {
+              _briefingLoading = false;
+              _focalLoading = false;
+            });
+          }
           return;
         }
         _applyHomeFeed(feed);
@@ -644,11 +617,15 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       for (final d in feed.decisions) d.id,
       for (final t in feed.tasks) t['id'].toString(),
     };
-    _applyBriefing(
-      feed.briefing,
-      liveItemIds: liveItemIds,
-      promoteFocal: promoteFocal,
-    );
+    // A cache-miss response carries no briefing (hasBriefing == false). Keep
+    // the last good one on screen instead of replacing it with an empty one.
+    if (feed.hasBriefing) {
+      _applyBriefing(
+        feed.briefing,
+        liveItemIds: liveItemIds,
+        promoteFocal: promoteFocal,
+      );
+    }
     _applyFocalData(feed.decisions, feed.tasks);
   }
 
@@ -1257,7 +1234,7 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
 
   /// N4: decrement the digest / active-task count locally after a focal
   /// action succeeds. The card is already removed from the board — a full
-  /// _loadFocalItems refetch (5 network calls) is redundant for one action.
+  /// full home refetch (5 network calls) is redundant for one action.
   void _decrementCountsFor(_FocalItem item) {
     if (!mounted) return;
     setState(() {
@@ -1812,7 +1789,9 @@ class _AdaptiveHomeScreenState extends State<AdaptiveHomeScreen>
       if (!mounted) return;
       final type = data['type'];
       if (type == 'briefing' || type == 'briefing_refresh') {
-        _loadBriefing();
+        // Refresh via the cached home-feed path (never /api/briefing, which
+        // rebuilds the briefing synchronously).
+        _loadHome();
       }
       _pollForUpdates();
     });
